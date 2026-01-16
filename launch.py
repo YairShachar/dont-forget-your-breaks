@@ -60,6 +60,10 @@ BUTTON_HEIGHT_LARGE = 44   # Control buttons
 BUTTON_HEIGHT_SMALL = 32   # Test, play buttons
 BUTTON_MIN_WIDTH = 80      # Minimum touch target
 
+# Collapsible panel settings
+COLLAPSE_WINDOW_THRESHOLD = 400  # Auto-collapse panels below this window width
+PANEL_COLLAPSED_HEIGHT = 48      # Height of collapsed panel header
+
 # Sound options including "None"
 SOUNDS = {
     "None": None,
@@ -413,7 +417,7 @@ class CountdownPopup:
 # ------------------ BREAK CONFIG PANEL ------------------
 
 class BreakConfigPanel(ctk.CTkFrame):
-    """Modern UI panel for configuring a single break."""
+    """Modern UI panel for configuring a single break with collapsible support."""
 
     def __init__(self, parent, config, on_test):
         super().__init__(
@@ -423,20 +427,56 @@ class BreakConfigPanel(ctk.CTkFrame):
         )
         self.config = config
         self.on_test = on_test
+        self._expanded = True
         self._build_ui()
 
     def _build_ui(self):
-        # Header with break name
-        header = ctk.CTkLabel(
-            self,
+        # Header (always visible) - clickable to toggle expand/collapse
+        self.header_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.header_frame.pack(fill="x", padx=PADDING_PANEL_X, pady=(PADDING_PANEL_Y // 2, 0))
+
+        # Left side: break name
+        self.header_label = ctk.CTkLabel(
+            self.header_frame,
             text=self.config.name.get(),
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['status'], weight="bold")
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['status'], weight="bold"),
+            cursor="hand2"
         )
-        header.pack(anchor="w", padx=PADDING_PANEL_X, pady=(PADDING_PANEL_Y, ROW_SPACING // 2))
+        self.header_label.pack(side="left")
+
+        # Right side: timer + chevron (for collapsed view quick info)
+        header_right = ctk.CTkFrame(self.header_frame, fg_color="transparent")
+        header_right.pack(side="right")
+
+        # Timer in header (visible when collapsed)
+        self.header_timer = ctk.CTkLabel(
+            header_right, text="--:--",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['timer'], weight="bold")
+        )
+        self.header_timer.pack(side="left", padx=(0, 12))
+        self.header_timer.pack_forget()  # Hidden by default (shown when collapsed)
+
+        # Chevron indicator
+        self.chevron = ctk.CTkLabel(
+            header_right,
+            text="\u25B2",  # Up arrow when expanded
+            font=ctk.CTkFont(family=FONT_FAMILY, size=12),
+            text_color=COLORS['text_secondary'],
+            cursor="hand2"
+        )
+        self.chevron.pack(side="left")
+
+        # Make header clickable
+        for widget in [self.header_frame, self.header_label, self.chevron]:
+            widget.bind("<Button-1>", lambda e: self.toggle_expand())
+
+        # Content frame (hidden when collapsed)
+        self.content_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self.content_frame.pack(fill="x", padx=0, pady=0)
 
         # Row 1: Interval and Duration
-        row1 = ctk.CTkFrame(self, fg_color="transparent")
-        row1.pack(fill="x", padx=PADDING_PANEL_X, pady=(0, ROW_SPACING))
+        row1 = ctk.CTkFrame(self.content_frame, fg_color="transparent")
+        row1.pack(fill="x", padx=PADDING_PANEL_X, pady=(ROW_SPACING // 2, ROW_SPACING))
 
         ctk.CTkLabel(
             row1, text="Every:",
@@ -477,7 +517,7 @@ class BreakConfigPanel(ctk.CTkFrame):
         duration_unit.pack(side="left")
 
         # Row 2: Sounds
-        row2 = ctk.CTkFrame(self, fg_color="transparent")
+        row2 = ctk.CTkFrame(self.content_frame, fg_color="transparent")
         row2.pack(fill="x", padx=PADDING_PANEL_X, pady=(0, ROW_SPACING))
 
         ctk.CTkLabel(
@@ -521,7 +561,7 @@ class BreakConfigPanel(ctk.CTkFrame):
         ).pack(side="left")
 
         # Row 3: Options and Timer
-        row3 = ctk.CTkFrame(self, fg_color="transparent")
+        row3 = ctk.CTkFrame(self.content_frame, fg_color="transparent")
         row3.pack(fill="x", padx=PADDING_PANEL_X, pady=(0, PADDING_PANEL_Y))
 
         ctk.CTkCheckBox(
@@ -560,6 +600,41 @@ class BreakConfigPanel(ctk.CTkFrame):
             text_color=COLORS['text_secondary']
         ).pack(side="right")
 
+    def toggle_expand(self):
+        """Toggle between expanded and collapsed states."""
+        if self._expanded:
+            self.collapse()
+        else:
+            self.expand()
+
+    def expand(self):
+        """Expand the panel to show full configuration."""
+        if self._expanded:
+            return
+        self._expanded = True
+        self.content_frame.pack(fill="x", padx=0, pady=0)
+        self.header_timer.pack_forget()
+        self.chevron.configure(text="\u25B2")  # Up arrow
+        self.header_frame.pack_configure(pady=(PADDING_PANEL_Y // 2, 0))
+
+    def collapse(self):
+        """Collapse the panel to show only header with timer."""
+        if not self._expanded:
+            return
+        self._expanded = False
+        self.content_frame.pack_forget()
+        self.header_timer.pack(side="left", padx=(0, 12))
+        self.chevron.configure(text="\u25BC")  # Down arrow
+        self.header_frame.pack_configure(pady=(PADDING_PANEL_Y // 2, PADDING_PANEL_Y // 2))
+
+    def is_expanded(self):
+        """Return whether the panel is currently expanded."""
+        return self._expanded
+
+    def update_header_timer(self, time_text):
+        """Update the header timer display (for collapsed state)."""
+        self.header_timer.configure(text=time_text)
+
 
 # ------------------ MAIN APP ------------------
 
@@ -567,7 +642,7 @@ class BreakApp:
     def __init__(self, root):
         self.root = root
         root.title("Don't Forget Your Breaks")
-        root.minsize(520, 480)
+        root.minsize(280, 300)  # Allow narrow width for collapsed panels
         root.resizable(True, True)
 
         self.running = False
@@ -690,9 +765,11 @@ class BreakApp:
         self.stop_btn.pack(side="left", padx=8, expand=True, fill="x")
 
         # Break configuration panels
+        self.panels = []
         for config in self.breaks:
             panel = BreakConfigPanel(main_frame, config, self.test_break)
             panel.pack(fill="x", pady=(0, ROW_SPACING))
+            self.panels.append(panel)
 
         # Keyboard shortcuts hint (de-emphasized)
         shortcut_label = ctk.CTkLabel(
@@ -707,6 +784,13 @@ class BreakApp:
         self.root.bind('<Command-s>', lambda e: self.start() if not self.running else None)
         self.root.bind('<Command-p>', lambda e: self.toggle_pause() if self.running else None)
         self.root.bind('<Command-period>', lambda e: self.stop() if self.running else None)
+
+        # Track auto-collapse state (to avoid fighting with manual toggles)
+        self._auto_collapsed = False
+        self._last_window_width = 0
+
+        # Bind window resize event
+        self.root.bind('<Configure>', self._on_window_resize)
 
         # Start UI update loop
         self.update_ui()
@@ -912,9 +996,14 @@ class BreakApp:
         next_break = None
         min_remaining = float('inf')
 
-        for config in self.breaks:
+        for i, config in enumerate(self.breaks):
+            time_text = self._format_time(config.remaining)
             if config.timer_label:
-                config.timer_label.configure(text=self._format_time(config.remaining))
+                config.timer_label.configure(text=time_text)
+            # Also update header timer (for collapsed state)
+            if i < len(self.panels):
+                self.panels[i].update_header_timer(time_text)
+
             if self.running and not self.paused and config.remaining < min_remaining:
                 min_remaining = config.remaining
                 next_break = config
@@ -927,6 +1016,30 @@ class BreakApp:
             self.next_break_label.configure(text="")
 
         self.root.after(1000, self.update_ui)
+
+    def _on_window_resize(self, event):
+        """Handle window resize for auto-collapse behavior."""
+        # Only respond to root window configure events
+        if event.widget != self.root:
+            return
+
+        width = event.width
+
+        # Avoid redundant processing
+        if width == self._last_window_width:
+            return
+        self._last_window_width = width
+
+        # Auto-collapse when window is narrow
+        if width < COLLAPSE_WINDOW_THRESHOLD and not self._auto_collapsed:
+            self._auto_collapsed = True
+            for panel in self.panels:
+                panel.collapse()
+        # Auto-expand when window is wide enough
+        elif width >= COLLAPSE_WINDOW_THRESHOLD and self._auto_collapsed:
+            self._auto_collapsed = False
+            for panel in self.panels:
+                panel.expand()
 
     @staticmethod
     def _format_time(seconds):
