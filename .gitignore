@@ -1,0 +1,32 @@
+# Build and distribution
+build/
+dist/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# Virtual environments
+venv/
+env/
+.venv/
+.env/
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# PyInstaller (keeping .spec file for build configuration)
+*.manifest
+
+# Logs
+*.log
+
+# Local configuration
+.claude/
