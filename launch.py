@@ -6,6 +6,8 @@ import time
 import sys
 import subprocess
 import json
+import os
+import atexit
 from pathlib import Path
 
 # ------------------ CUSTOMTKINTER SETUP ------------------
@@ -18,6 +20,7 @@ ctk.set_default_color_theme("blue")  # macOS-style blue accent
 TIME_UNITS = ["sec", "min", "hour"]
 SOUND_LOOP_INTERVAL = 1.2
 CONFIG_FILE = Path.home() / "Library" / "Preferences" / "com.yairs.dontforgetyourbreaks.json"
+LOCK_FILE = Path.home() / "Library" / "Application Support" / "DontForgetYourBreaks" / ".lock"
 
 # Design constants
 FONT_FAMILY = "SF Pro Display" if sys.platform == "darwin" else "Segoe UI"
@@ -1193,6 +1196,62 @@ class BreakApp:
         return f"{m:02}:{s:02}"
 
 
+# ------------------ SINGLE INSTANCE ------------------
+
+def is_instance_running():
+    """Check if another instance is already running by examining the lock file."""
+    if not LOCK_FILE.exists():
+        return False
+
+    try:
+        with open(LOCK_FILE, 'r') as f:
+            pid = int(f.read().strip())
+        # Check if process with this PID is still running
+        os.kill(pid, 0)
+        return True
+    except (ValueError, ProcessLookupError, PermissionError, FileNotFoundError, OSError):
+        # PID invalid, process not running, or file doesn't exist
+        return False
+
+
+def create_lock_file():
+    """Create lock file with current PID."""
+    LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(LOCK_FILE, 'w') as f:
+        f.write(str(os.getpid()))
+
+
+def remove_lock_file():
+    """Remove lock file on exit."""
+    try:
+        LOCK_FILE.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def check_single_instance():
+    """Check for existing instance and prompt user if found.
+
+    Returns True if app should continue, False if it should exit.
+    """
+    if not is_instance_running():
+        return True
+
+    # Show dialog using basic tkinter (before CTk is initialized)
+    temp_root = tk.Tk()
+    temp_root.withdraw()
+
+    result = messagebox.askyesno(
+        "Already Running",
+        "Don't Forget Your Breaks is already running.\n\n"
+        "Do you want to launch another instance anyway?",
+        parent=temp_root
+    )
+
+    temp_root.destroy()
+    return result
+
+
 # ------------------ MAIN ------------------
 
 def activate_window(root):
@@ -1205,6 +1264,14 @@ def activate_window(root):
 
 
 if __name__ == "__main__":
+    # Check for existing instance
+    if not check_single_instance():
+        sys.exit(0)
+
+    # Create lock file and register cleanup
+    create_lock_file()
+    atexit.register(remove_lock_file)
+
     root = ctk.CTk()
     app = BreakApp(root)
 
