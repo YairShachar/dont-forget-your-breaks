@@ -206,6 +206,7 @@ class CountdownPopup:
         self.snoozed = False
         self.sound_stop_event = threading.Event()
         self._start_time = time.time()  # For smooth progress bar
+        self._previous_app = self._get_frontmost_app()  # Remember active app
 
         # Create popup window
         self.window = ctk.CTkToplevel(parent)
@@ -382,9 +383,10 @@ class CountdownPopup:
             self.window.withdraw()
         except Exception:
             pass
+        self._prevent_focus_steal()  # Call before destroy
         self.window.destroy()
         self.closed = True
-        self._prevent_focus_steal()
+        self._prevent_focus_steal()  # Call after destroy
 
     def close(self):
         if self.closed:
@@ -397,14 +399,39 @@ class CountdownPopup:
             self.window.withdraw()
         except Exception:
             pass
+        self._prevent_focus_steal()  # Call before destroy to prevent focus transfer
         self.window.destroy()
-        self._prevent_focus_steal()
+        self._prevent_focus_steal()  # Call again after to ensure app is deactivated
+
+    def _get_frontmost_app(self):
+        """Get the name of the currently frontmost application."""
+        if sys.platform != "darwin":
+            return None
+        try:
+            result = subprocess.run(
+                ['osascript', '-e',
+                 'tell application "System Events" to get name of first process whose frontmost is true'],
+                capture_output=True, text=True, timeout=2
+            )
+            return result.stdout.strip() if result.returncode == 0 else None
+        except Exception:
+            return None
 
     def _prevent_focus_steal(self):
         """Prevent main window from stealing focus and triggering Space switch on macOS."""
         if sys.platform == "darwin":
             try:
+                # Lower the parent window
                 self.parent.lower()
+                # Reactivate the app that was active before the popup appeared
+                if self._previous_app and self._previous_app != "Python":
+                    subprocess.run(
+                        ['osascript', '-e',
+                         f'tell application "{self._previous_app}" to activate'],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=2
+                    )
             except Exception:
                 pass
 
