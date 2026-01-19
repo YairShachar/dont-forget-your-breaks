@@ -61,8 +61,12 @@ BUTTON_HEIGHT_SMALL = 32   # Test, play buttons
 BUTTON_MIN_WIDTH = 80      # Minimum touch target
 
 # Collapsible panel settings
-COLLAPSE_WINDOW_THRESHOLD = 400  # Auto-collapse panels below this window width
 PANEL_COLLAPSED_HEIGHT = 48      # Height of collapsed panel header
+
+# Animation timing
+ANIMATION_FRAME_INTERVAL = 16      # ms (60fps)
+ANIMATION_EXPAND_DURATION = 250    # ms
+ANIMATION_COLLAPSE_DURATION = 200  # ms
 
 # Sound options including "None"
 SOUNDS = {
@@ -102,6 +106,32 @@ def looping_sound(stop_event, sound_name):
     while not stop_event.is_set():
         play_sound(sound_name)
         time.sleep(SOUND_LOOP_INTERVAL)
+
+
+# ------------------ ANIMATION HELPERS ------------------
+
+def ease_out_quad(t):
+    """Quadratic ease-out: fast start, slow end."""
+    return t * (2 - t)
+
+
+def ease_in_quad(t):
+    """Quadratic ease-in: slow start, fast end."""
+    return t * t
+
+
+def prefers_reduced_motion():
+    """Check if user has enabled reduced motion (macOS)."""
+    if sys.platform != "darwin":
+        return False
+    try:
+        result = subprocess.run(
+            ["defaults", "read", "-g", "AppleReduceMotion"],
+            capture_output=True, text=True
+        )
+        return result.stdout.strip() == "1"
+    except Exception:
+        return False
 
 
 # ------------------ BREAK CONFIG ------------------
@@ -172,6 +202,7 @@ class CountdownPopup:
         self.closed = False
         self.snoozed = False
         self.sound_stop_event = threading.Event()
+        self._start_time = time.time()  # For smooth progress bar
 
         # Create popup window
         self.window = ctk.CTkToplevel(parent)
@@ -182,7 +213,7 @@ class CountdownPopup:
         self.window.attributes('-topmost', True)
 
         # Larger popup size with modern styling
-        popup_w, popup_h = 380, 260
+        popup_w, popup_h = 380, 300
 
         # Position popup at mouse cursor location (works across all monitors)
         self.window.update_idletasks()
@@ -284,6 +315,7 @@ class CountdownPopup:
 
         # Start countdown and keep-on-top mechanism
         self.update_countdown()
+        self._update_progress_smooth()
         self._keep_on_top()
 
     def _format_time(self, seconds):
@@ -299,13 +331,6 @@ class CountdownPopup:
 
         self.remaining -= 1
         self.countdown_label.configure(text=self._format_time(self.remaining))
-
-        # Update progress bar
-        try:
-            progress_value = max(0, self.remaining / self.duration) if self.duration > 0 else 0
-            self.progress.set(progress_value)
-        except Exception:
-            pass
 
         if self.remaining <= 0:
             # Timer finished - handle end sound
@@ -327,6 +352,21 @@ class CountdownPopup:
         else:
             self.window.after(1000, self.update_countdown)
 
+    def _update_progress_smooth(self):
+        """Smooth progress bar update (runs every 50ms for fluid animation)."""
+        if self.closed:
+            return
+
+        try:
+            elapsed = time.time() - self._start_time
+            progress_value = max(0, 1 - (elapsed / self.duration)) if self.duration > 0 else 0
+            self.progress.set(progress_value)
+        except Exception:
+            pass
+
+        if self.remaining > 0:
+            self.window.after(50, self._update_progress_smooth)
+
     def snooze(self):
         """Snooze the break for a few minutes."""
         if self.closed or self.snoozed:
@@ -341,6 +381,7 @@ class CountdownPopup:
             pass
         self.window.destroy()
         self.closed = True
+        self._prevent_focus_steal()
 
     def close(self):
         if self.closed:
@@ -354,6 +395,15 @@ class CountdownPopup:
         except Exception:
             pass
         self.window.destroy()
+        self._prevent_focus_steal()
+
+    def _prevent_focus_steal(self):
+        """Prevent main window from stealing focus and triggering Space switch on macOS."""
+        if sys.platform == "darwin":
+            try:
+                self.parent.lower()
+            except Exception:
+                pass
 
     def _request_attention(self):
         """Request user attention."""
@@ -380,7 +430,7 @@ class CountdownPopup:
         try:
             mouse_x = self.window.winfo_pointerx()
             mouse_y = self.window.winfo_pointery()
-            popup_w, popup_h = 380, 260
+            popup_w, popup_h = 380, 300
             x = mouse_x - popup_w // 2 + 20
             y = mouse_y - popup_h // 2 + 20
             self.window.geometry(f"{popup_w}x{popup_h}+{x}+{y}")
@@ -428,6 +478,13 @@ class BreakConfigPanel(ctk.CTkFrame):
         self.config = config
         self.on_test = on_test
         self._expanded = True
+
+        # Animation state
+        self._animating = False
+        self._animation_id = None
+        self._expanded_height = None  # Set after UI is built
+        self._collapsed_height = PANEL_COLLAPSED_HEIGHT
+
         self._build_ui()
 
     def _build_ui(self):
@@ -456,7 +513,7 @@ class BreakConfigPanel(ctk.CTkFrame):
         self.header_timer.pack(side="left", padx=(0, 12))
         self.header_timer.pack_forget()  # Hidden by default (shown when collapsed)
 
-        # Chevron indicator
+        # Chevron indicator (always on far right)
         self.chevron = ctk.CTkLabel(
             header_right,
             text="\u25B2",  # Up arrow when expanded
@@ -464,11 +521,15 @@ class BreakConfigPanel(ctk.CTkFrame):
             text_color=COLORS['text_secondary'],
             cursor="hand2"
         )
-        self.chevron.pack(side="left")
+        self.chevron.pack(side="right")
 
-        # Make header clickable
+        # Make header clickable (mouse)
         for widget in [self.header_frame, self.header_label, self.chevron]:
             widget.bind("<Button-1>", lambda e: self.toggle_expand())
+
+        # Keyboard accessibility: Space/Enter to toggle
+        self.header_frame.bind("<Return>", lambda e: self.toggle_expand())
+        self.header_frame.bind("<space>", lambda e: self.toggle_expand())
 
         # Content frame (hidden when collapsed)
         self.content_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -526,7 +587,7 @@ class BreakConfigPanel(ctk.CTkFrame):
         ).pack(side="left")
         start_sound = ctk.CTkComboBox(
             row2, variable=self.config.start_sound,
-            values=list(SOUNDS.keys()), width=100, height=36, state="readonly",
+            values=list(SOUNDS.keys()), width=130, height=36, state="readonly",
             font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input']),
             corner_radius=CORNER_RADIUS_INPUT
         )
@@ -546,7 +607,7 @@ class BreakConfigPanel(ctk.CTkFrame):
         ).pack(side="left")
         end_sound = ctk.CTkComboBox(
             row2, variable=self.config.end_sound,
-            values=list(SOUNDS.keys()), width=100, height=36, state="readonly",
+            values=list(SOUNDS.keys()), width=130, height=36, state="readonly",
             font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input']),
             corner_radius=CORNER_RADIUS_INPUT
         )
@@ -576,15 +637,17 @@ class BreakConfigPanel(ctk.CTkFrame):
             font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
         ).pack(side="left", padx=(16, 0))
 
-        # Test button on right (smaller, orange accent)
+        # Test button on right
         ctk.CTkButton(
             row3, text="Test",
             command=lambda: self.on_test(self.config),
             width=60, height=BUTTON_HEIGHT_SMALL,
             corner_radius=CORNER_RADIUS_INPUT,
-            fg_color=COLORS['bg_hover'],
-            hover_color=COLORS['border'],
-            text_color=COLORS['accent_orange'],
+            fg_color="transparent",
+            border_width=1,
+            border_color=COLORS['border'],
+            hover_color=COLORS['bg_hover'],
+            text_color=COLORS['text_secondary'],
             font=ctk.CTkFont(family=FONT_FAMILY, size=12)
         ).pack(side="right")
 
@@ -600,6 +663,10 @@ class BreakConfigPanel(ctk.CTkFrame):
             text_color=COLORS['text_secondary']
         ).pack(side="right")
 
+        # Measure and store expanded height after UI is built
+        self.update_idletasks()
+        self._expanded_height = self.winfo_reqheight()
+
     def toggle_expand(self):
         """Toggle between expanded and collapsed states."""
         if self._expanded:
@@ -611,21 +678,67 @@ class BreakConfigPanel(ctk.CTkFrame):
         """Expand the panel to show full configuration."""
         if self._expanded:
             return
+
+        # Cancel any running animation
+        if self._animation_id:
+            self.after_cancel(self._animation_id)
+            self._animation_id = None
+
         self._expanded = True
+        self._animating = True
+
+        # Show content first (needed for height calculation and animation)
         self.content_frame.pack(fill="x", padx=0, pady=0)
         self.header_timer.pack_forget()
         self.chevron.configure(text="\u25B2")  # Up arrow
         self.header_frame.pack_configure(pady=(PADDING_PANEL_Y // 2, 0))
 
+        # Get target height
+        target_height = self._expanded_height or self.winfo_reqheight()
+
+        def on_complete():
+            self._animating = False
+            # Re-enable pack propagation for natural sizing
+            self.pack_propagate(True)
+
+        self._animate_height(
+            self._collapsed_height,
+            target_height,
+            ANIMATION_EXPAND_DURATION,
+            on_complete
+        )
+
     def collapse(self):
-        """Collapse the panel to show only header with timer."""
+        """Collapse the panel to show only header with timer and test button."""
         if not self._expanded:
             return
+
+        # Cancel any running animation
+        if self._animation_id:
+            self.after_cancel(self._animation_id)
+            self._animation_id = None
+
         self._expanded = False
-        self.content_frame.pack_forget()
-        self.header_timer.pack(side="left", padx=(0, 12))
-        self.chevron.configure(text="\u25BC")  # Down arrow
-        self.header_frame.pack_configure(pady=(PADDING_PANEL_Y // 2, PADDING_PANEL_Y // 2))
+        self._animating = True
+
+        # Get current height for smooth animation
+        current_height = self.winfo_height()
+        if current_height <= 1:
+            current_height = self._expanded_height or 200
+
+        def on_complete():
+            self._animating = False
+            self.content_frame.pack_forget()
+            self.header_timer.pack(side="left", padx=(0, 12))
+            self.chevron.configure(text="\u25BC")  # Down arrow
+            self.header_frame.pack_configure(pady=(PADDING_PANEL_Y // 2, PADDING_PANEL_Y // 2))
+
+        self._animate_height(
+            current_height,
+            self._collapsed_height,
+            ANIMATION_COLLAPSE_DURATION,
+            on_complete
+        )
 
     def is_expanded(self):
         """Return whether the panel is currently expanded."""
@@ -635,6 +748,34 @@ class BreakConfigPanel(ctk.CTkFrame):
         """Update the header timer display (for collapsed state)."""
         self.header_timer.configure(text=time_text)
 
+    def _animate_height(self, start_height, end_height, duration, on_complete):
+        """Frame-by-frame height animation with easing."""
+        if prefers_reduced_motion():
+            self.configure(height=end_height)
+            self.pack_propagate(False)
+            on_complete()
+            return
+
+        total_frames = max(1, duration // ANIMATION_FRAME_INTERVAL)
+        frame = [0]  # Use list to allow modification in nested function
+
+        def step():
+            if frame[0] >= total_frames:
+                self.configure(height=end_height)
+                self._animation_id = None
+                on_complete()
+                return
+
+            progress = frame[0] / total_frames
+            eased = ease_out_quad(progress)
+            height = int(start_height + (end_height - start_height) * eased)
+            self.configure(height=height)
+            frame[0] += 1
+            self._animation_id = self.after(ANIMATION_FRAME_INTERVAL, step)
+
+        self.pack_propagate(False)  # Enable explicit height control
+        step()
+
 
 # ------------------ MAIN APP ------------------
 
@@ -642,7 +783,7 @@ class BreakApp:
     def __init__(self, root):
         self.root = root
         root.title("Don't Forget Your Breaks")
-        root.minsize(280, 300)  # Allow narrow width for collapsed panels
+        root.minsize(560, 300)  # Minimum width to keep UI readable
         root.resizable(True, True)
 
         self.running = False
@@ -734,7 +875,7 @@ class BreakApp:
             hover_color=COLORS['accent_hover'],
             font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input'], weight="bold")
         )
-        self.start_btn.pack(side="left", padx=8, expand=True, fill="x")
+        self.start_btn.pack(side="left", padx=(0, 6), expand=True, fill="x")
 
         # Pause button (secondary - transparent with border)
         self.pause_btn = ctk.CTkButton(
@@ -748,7 +889,7 @@ class BreakApp:
             font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input']),
             state="disabled"
         )
-        self.pause_btn.pack(side="left", padx=8, expand=True, fill="x")
+        self.pause_btn.pack(side="left", padx=6, expand=True, fill="x")
 
         # Stop button (secondary - transparent with border)
         self.stop_btn = ctk.CTkButton(
@@ -762,7 +903,27 @@ class BreakApp:
             font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input']),
             state="disabled"
         )
-        self.stop_btn.pack(side="left", padx=8, expand=True, fill="x")
+        self.stop_btn.pack(side="left", padx=(6, 0), expand=True, fill="x")
+
+        # Collapse/Expand all toggle
+        toggle_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        toggle_frame.pack(fill="x", pady=(ROW_SPACING, 4))
+
+        self._all_collapsed = False
+        self.toggle_all_btn = ctk.CTkButton(
+            toggle_frame,
+            text="▼ Collapse",
+            command=self._toggle_all_panels,
+            width=85,
+            height=24,
+            corner_radius=6,
+            fg_color="transparent",
+            hover_color=COLORS['bg_hover'],
+            text_color=COLORS['text_secondary'],
+            anchor="e",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=11)
+        )
+        self.toggle_all_btn.pack(side="right")
 
         # Break configuration panels
         self.panels = []
@@ -784,13 +945,6 @@ class BreakApp:
         self.root.bind('<Command-s>', lambda e: self.start() if not self.running else None)
         self.root.bind('<Command-p>', lambda e: self.toggle_pause() if self.running else None)
         self.root.bind('<Command-period>', lambda e: self.stop() if self.running else None)
-
-        # Track auto-collapse state (to avoid fighting with manual toggles)
-        self._auto_collapsed = False
-        self._last_window_width = 0
-
-        # Bind window resize event
-        self.root.bind('<Configure>', self._on_window_resize)
 
         # Start UI update loop
         self.update_ui()
@@ -905,6 +1059,19 @@ class BreakApp:
         self.pause_btn.configure(state="disabled", text="Pause")
         self.stop_btn.configure(state="disabled")
 
+    def _toggle_all_panels(self):
+        """Toggle all panels between collapsed and expanded state."""
+        if self._all_collapsed:
+            for panel in self.panels:
+                panel.expand()
+            self._all_collapsed = False
+            self.toggle_all_btn.configure(text="▼ Collapse")
+        else:
+            for panel in self.panels:
+                panel.collapse()
+            self._all_collapsed = True
+            self.toggle_all_btn.configure(text="▲ Expand")
+
     # ------------------ TIMER ------------------
 
     def timer_loop(self):
@@ -956,6 +1123,8 @@ class BreakApp:
             self.break_start_time = None
             if self.running and not self.paused:
                 self.status.configure(text="Working", text_color=COLORS['accent_green'])
+            elif not self.running:
+                self.status.configure(text="Idle", text_color=COLORS['text_secondary'])
             self.root.after(0, self._process_break_queue)
 
         def on_snooze(snooze_minutes):
@@ -1016,30 +1185,6 @@ class BreakApp:
             self.next_break_label.configure(text="")
 
         self.root.after(1000, self.update_ui)
-
-    def _on_window_resize(self, event):
-        """Handle window resize for auto-collapse behavior."""
-        # Only respond to root window configure events
-        if event.widget != self.root:
-            return
-
-        width = event.width
-
-        # Avoid redundant processing
-        if width == self._last_window_width:
-            return
-        self._last_window_width = width
-
-        # Auto-collapse when window is narrow
-        if width < COLLAPSE_WINDOW_THRESHOLD and not self._auto_collapsed:
-            self._auto_collapsed = True
-            for panel in self.panels:
-                panel.collapse()
-        # Auto-expand when window is wide enough
-        elif width >= COLLAPSE_WINDOW_THRESHOLD and self._auto_collapsed:
-            self._auto_collapsed = False
-            for panel in self.panels:
-                panel.expand()
 
     @staticmethod
     def _format_time(seconds):
