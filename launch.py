@@ -192,9 +192,9 @@ class BreakConfig:
                  duration_val, duration_unit, start_sound, end_sound,
                  loop_end_sound=False, auto_dismiss=True):
         self.name = ctk.StringVar(value=name)
-        self.interval_value = ctk.IntVar(value=interval_val)
+        self.interval_value = ctk.StringVar(value=str(interval_val))
         self.interval_unit = ctk.StringVar(value=interval_unit)
-        self.duration_value = ctk.IntVar(value=duration_val)
+        self.duration_value = ctk.StringVar(value=str(duration_val))
         self.duration_unit = ctk.StringVar(value=duration_unit)
         self.start_sound = ctk.StringVar(value=start_sound)
         self.end_sound = ctk.StringVar(value=end_sound)
@@ -203,9 +203,17 @@ class BreakConfig:
         self.remaining = self.get_interval_seconds()
         self.timer_label = None  # Will be set by UI
 
+    @staticmethod
+    def _safe_int(var, fallback=1):
+        """Safely parse a StringVar to int, returning fallback for empty/invalid values."""
+        try:
+            return int(var.get())
+        except (ValueError, TypeError):
+            return fallback
+
     def get_interval_seconds(self):
         """Convert interval to seconds."""
-        val = self.interval_value.get()
+        val = self._safe_int(self.interval_value)
         unit = self.interval_unit.get()
         if unit == "sec":
             return val
@@ -216,7 +224,7 @@ class BreakConfig:
 
     def get_duration_seconds(self):
         """Convert duration to seconds."""
-        val = self.duration_value.get()
+        val = self._safe_int(self.duration_value)
         unit = self.duration_unit.get()
         if unit == "sec":
             return val
@@ -1061,9 +1069,9 @@ class BreakApp:
         for config in self.breaks:
             prefs["breaks"].append({
                 "name": config.name.get(),
-                "interval_val": config.interval_value.get(),
+                "interval_val": BreakConfig._safe_int(config.interval_value),
                 "interval_unit": config.interval_unit.get(),
-                "duration_val": config.duration_value.get(),
+                "duration_val": BreakConfig._safe_int(config.duration_value),
                 "duration_unit": config.duration_unit.get(),
                 "start_sound": config.start_sound.get(),
                 "end_sound": config.end_sound.get(),
@@ -1117,14 +1125,19 @@ class BreakApp:
     def _setup_auto_save(self):
         """Setup auto-save when any preference changes."""
         for config in self.breaks:
-            config.interval_value.trace_add('write', self._save_preferences)
-            config.interval_unit.trace_add('write', self._save_preferences)
+            config.interval_value.trace_add('write', lambda *a, c=config: self._on_interval_changed(c))
+            config.interval_unit.trace_add('write', lambda *a, c=config: self._on_interval_changed(c))
             config.duration_value.trace_add('write', self._save_preferences)
             config.duration_unit.trace_add('write', self._save_preferences)
             config.start_sound.trace_add('write', self._save_preferences)
             config.end_sound.trace_add('write', self._save_preferences)
             config.loop_end_sound.trace_add('write', self._save_preferences)
             config.auto_dismiss.trace_add('write', self._save_preferences)
+
+    def _on_interval_changed(self, config):
+        """Handle interval change — reset timer and save preferences."""
+        config.reset_timer()
+        self._save_preferences()
 
     # ------------------ CONTROLS ------------------
 
@@ -1207,6 +1220,7 @@ class BreakApp:
     def _open_settings(self):
         """Open the settings window, or bring it to front if already open."""
         if hasattr(self, '_settings_window') and self._settings_window and self._settings_window.winfo_exists():
+            self._settings_window.deiconify()
             self._settings_window.lift()
             self._settings_window.focus_force()
             return
@@ -1215,7 +1229,7 @@ class BreakApp:
         self._settings_window.title("Break Settings")
         self._settings_window.geometry("600x480")
         self._settings_window.resizable(False, True)
-        self._settings_window.attributes('-topmost', False)
+        self._settings_window.attributes('-topmost', self.always_on_top.get())
 
         # Position centered on main window
         self._settings_window.update_idletasks()
@@ -1228,9 +1242,7 @@ class BreakApp:
         self._settings_window.geometry(f"+{x}+{y}")
 
         def on_settings_close():
-            self._settings_panels = []
-            self._settings_window.destroy()
-            self._settings_window = None
+            self._settings_window.withdraw()
 
         self._settings_window.protocol("WM_DELETE_WINDOW", on_settings_close)
         self._settings_window.bind('<Escape>', lambda e: on_settings_close())
