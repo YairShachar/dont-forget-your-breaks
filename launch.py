@@ -23,11 +23,38 @@ APP_NAME = "Don't Forget Your Breaks"
 # Set macOS menu bar app name (instead of "Python")
 if sys.platform == "darwin":
     try:
-        from Foundation import NSBundle
-        bundle = NSBundle.mainBundle()
-        info = bundle.localizedInfoDictionary() or bundle.infoDictionary()
-        info['CFBundleName'] = APP_NAME
-    except ImportError:
+        import ctypes
+        import ctypes.util
+        objc = ctypes.cdll.LoadLibrary(ctypes.util.find_library('objc'))
+
+        # Setup objc runtime function signatures
+        objc.objc_getClass.restype = ctypes.c_void_p
+        objc.sel_registerName.restype = ctypes.c_void_p
+        objc.objc_msgSend.restype = ctypes.c_void_p
+        objc.objc_msgSend.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+
+        NSBundle = objc.objc_getClass(b'NSBundle')
+        sel_mainBundle = objc.sel_registerName(b'mainBundle')
+        bundle = objc.objc_msgSend(NSBundle, sel_mainBundle)
+
+        sel_info = objc.sel_registerName(b'localizedInfoDictionary')
+        info = objc.objc_msgSend(bundle, sel_info)
+        if not info:
+            sel_info = objc.sel_registerName(b'infoDictionary')
+            info = objc.objc_msgSend(bundle, sel_info)
+
+        # Set CFBundleName
+        CFStr = ctypes.cdll.LoadLibrary(ctypes.util.find_library('CoreFoundation'))
+        CFStr.CFStringCreateWithCString.restype = ctypes.c_void_p
+        CFStr.CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
+
+        key = CFStr.CFStringCreateWithCString(None, b'CFBundleName', 0)
+        val = CFStr.CFStringCreateWithCString(None, APP_NAME.encode('utf-8'), 0)
+
+        objc.objc_msgSend.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+        sel_setObject = objc.sel_registerName(b'setObject:forKey:')
+        objc.objc_msgSend(info, sel_setObject, val, key)
+    except Exception:
         pass
 
 # ------------------ CONFIGURATION ------------------
