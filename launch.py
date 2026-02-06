@@ -105,7 +105,7 @@ CORNER_RADIUS_BUTTON = 8
 CORNER_RADIUS_INPUT = 6
 
 # Button dimensions
-BUTTON_HEIGHT_LARGE = 38   # Control buttons (Start/Stop/Pause)
+BUTTON_HEIGHT_LARGE = 38   # Control buttons (Start/Reset/Pause)
 BUTTON_HEIGHT_SMALL = 28   # Test, play buttons
 BUTTON_MIN_WIDTH = 80      # Minimum touch target
 
@@ -975,10 +975,10 @@ class BreakApp:
         )
         self.toggle_btn.pack(side="left", padx=(0, 4), expand=True, fill="x")
 
-        # Stop button (secondary - transparent with border)
-        self.stop_btn = ctk.CTkButton(
-            control_frame, text="Stop",
-            command=self.stop, height=BUTTON_HEIGHT_LARGE,
+        # Reset button (secondary - transparent with border)
+        self.reset_btn = ctk.CTkButton(
+            control_frame, text="Reset",
+            command=self.reset, height=BUTTON_HEIGHT_LARGE,
             corner_radius=CORNER_RADIUS_BUTTON,
             fg_color="transparent",
             border_width=1,
@@ -987,7 +987,7 @@ class BreakApp:
             font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['control']),
             state="disabled"
         )
-        self.stop_btn.pack(side="left", padx=(4, 0), expand=True, fill="x")
+        self.reset_btn.pack(side="left", padx=(4, 0), expand=True, fill="x")
 
         # Compact timer display cards
         self._timer_labels = []
@@ -1028,7 +1028,7 @@ class BreakApp:
         # Bind keyboard shortcuts
         self.root.bind('<Command-s>', lambda e: self._handle_toggle())
         self.root.bind('<Command-comma>', lambda e: self._open_settings())
-        self.root.bind('<Command-period>', lambda e: self.stop() if self.running else None)
+        self.root.bind('<Command-period>', lambda e: self.reset() if self.running else None)
 
         # Start UI update loop
         self.update_ui()
@@ -1144,7 +1144,7 @@ class BreakApp:
             fg_color=COLORS['accent_orange'],
             hover_color=COLORS['accent_orange_hover']
         )
-        self.stop_btn.configure(state="normal")
+        self.reset_btn.configure(state="normal")
 
         threading.Thread(target=self.timer_loop, daemon=True).start()
 
@@ -1168,7 +1168,7 @@ class BreakApp:
             )
             self.status.configure(text="Paused", text_color=COLORS['accent_orange'])
 
-    def stop(self):
+    def reset(self):
         self.running = False
         self.paused = False
         self.stop_event.set()
@@ -1190,7 +1190,7 @@ class BreakApp:
             fg_color=COLORS['accent_blue'],
             hover_color=COLORS['accent_hover']
         )
-        self.stop_btn.configure(state="disabled")
+        self.reset_btn.configure(state="disabled")
 
     def _apply_always_on_top(self, *args):
         """Apply the always-on-top setting and save preferences."""
