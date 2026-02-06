@@ -8,6 +8,9 @@ import subprocess
 import json
 import os
 import atexit
+import webbrowser
+import platform
+from urllib.parse import quote as url_quote
 from pathlib import Path
 
 # ------------------ CUSTOMTKINTER SETUP ------------------
@@ -21,6 +24,8 @@ TIME_UNITS = ["sec", "min", "hour"]
 SOUND_LOOP_INTERVAL = 1.2
 CONFIG_FILE = Path.home() / "Library" / "Preferences" / "com.yairs.dontforgetyourbreaks.json"
 LOCK_FILE = Path.home() / "Library" / "Application Support" / "DontForgetYourBreaks" / ".lock"
+VERSION_FILE = Path(__file__).parent / "VERSION"
+GITHUB_NEW_ISSUE_URL = "https://github.com/YairShachar/dont-forget-your-breaks/issues/new"
 
 # Design constants
 FONT_FAMILY = "SF Pro Display" if sys.platform == "darwin" else "Segoe UI"
@@ -44,6 +49,7 @@ COLORS = {
     'accent_hover': "#0077ED",
     'accent_green': "#30D158",
     'accent_orange': "#FF9F0A",
+    'accent_orange_hover': "#E8900A",
     'text_secondary': "gray60",
 }
 
@@ -896,30 +902,16 @@ class BreakApp:
         control_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
         control_frame.pack(fill="x", pady=ROW_SPACING)
 
-        # Start button (primary action - blue accent)
-        self.start_btn = ctk.CTkButton(
+        # Toggle button (Start / Pause / Resume - primary action)
+        self.toggle_btn = ctk.CTkButton(
             control_frame, text="Start",
-            command=self.start, height=BUTTON_HEIGHT_LARGE,
+            command=self._handle_toggle, height=BUTTON_HEIGHT_LARGE,
             corner_radius=CORNER_RADIUS_BUTTON,
             fg_color=COLORS['accent_blue'],
             hover_color=COLORS['accent_hover'],
             font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input'], weight="bold")
         )
-        self.start_btn.pack(side="left", padx=(0, 6), expand=True, fill="x")
-
-        # Pause button (secondary - transparent with border)
-        self.pause_btn = ctk.CTkButton(
-            control_frame, text="Pause",
-            command=self.toggle_pause, height=BUTTON_HEIGHT_LARGE,
-            corner_radius=CORNER_RADIUS_BUTTON,
-            fg_color="transparent",
-            border_width=1,
-            border_color=COLORS['border'],
-            hover_color=COLORS['bg_panel'],
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input']),
-            state="disabled"
-        )
-        self.pause_btn.pack(side="left", padx=6, expand=True, fill="x")
+        self.toggle_btn.pack(side="left", padx=(0, 6), expand=True, fill="x")
 
         # Stop button (secondary - transparent with border)
         self.stop_btn = ctk.CTkButton(
@@ -962,18 +954,32 @@ class BreakApp:
             panel.pack(fill="x", pady=(0, ROW_SPACING))
             self.panels.append(panel)
 
-        # Keyboard shortcuts hint (de-emphasized)
-        shortcut_label = ctk.CTkLabel(
-            main_frame,
-            text="Cmd+S Start  •  Cmd+P Pause  •  Cmd+. Stop",
+        # Bottom bar: shortcuts + feedback
+        bottom_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
+        bottom_frame.pack(fill="x", pady=(PADDING_WINDOW, 0))
+
+        ctk.CTkLabel(
+            bottom_frame,
+            text="Cmd+S Start / Pause  \u2022  Cmd+. Stop",
             font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper']),
             text_color="gray50"
-        )
-        shortcut_label.pack(pady=(PADDING_WINDOW, 0))
+        ).pack(side="left")
+
+        ctk.CTkButton(
+            bottom_frame,
+            text="Feedback",
+            command=self._open_feedback,
+            width=65,
+            height=22,
+            corner_radius=6,
+            fg_color="transparent",
+            hover_color=COLORS['bg_hover'],
+            text_color="gray50",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper'])
+        ).pack(side="right")
 
         # Bind keyboard shortcuts
-        self.root.bind('<Command-s>', lambda e: self.start() if not self.running else None)
-        self.root.bind('<Command-p>', lambda e: self.toggle_pause() if self.running else None)
+        self.root.bind('<Command-s>', lambda e: self._handle_toggle())
         self.root.bind('<Command-period>', lambda e: self.stop() if self.running else None)
 
         # Start UI update loop
@@ -1027,6 +1033,29 @@ class BreakApp:
         if self.active_popup and not self.active_popup.closed:
             self.active_popup.bring_to_user()
 
+    def _open_feedback(self):
+        """Open GitHub new issue page with pre-filled system info."""
+        try:
+            app_version = VERSION_FILE.read_text().strip()
+        except (FileNotFoundError, IOError):
+            app_version = "unknown"
+
+        system_info = (
+            f"**App version:** {app_version}\n"
+            f"**OS:** {platform.system()} {platform.release()}\n"
+            f"**Python:** {platform.python_version()}\n"
+        )
+        body = (
+            f"{system_info}\n"
+            "---\n\n"
+            "## Description\n"
+            "<!-- What happened? -->\n\n"
+            "## Steps to reproduce\n"
+            "<!-- How can we reproduce this? -->\n"
+        )
+        url = f"{GITHUB_NEW_ISSUE_URL}?body={url_quote(body)}"
+        webbrowser.open(url)
+
     def _setup_auto_save(self):
         """Setup auto-save when any preference changes."""
         for config in self.breaks:
@@ -1052,20 +1081,33 @@ class BreakApp:
             config.reset_timer()
 
         self.status.configure(text="Working", text_color=COLORS['accent_green'])
-        self.start_btn.configure(state="disabled")
-        self.pause_btn.configure(state="normal")
+        self.toggle_btn.configure(
+            text="Pause",
+            fg_color=COLORS['accent_orange'],
+            hover_color=COLORS['accent_orange_hover']
+        )
         self.stop_btn.configure(state="normal")
 
         threading.Thread(target=self.timer_loop, daemon=True).start()
 
     def toggle_pause(self):
+        if not self.running:
+            return
         if self.paused:
             self.paused = False
-            self.pause_btn.configure(text="Pause")
+            self.toggle_btn.configure(
+                text="Pause",
+                fg_color=COLORS['accent_orange'],
+                hover_color=COLORS['accent_orange_hover']
+            )
             self.status.configure(text="Working", text_color=COLORS['accent_green'])
         else:
             self.paused = True
-            self.pause_btn.configure(text="Resume")
+            self.toggle_btn.configure(
+                text="Resume",
+                fg_color=COLORS['accent_blue'],
+                hover_color=COLORS['accent_hover']
+            )
             self.status.configure(text="Paused", text_color=COLORS['accent_orange'])
 
     def stop(self):
@@ -1085,9 +1127,19 @@ class BreakApp:
             config.reset_timer()
 
         self.status.configure(text="Idle", text_color=COLORS['text_secondary'])
-        self.start_btn.configure(state="normal")
-        self.pause_btn.configure(state="disabled", text="Pause")
+        self.toggle_btn.configure(
+            text="Start",
+            fg_color=COLORS['accent_blue'],
+            hover_color=COLORS['accent_hover']
+        )
         self.stop_btn.configure(state="disabled")
+
+    def _handle_toggle(self):
+        """Unified Start/Pause toggle handler."""
+        if not self.running:
+            self.start()
+        else:
+            self.toggle_pause()
 
     def _toggle_all_panels(self):
         """Toggle all panels between collapsed and expanded state."""
@@ -1111,11 +1163,17 @@ class BreakApp:
             if self.paused or self.active_popup:
                 continue
 
+            fired_breaks = []
             for config in self.breaks:
                 config.remaining -= 1
                 if config.remaining <= 0:
-                    self.trigger_break(config)
+                    fired_breaks.append(config)
+
+            if fired_breaks:
+                longest = max(fired_breaks, key=lambda c: c.get_duration_seconds())
+                for config in fired_breaks:
                     config.reset_timer()
+                self.trigger_break(longest)
 
     def trigger_break(self, config):
         """Queue a break with the given configuration."""
