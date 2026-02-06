@@ -981,16 +981,9 @@ class BreakApp:
 
             self._timer_labels.append(timer_label)
 
-        # Bottom bar: shortcuts + feedback
+        # Bottom bar: feedback
         bottom_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
         bottom_frame.pack(fill="x", side="bottom")
-
-        ctk.CTkLabel(
-            bottom_frame,
-            text="Cmd+S Start / Pause  \u2022  Cmd+, Settings  \u2022  Cmd+. Stop",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper']),
-            text_color="gray50"
-        ).pack(side="left")
 
         ctk.CTkButton(
             bottom_frame,
