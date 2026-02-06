@@ -18,6 +18,18 @@ from pathlib import Path
 ctk.set_appearance_mode("system")  # Follow system dark/light mode
 ctk.set_default_color_theme("blue")  # macOS-style blue accent
 
+APP_NAME = "Don't Forget Your Breaks"
+
+# Set macOS menu bar app name (instead of "Python")
+if sys.platform == "darwin":
+    try:
+        from Foundation import NSBundle
+        bundle = NSBundle.mainBundle()
+        info = bundle.localizedInfoDictionary() or bundle.infoDictionary()
+        info['CFBundleName'] = APP_NAME
+    except ImportError:
+        pass
+
 # ------------------ CONFIGURATION ------------------
 
 TIME_UNITS = ["sec", "min", "hour"]
@@ -32,12 +44,13 @@ FONT_FAMILY = "SF Pro Display" if sys.platform == "darwin" else "Segoe UI"
 
 # Typography sizes
 FONT_SIZES = {
-    'title': 20,
-    'status': 16,
-    'label': 13,
-    'input': 14,
-    'timer': 14,
-    'helper': 11,
+    'title': 15,
+    'status': 13,
+    'label': 12,
+    'input': 13,
+    'timer': 13,
+    'helper': 10,
+    'control': 14,
 }
 
 # Colors (dark mode)
@@ -54,19 +67,19 @@ COLORS = {
 }
 
 # Spacing
-PADDING_WINDOW = 24
-PADDING_PANEL_X = 28
-PADDING_PANEL_Y = 24
-ROW_SPACING = 16
+PADDING_WINDOW = 16
+PADDING_PANEL_X = 16
+PADDING_PANEL_Y = 16
+ROW_SPACING = 10
 
 # Corner radii
-CORNER_RADIUS_PANEL = 16
-CORNER_RADIUS_BUTTON = 10
-CORNER_RADIUS_INPUT = 8
+CORNER_RADIUS_PANEL = 10
+CORNER_RADIUS_BUTTON = 8
+CORNER_RADIUS_INPUT = 6
 
 # Button dimensions
-BUTTON_HEIGHT_LARGE = 44   # Control buttons
-BUTTON_HEIGHT_SMALL = 32   # Test, play buttons
+BUTTON_HEIGHT_LARGE = 38   # Control buttons (Start/Stop/Pause)
+BUTTON_HEIGHT_SMALL = 28   # Test, play buttons
 BUTTON_MIN_WIDTH = 80      # Minimum touch target
 
 # Collapsible panel settings
@@ -818,9 +831,8 @@ class BreakConfigPanel(ctk.CTkFrame):
 class BreakApp:
     def __init__(self, root):
         self.root = root
-        root.title("Don't Forget Your Breaks")
-        root.minsize(560, 300)  # Minimum width to keep UI readable
-        root.resizable(True, True)
+        root.title(APP_NAME)
+        root.resizable(False, False)
 
         self.running = False
         self.paused = False
@@ -842,11 +854,19 @@ class BreakApp:
         # Load saved preferences or use defaults
         self.saved_prefs = self._load_preferences()
 
-        # Restore window geometry if saved
+        # Restore saved window position (size is derived from content after UI build)
+        self._saved_position = None
         if "window_geometry" in self.saved_prefs:
-            root.geometry(self.saved_prefs["window_geometry"])
-        else:
-            root.geometry("560x520")
+            saved = self.saved_prefs["window_geometry"]
+            if "+" in saved:
+                self._saved_position = "+" + saved.split("+", 1)[1]
+
+        # Always-on-top preference (default True)
+        self.always_on_top = ctk.BooleanVar(
+            value=self.saved_prefs.get("always_on_top", True)
+        )
+        self.always_on_top.trace_add('write', self._apply_always_on_top)
+        root.attributes('-topmost', self.always_on_top.get())
 
         # Create break configurations from saved or default values
         self.breaks = []
@@ -866,6 +886,7 @@ class BreakApp:
             ))
 
         self._build_ui()
+        self._fit_window_to_content()
         self._setup_auto_save()
 
         # Save window geometry on close
@@ -891,6 +912,20 @@ class BreakApp:
         )
         self.status.pack(side="left")
 
+        # Settings button (gear icon, top-right)
+        self.settings_btn = ctk.CTkButton(
+            status_frame,
+            text="\u2699",
+            command=self._open_settings,
+            width=28, height=28,
+            corner_radius=CORNER_RADIUS_INPUT,
+            fg_color="transparent",
+            hover_color=COLORS['bg_hover'],
+            text_color=COLORS['text_secondary'],
+            font=ctk.CTkFont(size=15)
+        )
+        self.settings_btn.pack(side="right", padx=(6, 0))
+
         self.next_break_label = ctk.CTkLabel(
             status_frame, text="",
             font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['timer'], weight="bold"),
@@ -909,9 +944,9 @@ class BreakApp:
             corner_radius=CORNER_RADIUS_BUTTON,
             fg_color=COLORS['accent_blue'],
             hover_color=COLORS['accent_hover'],
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input'], weight="bold")
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['control'], weight="bold")
         )
-        self.toggle_btn.pack(side="left", padx=(0, 6), expand=True, fill="x")
+        self.toggle_btn.pack(side="left", padx=(0, 4), expand=True, fill="x")
 
         # Stop button (secondary - transparent with border)
         self.stop_btn = ctk.CTkButton(
@@ -922,45 +957,37 @@ class BreakApp:
             border_width=1,
             border_color=COLORS['border'],
             hover_color=COLORS['bg_panel'],
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input']),
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['control']),
             state="disabled"
         )
-        self.stop_btn.pack(side="left", padx=(6, 0), expand=True, fill="x")
+        self.stop_btn.pack(side="left", padx=(4, 0), expand=True, fill="x")
 
-        # Collapse/Expand all toggle
-        toggle_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        toggle_frame.pack(fill="x", pady=(ROW_SPACING, 4))
-
-        self._all_collapsed = False
-        self.toggle_all_btn = ctk.CTkButton(
-            toggle_frame,
-            text="▼ Collapse",
-            command=self._toggle_all_panels,
-            width=85,
-            height=24,
-            corner_radius=6,
-            fg_color="transparent",
-            hover_color=COLORS['bg_hover'],
-            text_color=COLORS['text_secondary'],
-            anchor="e",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=11)
-        )
-        self.toggle_all_btn.pack(side="right")
-
-        # Break configuration panels
-        self.panels = []
+        # Compact timer display cards
+        self._timer_labels = []
         for config in self.breaks:
-            panel = BreakConfigPanel(main_frame, config, self.test_break)
-            panel.pack(fill="x", pady=(0, ROW_SPACING))
-            self.panels.append(panel)
+            card = ctk.CTkFrame(main_frame, corner_radius=CORNER_RADIUS_PANEL, fg_color=COLORS['bg_panel'])
+            card.pack(fill="x", pady=(0, 6))
+
+            ctk.CTkLabel(
+                card, text=config.name.get(),
+                font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+            ).pack(side="left", padx=(PADDING_PANEL_X, 0), pady=8)
+
+            timer_label = ctk.CTkLabel(
+                card, text="--:--",
+                font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['timer'], weight="bold")
+            )
+            timer_label.pack(side="right", padx=(0, PADDING_PANEL_X), pady=8)
+
+            self._timer_labels.append(timer_label)
 
         # Bottom bar: shortcuts + feedback
         bottom_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        bottom_frame.pack(fill="x", pady=(PADDING_WINDOW, 0))
+        bottom_frame.pack(fill="x", side="bottom")
 
         ctk.CTkLabel(
             bottom_frame,
-            text="Cmd+S Start / Pause  \u2022  Cmd+. Stop",
+            text="Cmd+S Start / Pause  \u2022  Cmd+, Settings  \u2022  Cmd+. Stop",
             font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper']),
             text_color="gray50"
         ).pack(side="left")
@@ -980,10 +1007,21 @@ class BreakApp:
 
         # Bind keyboard shortcuts
         self.root.bind('<Command-s>', lambda e: self._handle_toggle())
+        self.root.bind('<Command-comma>', lambda e: self._open_settings())
         self.root.bind('<Command-period>', lambda e: self.stop() if self.running else None)
 
         # Start UI update loop
         self.update_ui()
+
+    def _fit_window_to_content(self):
+        """Size the window to fit its content, then lock the size."""
+        self.root.update_idletasks()
+        w = self.root.winfo_reqwidth()
+        h = self.root.winfo_reqheight()
+        if self._saved_position:
+            self.root.geometry(f"{w}x{h}{self._saved_position}")
+        else:
+            self.root.geometry(f"{w}x{h}")
 
     # ------------------ PREFERENCES ------------------
 
@@ -999,7 +1037,7 @@ class BreakApp:
 
     def _save_preferences(self, *args, include_geometry=False):
         """Save current preferences to config file."""
-        prefs = {"breaks": []}
+        prefs = {"breaks": [], "always_on_top": self.always_on_top.get()}
         for config in self.breaks:
             prefs["breaks"].append({
                 "name": config.name.get(),
@@ -1134,6 +1172,11 @@ class BreakApp:
         )
         self.stop_btn.configure(state="disabled")
 
+    def _apply_always_on_top(self, *args):
+        """Apply the always-on-top setting and save preferences."""
+        self.root.attributes('-topmost', self.always_on_top.get())
+        self._save_preferences()
+
     def _handle_toggle(self):
         """Unified Start/Pause toggle handler."""
         if not self.running:
@@ -1141,18 +1184,57 @@ class BreakApp:
         else:
             self.toggle_pause()
 
-    def _toggle_all_panels(self):
-        """Toggle all panels between collapsed and expanded state."""
-        if self._all_collapsed:
-            for panel in self.panels:
-                panel.expand()
-            self._all_collapsed = False
-            self.toggle_all_btn.configure(text="▼ Collapse")
-        else:
-            for panel in self.panels:
-                panel.collapse()
-            self._all_collapsed = True
-            self.toggle_all_btn.configure(text="▲ Expand")
+    def _open_settings(self):
+        """Open the settings window, or bring it to front if already open."""
+        if hasattr(self, '_settings_window') and self._settings_window and self._settings_window.winfo_exists():
+            self._settings_window.lift()
+            self._settings_window.focus_force()
+            return
+
+        self._settings_window = ctk.CTkToplevel(self.root)
+        self._settings_window.title("Break Settings")
+        self._settings_window.geometry("600x480")
+        self._settings_window.resizable(False, True)
+        self._settings_window.attributes('-topmost', False)
+
+        # Position centered on main window
+        self._settings_window.update_idletasks()
+        main_x = self.root.winfo_x()
+        main_y = self.root.winfo_y()
+        main_w = self.root.winfo_width()
+        settings_w = 600
+        x = main_x + (main_w - settings_w) // 2
+        y = main_y - 80
+        self._settings_window.geometry(f"+{x}+{y}")
+
+        def on_settings_close():
+            self._settings_panels = []
+            self._settings_window.destroy()
+            self._settings_window = None
+
+        self._settings_window.protocol("WM_DELETE_WINDOW", on_settings_close)
+        self._settings_window.bind('<Escape>', lambda e: on_settings_close())
+
+        # Container
+        container = ctk.CTkFrame(self._settings_window, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=PADDING_WINDOW, pady=PADDING_WINDOW)
+
+        # Reuse existing BreakConfigPanel class
+        self._settings_panels = []
+        for config in self.breaks:
+            panel = BreakConfigPanel(container, config, self.test_break)
+            panel.pack(fill="x", pady=(0, ROW_SPACING))
+            self._settings_panels.append(panel)
+
+        # General settings
+        general_frame = ctk.CTkFrame(container, corner_radius=CORNER_RADIUS_PANEL, fg_color=COLORS['bg_panel'])
+        general_frame.pack(fill="x", pady=(ROW_SPACING, 0))
+
+        ctk.CTkCheckBox(
+            general_frame, text="Always on top",
+            variable=self.always_on_top,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+        ).pack(padx=PADDING_PANEL_X, pady=PADDING_PANEL_Y, anchor="w")
 
     # ------------------ TIMER ------------------
 
@@ -1255,11 +1337,14 @@ class BreakApp:
 
         for i, config in enumerate(self.breaks):
             time_text = self._format_time(config.remaining)
-            if config.timer_label:
-                config.timer_label.configure(text=time_text)
-            # Also update header timer (for collapsed state)
-            if i < len(self.panels):
-                self.panels[i].update_header_timer(time_text)
+            if i < len(self._timer_labels):
+                self._timer_labels[i].configure(text=time_text)
+            # Update settings panel header timer if settings window is open
+            if hasattr(self, '_settings_panels') and i < len(self._settings_panels):
+                try:
+                    self._settings_panels[i].update_header_timer(time_text)
+                except Exception:
+                    pass
 
             if self.running and not self.paused and config.remaining < min_remaining:
                 min_remaining = config.remaining
@@ -1344,8 +1429,6 @@ def activate_window(root):
     root.deiconify()
     root.lift()
     root.focus_force()
-    root.attributes('-topmost', True)
-    root.after(100, lambda: root.attributes('-topmost', False))
 
 
 if __name__ == "__main__":
