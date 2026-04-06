@@ -1112,6 +1112,14 @@ class BreakApp:
             font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper'])
         ).pack(side="right")
 
+        # Version label
+        ctk.CTkLabel(
+            bottom_frame,
+            text=f"v{get_current_version()}",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper']),
+            text_color="gray40"
+        ).pack(side="right", padx=(0, 4))
+
         # Bind keyboard shortcuts
         self.root.bind('<Command-s>', lambda e: self._handle_toggle())
         self.root.bind('<Command-comma>', lambda e: self._open_settings())
