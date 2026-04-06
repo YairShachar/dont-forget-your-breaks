@@ -11,7 +11,14 @@ import atexit
 import webbrowser
 import platform
 from urllib.parse import quote as url_quote
+import logging
 from pathlib import Path
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler()]
+)
 
 # ------------------ CUSTOMTKINTER SETUP ------------------
 
@@ -1192,14 +1199,18 @@ class BreakApp:
     def _should_check_for_updates(self):
         """Return True if enough time has passed since the last update check."""
         if not self.check_for_updates.get():
+            logging.debug("Update check disabled by user preference")
             return False
         last_check = self.saved_prefs.get("last_update_check", 0)
         hours_since = (time.time() - last_check) / 3600
-        return hours_since >= UPDATE_CHECK_INTERVAL_HOURS
+        should_check = hours_since >= UPDATE_CHECK_INTERVAL_HOURS
+        logging.debug(f"Update check: last={last_check}, hours_since={hours_since:.1f}, should_check={should_check}")
+        return should_check
 
     def _schedule_update_check(self):
         """Start a background update check if due."""
         if self._should_check_for_updates():
+            logging.debug("Starting background update check thread")
             thread = threading.Thread(target=self._check_for_updates_bg, daemon=True)
             thread.start()
         # Re-check eligibility every hour for long-running sessions
@@ -1210,16 +1221,19 @@ class BreakApp:
         try:
             result = fetch_latest_version()
             current_version = get_current_version()
+            logging.debug(f"Update check: current={current_version}, latest={result}")
             # Update last check timestamp regardless of result
             self.saved_prefs["last_update_check"] = time.time()
             self.root.after(0, lambda: self._save_preferences())
             if result:
                 latest_version, release_url = result
-                if is_newer_version(latest_version, current_version):
+                newer = is_newer_version(latest_version, current_version)
+                logging.debug(f"Is newer: {newer} ({latest_version} > {current_version})")
+                if newer:
                     self.available_update = (latest_version, release_url)
                     self.root.after(0, lambda: self._show_update_banner(latest_version))
         except Exception as e:
-            print(f"Update check failed: {e}")
+            logging.error(f"Update check failed: {e}", exc_info=True)
 
     def _show_update_banner(self, version):
         """Show the update available label in the main UI."""
