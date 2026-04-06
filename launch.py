@@ -10,6 +10,7 @@ import os
 import atexit
 import webbrowser
 import platform
+import urllib.request
 from urllib.parse import quote as url_quote
 from pathlib import Path
 
@@ -65,6 +66,11 @@ CONFIG_FILE = Path.home() / "Library" / "Preferences" / "com.yairs.dontforgetyou
 LOCK_FILE = Path.home() / "Library" / "Application Support" / "DontForgetYourBreaks" / ".lock"
 VERSION_FILE = Path(__file__).parent / "VERSION"
 GITHUB_NEW_ISSUE_URL = "https://github.com/YairShachar/dont-forget-your-breaks/issues/new"
+GITHUB_REPO = "YairShachar/dont-forget-your-breaks"
+GITHUB_RELEASES_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+GITHUB_RELEASES_PAGE_URL = f"https://github.com/{GITHUB_REPO}/releases/latest"
+UPDATE_CHECK_INTERVAL_HOURS = 24
+HOMEBREW_CASK_NAME = "dont-forget-your-breaks"
 
 # Design constants
 FONT_FAMILY = "SF Pro Display" if sys.platform == "darwin" else "Segoe UI"
@@ -155,6 +161,57 @@ def looping_sound(stop_event, sound_name):
     while not stop_event.is_set():
         play_sound(sound_name)
         time.sleep(SOUND_LOOP_INTERVAL)
+
+
+# ------------------ UPDATE CHECKER ------------------
+
+def get_current_version():
+    """Read the current app version from VERSION file."""
+    try:
+        return VERSION_FILE.read_text().strip()
+    except (FileNotFoundError, IOError):
+        return "0.0.0"
+
+
+def parse_version(version_str):
+    """Parse a version string like '1.0.3' into a tuple of ints for comparison."""
+    try:
+        return tuple(int(x) for x in version_str.lstrip('v').split('.'))
+    except (ValueError, AttributeError):
+        return (0, 0, 0)
+
+
+def fetch_latest_version():
+    """Query GitHub releases API for the latest version. Returns (version, url) or None."""
+    try:
+        req = urllib.request.Request(
+            GITHUB_RELEASES_API_URL,
+            headers={"Accept": "application/vnd.github.v3+json", "User-Agent": "DontForgetYourBreaks"}
+        )
+        with urllib.request.urlopen(req, timeout=10) as response:
+            data = json.loads(response.read().decode())
+            tag = data.get("tag_name", "")
+            html_url = data.get("html_url", GITHUB_RELEASES_PAGE_URL)
+            return tag.lstrip('v'), html_url
+    except Exception:
+        return None
+
+
+def is_newer_version(latest, current):
+    """Return True if latest version is newer than current."""
+    return parse_version(latest) > parse_version(current)
+
+
+def is_installed_via_homebrew():
+    """Check if the app was installed via Homebrew cask."""
+    try:
+        result = subprocess.run(
+            ["brew", "list", "--cask", HOMEBREW_CASK_NAME],
+            capture_output=True, timeout=10
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
 
 
 # ------------------ ANIMATION HELPERS ------------------
@@ -903,6 +960,12 @@ class BreakApp:
         self.always_on_top.trace_add('write', self._apply_always_on_top)
         root.attributes('-topmost', self.always_on_top.get())
 
+        # Update check preference (default True)
+        self.check_for_updates = ctk.BooleanVar(
+            value=self.saved_prefs.get("check_for_updates", True)
+        )
+        self.available_update = None  # (version, url) when update found
+
         # Create break configurations from saved or default values
         self.breaks = []
         for i, default in enumerate(self.default_breaks):
@@ -923,6 +986,7 @@ class BreakApp:
         self._build_ui()
         self._fit_window_to_content()
         self._setup_auto_save()
+        self._schedule_update_check()
 
         # Save window geometry on close
         root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -1016,9 +1080,23 @@ class BreakApp:
 
             self._timer_labels.append(timer_label)
 
-        # Bottom bar: feedback
+        # Bottom bar: feedback + update banner
         bottom_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
         bottom_frame.pack(fill="x", side="bottom")
+
+        self.update_label = ctk.CTkButton(
+            bottom_frame,
+            text="",
+            command=self._handle_update,
+            width=0,
+            height=22,
+            corner_radius=6,
+            fg_color="transparent",
+            hover_color=COLORS['bg_hover'],
+            text_color=COLORS['accent_green'],
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper'])
+        )
+        # Hidden by default, shown when update is available
 
         ctk.CTkButton(
             bottom_frame,
@@ -1065,7 +1143,12 @@ class BreakApp:
 
     def _save_preferences(self, *args, include_geometry=False):
         """Save current preferences to config file."""
-        prefs = {"breaks": [], "always_on_top": self.always_on_top.get()}
+        prefs = {
+            "breaks": [],
+            "always_on_top": self.always_on_top.get(),
+            "check_for_updates": self.check_for_updates.get(),
+            "last_update_check": self.saved_prefs.get("last_update_check", 0),
+        }
         for config in self.breaks:
             prefs["breaks"].append({
                 "name": config.name.get(),
@@ -1093,6 +1176,70 @@ class BreakApp:
         """Handle window close."""
         self._save_preferences(include_geometry=True)
         self.root.destroy()
+
+    # ------------------ UPDATE CHECKER ------------------
+
+    def _should_check_for_updates(self):
+        """Return True if enough time has passed since the last update check."""
+        if not self.check_for_updates.get():
+            return False
+        last_check = self.saved_prefs.get("last_update_check", 0)
+        hours_since = (time.time() - last_check) / 3600
+        return hours_since >= UPDATE_CHECK_INTERVAL_HOURS
+
+    def _schedule_update_check(self):
+        """Start a background update check if due."""
+        if self._should_check_for_updates():
+            thread = threading.Thread(target=self._check_for_updates_bg, daemon=True)
+            thread.start()
+        # Re-check eligibility every hour for long-running sessions
+        self.root.after(3600 * 1000, self._schedule_update_check)
+
+    def _check_for_updates_bg(self):
+        """Background thread: fetch latest version and notify UI."""
+        result = fetch_latest_version()
+        if result:
+            latest_version, release_url = result
+            current_version = get_current_version()
+            # Update last check timestamp regardless of result
+            self.saved_prefs["last_update_check"] = time.time()
+            self.root.after(0, lambda: self._save_preferences())
+            if is_newer_version(latest_version, current_version):
+                self.available_update = (latest_version, release_url)
+                self.root.after(0, lambda: self._show_update_banner(latest_version))
+
+    def _show_update_banner(self, version):
+        """Show the update available label in the main UI."""
+        self.update_label.configure(text=f"v{version} available — Update")
+        self.update_label.pack(side="left")
+        self._fit_window_to_content()
+
+    def _handle_update(self):
+        """Handle click on the update banner."""
+        if not self.available_update:
+            return
+        version, release_url = self.available_update
+
+        if is_installed_via_homebrew():
+            self._update_via_homebrew()
+        else:
+            webbrowser.open(release_url)
+
+    def _update_via_homebrew(self):
+        """Launch Homebrew upgrade in the default terminal."""
+        upgrade_cmd = f"brew upgrade --cask {HOMEBREW_CASK_NAME}"
+        if sys.platform == "darwin":
+            # Open Terminal.app with the upgrade command
+            script = (
+                f'tell application "Terminal"\n'
+                f'    activate\n'
+                f'    do script "{upgrade_cmd}"\n'
+                f'end tell'
+            )
+            subprocess.Popen(["osascript", "-e", script])
+        else:
+            # Fallback: just open the releases page
+            webbrowser.open(self.available_update[1])
 
     def _on_main_focus(self, event=None):
         """When main window is focused, bring popup to user if active."""
@@ -1266,7 +1413,13 @@ class BreakApp:
             general_frame, text="Always on top",
             variable=self.always_on_top,
             font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
-        ).pack(padx=PADDING_PANEL_X, pady=PADDING_PANEL_Y, anchor="w")
+        ).pack(padx=PADDING_PANEL_X, pady=(PADDING_PANEL_Y, 4), anchor="w")
+
+        ctk.CTkCheckBox(
+            general_frame, text="Check for updates automatically",
+            variable=self.check_for_updates,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+        ).pack(padx=PADDING_PANEL_X, pady=(4, PADDING_PANEL_Y), anchor="w")
 
     # ------------------ TIMER ------------------
 
