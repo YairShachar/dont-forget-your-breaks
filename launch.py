@@ -64,7 +64,8 @@ TIME_UNITS = ["sec", "min", "hour"]
 SOUND_LOOP_INTERVAL = 1.2
 CONFIG_FILE = Path.home() / "Library" / "Preferences" / "com.yairs.dontforgetyourbreaks.json"
 LOCK_FILE = Path.home() / "Library" / "Application Support" / "DontForgetYourBreaks" / ".lock"
-VERSION_FILE = Path(__file__).parent / "VERSION"
+BASE_DIR = Path(getattr(sys, '_MEIPASS', Path(__file__).parent))
+VERSION_FILE = BASE_DIR / "VERSION"
 GITHUB_NEW_ISSUE_URL = "https://github.com/YairShachar/dont-forget-your-breaks/issues/new"
 GITHUB_REPO = "YairShachar/dont-forget-your-breaks"
 GITHUB_RELEASES_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
@@ -1212,7 +1213,10 @@ class BreakApp:
         """Show the update available label in the main UI."""
         self.update_label.configure(text=f"v{version} available — Update")
         self.update_label.pack(side="left")
+        # Temporarily allow resize so the window can adjust to fit the new label
+        self.root.resizable(True, True)
         self._fit_window_to_content()
+        self.root.resizable(False, False)
 
     def _handle_update(self):
         """Handle click on the update banner."""
