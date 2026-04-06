@@ -10,7 +10,6 @@ import os
 import atexit
 import webbrowser
 import platform
-import urllib.request
 from urllib.parse import quote as url_quote
 from pathlib import Path
 
@@ -185,15 +184,17 @@ def parse_version(version_str):
 def fetch_latest_version():
     """Query GitHub releases API for the latest version. Returns (version, url) or None."""
     try:
-        req = urllib.request.Request(
-            GITHUB_RELEASES_API_URL,
-            headers={"Accept": "application/vnd.github.v3+json", "User-Agent": "DontForgetYourBreaks"}
+        result = subprocess.run(
+            ["curl", "-s", "-H", "Accept: application/vnd.github.v3+json",
+             "--max-time", "10", GITHUB_RELEASES_API_URL],
+            capture_output=True, text=True, timeout=15
         )
-        with urllib.request.urlopen(req, timeout=10) as response:
-            data = json.loads(response.read().decode())
-            tag = data.get("tag_name", "")
-            html_url = data.get("html_url", GITHUB_RELEASES_PAGE_URL)
-            return tag.lstrip('v'), html_url
+        if result.returncode != 0:
+            return None
+        data = json.loads(result.stdout)
+        tag = data.get("tag_name", "")
+        html_url = data.get("html_url", GITHUB_RELEASES_PAGE_URL)
+        return tag.lstrip('v'), html_url
     except Exception:
         return None
 
@@ -1206,16 +1207,19 @@ class BreakApp:
 
     def _check_for_updates_bg(self):
         """Background thread: fetch latest version and notify UI."""
-        result = fetch_latest_version()
-        if result:
-            latest_version, release_url = result
+        try:
+            result = fetch_latest_version()
             current_version = get_current_version()
             # Update last check timestamp regardless of result
             self.saved_prefs["last_update_check"] = time.time()
             self.root.after(0, lambda: self._save_preferences())
-            if is_newer_version(latest_version, current_version):
-                self.available_update = (latest_version, release_url)
-                self.root.after(0, lambda: self._show_update_banner(latest_version))
+            if result:
+                latest_version, release_url = result
+                if is_newer_version(latest_version, current_version):
+                    self.available_update = (latest_version, release_url)
+                    self.root.after(0, lambda: self._show_update_banner(latest_version))
+        except Exception as e:
+            print(f"Update check failed: {e}")
 
     def _show_update_banner(self, version):
         """Show the update available label in the main UI."""
