@@ -13,6 +13,7 @@ import platform
 from urllib.parse import quote as url_quote
 import logging
 from pathlib import Path
+from dfyb.version import parse_version, is_newer_version
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -180,13 +181,6 @@ def get_current_version():
         return "0.0.0"
 
 
-def parse_version(version_str):
-    """Parse a version string like '1.0.3' into a tuple of ints for comparison."""
-    try:
-        return tuple(int(x) for x in version_str.lstrip('v').split('.'))
-    except (ValueError, AttributeError):
-        return (0, 0, 0)
-
 
 def fetch_latest_version():
     """Query GitHub releases API for the latest version. Returns (version, url) or None."""
@@ -205,10 +199,6 @@ def fetch_latest_version():
     except Exception:
         return None
 
-
-def is_newer_version(latest, current):
-    """Return True if latest version is newer than current."""
-    return parse_version(latest) > parse_version(current)
 
 
 def is_installed_via_homebrew():
