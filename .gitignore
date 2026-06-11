@@ -30,4 +30,6 @@ env/
 
 # Local configuration
 .claude/
+CLAUDE.md
+CLAUDE.local.md
 DontForgetYourBreaks.app/
