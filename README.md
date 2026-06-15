@@ -24,6 +24,7 @@ A cross-platform desktop application that reminds you to take regular breaks dur
 
 - Python 3.x
 - Tkinter (included with Python on most systems)
+- [`customtkinter`](https://customtkinter.tomschimansky.com/) — installed via `requirements.txt`
 
 ### Platform Support
 
@@ -39,7 +40,12 @@ A cross-platform desktop application that reminds you to take regular breaks dur
    cd dont-forget-your-breaks
    ```
 
-2. Run the application:
+2. Install dependencies (includes `customtkinter`):
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. Run the application:
    ```bash
    python launch.py
    ```

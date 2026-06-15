@@ -13,6 +13,8 @@ import platform
 from urllib.parse import quote as url_quote
 import logging
 from pathlib import Path
+from dfyb.version import parse_version, is_newer_version
+from dfyb.breaks.duration import to_seconds
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -180,13 +182,6 @@ def get_current_version():
         return "0.0.0"
 
 
-def parse_version(version_str):
-    """Parse a version string like '1.0.3' into a tuple of ints for comparison."""
-    try:
-        return tuple(int(x) for x in version_str.lstrip('v').split('.'))
-    except (ValueError, AttributeError):
-        return (0, 0, 0)
-
 
 def fetch_latest_version():
     """Query GitHub releases API for the latest version. Returns (version, url) or None."""
@@ -205,10 +200,6 @@ def fetch_latest_version():
     except Exception:
         return None
 
-
-def is_newer_version(latest, current):
-    """Return True if latest version is newer than current."""
-    return parse_version(latest) > parse_version(current)
 
 
 def is_installed_via_homebrew():
@@ -279,25 +270,11 @@ class BreakConfig:
 
     def get_interval_seconds(self):
         """Convert interval to seconds."""
-        val = self._safe_int(self.interval_value)
-        unit = self.interval_unit.get()
-        if unit == "sec":
-            return val
-        elif unit == "min":
-            return val * 60
-        else:  # hour
-            return val * 3600
+        return to_seconds(self._safe_int(self.interval_value), self.interval_unit.get())
 
     def get_duration_seconds(self):
         """Convert duration to seconds."""
-        val = self._safe_int(self.duration_value)
-        unit = self.duration_unit.get()
-        if unit == "sec":
-            return val
-        elif unit == "min":
-            return val * 60
-        else:  # hour
-            return val * 3600
+        return to_seconds(self._safe_int(self.duration_value), self.duration_unit.get())
 
     def reset_timer(self):
         """Reset remaining time to interval."""
