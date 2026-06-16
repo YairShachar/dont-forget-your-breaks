@@ -15,6 +15,15 @@ import logging
 from pathlib import Path
 from dfyb.version import parse_version, is_newer_version
 from dfyb.breaks.duration import to_seconds
+from dfyb.sound import play_sound, looping_sound, SOUNDS
+from dfyb.updater import (
+    get_current_version,
+    fetch_latest_version,
+    is_installed_via_homebrew,
+    VERSION_FILE,
+    HOMEBREW_CASK_NAME,
+)
+from dfyb.animation import ease_out_quad, prefers_reduced_motion
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -69,17 +78,10 @@ if sys.platform == "darwin":
 # ------------------ CONFIGURATION ------------------
 
 TIME_UNITS = ["sec", "min", "hour"]
-SOUND_LOOP_INTERVAL = 1.2
 CONFIG_FILE = Path.home() / "Library" / "Preferences" / "com.yairs.dontforgetyourbreaks.json"
 LOCK_FILE = Path.home() / "Library" / "Application Support" / "DontForgetYourBreaks" / ".lock"
-BASE_DIR = Path(getattr(sys, '_MEIPASS', Path(__file__).parent))
-VERSION_FILE = BASE_DIR / "VERSION"
 GITHUB_NEW_ISSUE_URL = "https://github.com/YairShachar/dont-forget-your-breaks/issues/new"
-GITHUB_REPO = "YairShachar/dont-forget-your-breaks"
-GITHUB_RELEASES_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-GITHUB_RELEASES_PAGE_URL = f"https://github.com/{GITHUB_REPO}/releases/latest"
 UPDATE_CHECK_INTERVAL_HOURS = 24
-HOMEBREW_CASK_NAME = "dont-forget-your-breaks"
 
 # Design constants
 FONT_FAMILY = "SF Pro Display" if sys.platform == "darwin" else "Segoe UI"
@@ -131,113 +133,6 @@ PANEL_COLLAPSED_HEIGHT = 48      # Height of collapsed panel header
 ANIMATION_FRAME_INTERVAL = 16      # ms (60fps)
 ANIMATION_EXPAND_DURATION = 250    # ms
 ANIMATION_COLLAPSE_DURATION = 200  # ms
-
-# Sound options including "None"
-SOUNDS = {
-    "None": None,
-    "Glass": "Glass.aiff",
-    "Ping": "Ping.aiff",
-    "Pop": "Pop.aiff",
-    "Submarine": "Submarine.aiff"
-}
-
-
-# ------------------ SOUND FUNCTIONS ------------------
-
-def play_sound_mac(sound_name):
-    sound_file = SOUNDS.get(sound_name)
-    if sound_file:
-        subprocess.Popen(
-            ["afplay", f"/System/Library/Sounds/{sound_file}"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-
-
-def play_sound(sound_name="Glass"):
-    if sound_name == "None" or sound_name is None:
-        return
-    if sys.platform == "darwin":
-        play_sound_mac(sound_name)
-    elif sys.platform == "win32":
-        import winsound
-        winsound.MessageBeep()
-    else:
-        print("\a")
-
-
-def looping_sound(stop_event, sound_name):
-    while not stop_event.is_set():
-        play_sound(sound_name)
-        time.sleep(SOUND_LOOP_INTERVAL)
-
-
-# ------------------ UPDATE CHECKER ------------------
-
-def get_current_version():
-    """Read the current app version from VERSION file."""
-    try:
-        return VERSION_FILE.read_text().strip()
-    except (FileNotFoundError, IOError):
-        return "0.0.0"
-
-
-
-def fetch_latest_version():
-    """Query GitHub releases API for the latest version. Returns (version, url) or None."""
-    try:
-        result = subprocess.run(
-            ["curl", "-s", "-H", "Accept: application/vnd.github.v3+json",
-             "--max-time", "10", GITHUB_RELEASES_API_URL],
-            capture_output=True, text=True, timeout=15
-        )
-        if result.returncode != 0:
-            return None
-        data = json.loads(result.stdout)
-        tag = data.get("tag_name", "")
-        html_url = data.get("html_url", GITHUB_RELEASES_PAGE_URL)
-        return tag.lstrip('v'), html_url
-    except Exception:
-        return None
-
-
-
-def is_installed_via_homebrew():
-    """Check if the app was installed via Homebrew cask."""
-    try:
-        result = subprocess.run(
-            ["brew", "list", "--cask", HOMEBREW_CASK_NAME],
-            capture_output=True, timeout=10
-        )
-        return result.returncode == 0
-    except Exception:
-        return False
-
-
-# ------------------ ANIMATION HELPERS ------------------
-
-def ease_out_quad(t):
-    """Quadratic ease-out: fast start, slow end."""
-    return t * (2 - t)
-
-
-def ease_in_quad(t):
-    """Quadratic ease-in: slow start, fast end."""
-    return t * t
-
-
-def prefers_reduced_motion():
-    """Check if user has enabled reduced motion (macOS)."""
-    if sys.platform != "darwin":
-        return False
-    try:
-        result = subprocess.run(
-            ["defaults", "read", "-g", "AppleReduceMotion"],
-            capture_output=True, text=True
-        )
-        return result.stdout.strip() == "1"
-    except Exception:
-        return False
 
 
 # ------------------ BREAK CONFIG ------------------
