@@ -83,3 +83,11 @@ def test_step_thresholds_are_parameterizable():
     # idle 10 with away_threshold 5 -> defer; natural_threshold high so not natural
     r = step(states, ctx(idle=10), natural_threshold=300, away_threshold=5)
     assert r.defer_reason == "away"
+
+
+def test_step_empty_states_is_safe():
+    # No breaks configured (startup race / all breaks removed) must not crash.
+    r = step([], ctx(idle=0))
+    assert r.new_remaining == []
+    assert r.natural_break is False
+    assert r.fire_index is None and r.defer_reason is None

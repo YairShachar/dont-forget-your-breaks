@@ -27,7 +27,7 @@ class BreakState:
 @dataclass(frozen=True)
 class StepResult:
     """What the loop should do this tick."""
-    new_remaining: list             # updated `remaining` per break (write back to configs)
+    new_remaining: list[int]        # updated `remaining` per break (write back to configs)
     natural_break: bool = False
     fire_index: int | None = None   # which break to pop
     defer_reason: str | None = None  # "fullscreen" | "away"
