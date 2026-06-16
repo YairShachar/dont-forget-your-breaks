@@ -91,3 +91,10 @@ def test_step_empty_states_is_safe():
     assert r.new_remaining == []
     assert r.natural_break is False
     assert r.fire_index is None and r.defer_reason is None
+
+
+def test_step_defer_prefers_fullscreen_over_away():
+    # When both fullscreen AND away apply, fullscreen wins the defer reason.
+    states = [BreakState(remaining=1, interval_seconds=100, duration_seconds=5)]
+    r = step(states, ctx(idle=120, fullscreen=True))
+    assert r.defer_reason == "fullscreen"
