@@ -1,2 +1,5 @@
 # Runtime dependencies
 customtkinter==5.2.2
+# macOS-only: idle/fullscreen sensors. The env marker keeps Linux CI from trying
+# to install it (pyobjc wheels are macOS-only).
+pyobjc-framework-Quartz; sys_platform == "darwin"
