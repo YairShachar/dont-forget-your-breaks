@@ -23,7 +23,7 @@ from dfyb.updater import (
     VERSION_FILE,
     HOMEBREW_CASK_NAME,
 )
-from dfyb.animation import ease_out_quad, ease_in_quad, prefers_reduced_motion
+from dfyb.animation import ease_out_quad, prefers_reduced_motion
 
 logging.basicConfig(
     level=logging.DEBUG,
