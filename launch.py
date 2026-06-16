@@ -15,6 +15,7 @@ import logging
 from pathlib import Path
 from dfyb.version import parse_version, is_newer_version
 from dfyb.breaks.duration import to_seconds
+from dfyb.sound import play_sound, looping_sound, SOUNDS
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -69,7 +70,6 @@ if sys.platform == "darwin":
 # ------------------ CONFIGURATION ------------------
 
 TIME_UNITS = ["sec", "min", "hour"]
-SOUND_LOOP_INTERVAL = 1.2
 CONFIG_FILE = Path.home() / "Library" / "Preferences" / "com.yairs.dontforgetyourbreaks.json"
 LOCK_FILE = Path.home() / "Library" / "Application Support" / "DontForgetYourBreaks" / ".lock"
 BASE_DIR = Path(getattr(sys, '_MEIPASS', Path(__file__).parent))
@@ -131,45 +131,6 @@ PANEL_COLLAPSED_HEIGHT = 48      # Height of collapsed panel header
 ANIMATION_FRAME_INTERVAL = 16      # ms (60fps)
 ANIMATION_EXPAND_DURATION = 250    # ms
 ANIMATION_COLLAPSE_DURATION = 200  # ms
-
-# Sound options including "None"
-SOUNDS = {
-    "None": None,
-    "Glass": "Glass.aiff",
-    "Ping": "Ping.aiff",
-    "Pop": "Pop.aiff",
-    "Submarine": "Submarine.aiff"
-}
-
-
-# ------------------ SOUND FUNCTIONS ------------------
-
-def play_sound_mac(sound_name):
-    sound_file = SOUNDS.get(sound_name)
-    if sound_file:
-        subprocess.Popen(
-            ["afplay", f"/System/Library/Sounds/{sound_file}"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-
-
-def play_sound(sound_name="Glass"):
-    if sound_name == "None" or sound_name is None:
-        return
-    if sys.platform == "darwin":
-        play_sound_mac(sound_name)
-    elif sys.platform == "win32":
-        import winsound
-        winsound.MessageBeep()
-    else:
-        print("\a")
-
-
-def looping_sound(stop_event, sound_name):
-    while not stop_event.is_set():
-        play_sound(sound_name)
-        time.sleep(SOUND_LOOP_INTERVAL)
 
 
 # ------------------ UPDATE CHECKER ------------------
