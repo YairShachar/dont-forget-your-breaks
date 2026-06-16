@@ -14,6 +14,8 @@ BREAK_TAKEN = "break_taken"
 BREAK_SKIPPED = "break_skipped"
 BREAK_SNOOZED = "break_snoozed"
 IDLE_DETECTED = "idle_detected"
+BREAK_DEFERRED = "break_deferred"
+NATURAL_BREAK = "natural_break"
 
 
 class EventLog:

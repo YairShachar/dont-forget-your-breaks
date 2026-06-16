@@ -47,3 +47,9 @@ def test_count_by_type(tmp_path):
     log.append(BREAK_SKIPPED)
     assert log.count(BREAK_TAKEN) == 2
     assert log.count() == 3
+
+
+def test_phase1_event_constants_exist():
+    from dfyb.activity.event_log import BREAK_DEFERRED, NATURAL_BREAK
+    assert BREAK_DEFERRED == "break_deferred"
+    assert NATURAL_BREAK == "natural_break"
