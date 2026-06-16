@@ -64,6 +64,16 @@ def test_fullscreen_false_for_small_window(monkeypatch):
     assert sensors.frontmost_is_fullscreen() is False
 
 
+def test_fullscreen_failure_returns_false(monkeypatch):
+    fake = _fake_quartz_windows([])
+    def boom(*a, **k):
+        raise RuntimeError("quartz boom")
+    fake.CGMainDisplayID = boom
+    monkeypatch.setitem(sys.modules, "Quartz", fake)
+    monkeypatch.setattr(sensors.sys, "platform", "darwin")
+    assert sensors.frontmost_is_fullscreen() is False
+
+
 def test_read_context_combines_sensors(monkeypatch):
     monkeypatch.setattr(sensors, "idle_seconds", lambda: 12.0)
     monkeypatch.setattr(sensors, "frontmost_is_fullscreen", lambda: True)
