@@ -28,6 +28,7 @@ from dfyb.activity.event_log import EventLog, BREAK_TAKEN
 from dfyb.activity.sensors import read_context
 from dfyb.scheduler.adapter import states_from_configs
 from dfyb.scheduler.tick import advance
+from dfyb.timer_lifecycle import timer_should_continue
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -820,6 +821,7 @@ class BreakApp:
         self.break_start_time = None
         self.event_log = EventLog(EVENTS_FILE)
         self._episode = None  # idle/deferred dedup marker for the smart-timing loop
+        self._timer_generation = 0  # bumped each start(); stale threads exit
 
         # Default break configurations
         self.default_breaks = [
@@ -1216,7 +1218,11 @@ class BreakApp:
         )
         self.reset_btn.configure(state="normal")
 
-        threading.Thread(target=self.timer_loop, daemon=True).start()
+        # New generation so any not-yet-exited thread from a prior session stops.
+        self._timer_generation += 1
+        threading.Thread(
+            target=self.timer_loop, args=(self._timer_generation,), daemon=True
+        ).start()
 
     def toggle_pause(self):
         if not self.running:
@@ -1333,9 +1339,21 @@ class BreakApp:
 
     # ------------------ TIMER ------------------
 
-    def timer_loop(self):
-        """Single timer loop managing all breaks (context-aware via the scheduler)."""
-        while self.running and not self.stop_event.is_set():
+    def _record_event(self, event_type, **data):
+        """Persist a break event to the log and surface it on the console."""
+        self.event_log.append(event_type, **data)
+        logging.info("event: %s %s", event_type, data)
+
+    def timer_loop(self, generation):
+        """Single timer loop managing all breaks (context-aware via the scheduler).
+
+        Only the thread owning the current generation keeps running; a thread
+        left over from a previous session exits as soon as start() bumps it.
+        """
+        while timer_should_continue(
+            self.running, self.stop_event.is_set(),
+            self._timer_generation, generation,
+        ):
             time.sleep(1)
             if self.paused or self.active_popup:
                 continue
@@ -1349,8 +1367,14 @@ class BreakApp:
                 for config, remaining in zip(self.breaks, new_remaining):
                     config.remaining = remaining
                 for event_type, data in events:
-                    self.event_log.append(event_type, **data)
+                    self._record_event(event_type, **data)
                 if fire_index is not None:
+                    logging.info(
+                        "break due, firing: %s (idle=%.0fs fullscreen=%s)",
+                        self.breaks[fire_index].name.get(),
+                        ctx.idle_seconds,
+                        ctx.is_fullscreen,
+                    )
                     self.trigger_break(self.breaks[fire_index])
             except Exception as e:
                 logging.error(f"timer_loop tick failed: {e}", exc_info=True)
@@ -1387,7 +1411,7 @@ class BreakApp:
             # Runs on the main thread. EventLog.append has no internal lock, but the
             # timer thread skips all event-log writes while self.active_popup is set
             # (cleared further down), so this call never interleaves with the loop's appends.
-            self.event_log.append(
+            self._record_event(
                 BREAK_TAKEN,
                 name=break_data['name'],
                 duration=break_data['duration'],
