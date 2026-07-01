@@ -1339,17 +1339,20 @@ class BreakApp:
             if self.paused or self.active_popup:
                 continue
 
-            ctx = read_context()
-            states = states_from_configs(self.breaks)
-            new_remaining, fire_index, events, self._episode = advance(
-                states, ctx, self._episode
-            )
-            for config, remaining in zip(self.breaks, new_remaining):
-                config.remaining = remaining
-            for event_type, data in events:
-                self.event_log.append(event_type, **data)
-            if fire_index is not None:
-                self.trigger_break(self.breaks[fire_index])
+            try:
+                ctx = read_context()
+                states = states_from_configs(self.breaks)
+                new_remaining, fire_index, events, self._episode = advance(
+                    states, ctx, self._episode
+                )
+                for config, remaining in zip(self.breaks, new_remaining):
+                    config.remaining = remaining
+                for event_type, data in events:
+                    self.event_log.append(event_type, **data)
+                if fire_index is not None:
+                    self.trigger_break(self.breaks[fire_index])
+            except Exception as e:
+                logging.error(f"timer_loop tick failed: {e}", exc_info=True)
 
     def trigger_break(self, config):
         """Queue a break with the given configuration."""
