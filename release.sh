@@ -13,7 +13,62 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+# --- Personal-account + environment config (so ./release.sh "just works") ---
+GH_CONFIG_DIR_PERSONAL="$HOME/.config/gh-personal"           # personal gh, kept off the default (work) account
+GH_ACCOUNT_EXPECTED="YairShachar"                            # account that owns the repo + tap
+TAP_SSH_REMOTE="git@github-personal:$HOMEBREW_TAP_REPO.git"  # personal SSH alias, not `gh repo clone`
+VENV_PYINSTALLER=".venv/bin/pyinstaller"                     # pyinstaller lives in the venv, not on PATH
+
+# Route every `gh` call in this script through the personal config WITHOUT
+# changing the global default account.
+export GH_CONFIG_DIR="$GH_CONFIG_DIR_PERSONAL"
+
+# Commit identity for the Homebrew tap (it lives in /tmp, outside the
+# ~/data/projects includeIf that provides the personal identity).
+GIT_NAME=$(git config user.name || true)
+GIT_EMAIL=$(git config user.email || true)
+
+preflight_fail() { echo -e "${YELLOW}✗ Pre-flight failed:${NC} $1" >&2; exit 1; }
+
+preflight() {
+    local branch
+    branch=$(git rev-parse --abbrev-ref HEAD)
+    [ "$branch" = "main" ] || preflight_fail "not on main (on '$branch')"
+    git diff --quiet && git diff --cached --quiet \
+        || preflight_fail "working tree has uncommitted changes — commit or stash first"
+    [ -x "$VENV_PYINSTALLER" ] \
+        || preflight_fail "$VENV_PYINSTALLER not found (run: .venv/bin/pip install pyinstaller)"
+    command -v create-dmg >/dev/null \
+        || preflight_fail "create-dmg not installed (run: brew install create-dmg)"
+    gh auth status 2>/dev/null | grep -q "account $GH_ACCOUNT_EXPECTED" \
+        || preflight_fail "personal gh account '$GH_ACCOUNT_EXPECTED' not active under $GH_CONFIG_DIR"
+    [ -n "$GIT_NAME" ] && [ -n "$GIT_EMAIL" ] \
+        || preflight_fail "git user.name/user.email not configured in this repo"
+    echo -e "${GREEN}✓ Pre-flight OK${NC} (branch=main, clean tree, tools present, gh=$GH_ACCOUNT_EXPECTED)"
+}
+
+# Restore an in-progress VERSION bump if we abort before committing it, so a
+# failed release never leaves VERSION dirty.
+VERSION_BUMPED=0
+cleanup_on_error() {
+    if [ "$VERSION_BUMPED" = "1" ]; then
+        echo -e "${YELLOW}Aborted — restoring VERSION from git${NC}" >&2
+        git checkout -- VERSION 2>/dev/null || true
+    fi
+}
+trap cleanup_on_error ERR
+
+# `./release.sh --check` runs only the read-only pre-flight, then exits.
+if [ "${1:-}" = "--check" ]; then
+    preflight
+    echo "Dry-run pre-flight passed. Run './release.sh' to release for real."
+    exit 0
+fi
+
 echo -e "${GREEN}=== Don't Forget Your Breaks Release Script ===${NC}"
+echo ""
+
+preflight
 echo ""
 
 # Get current version from VERSION file or default to 1.0.0
@@ -62,6 +117,11 @@ if [ -z "$VERSION" ]; then
     exit 1
 fi
 
+if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+    echo "Tag v$VERSION already exists. Aborting."
+    exit 1
+fi
+
 # Generate release notes from commits
 echo ""
 echo -e "${YELLOW}Generating release notes...${NC}"
@@ -97,11 +157,12 @@ rm "$NOTES_FILE"
 echo ""
 echo -e "${YELLOW}Updating version to $VERSION...${NC}"
 echo "$VERSION" > VERSION
+VERSION_BUMPED=1  # from here until commit, the trap restores VERSION on failure
 
 # Build the app
 echo ""
 echo -e "${YELLOW}Building macOS app with PyInstaller...${NC}"
-pyinstaller "$APP_NAME.spec" --noconfirm
+"$VENV_PYINSTALLER" "$APP_NAME.spec" --noconfirm
 
 # Create DMG
 echo ""
@@ -134,6 +195,7 @@ git add VERSION
 git commit -m "Release v$VERSION
 
 $RELEASE_NOTES" || echo "No changes to commit"
+VERSION_BUMPED=0  # VERSION is now safely in git; nothing to roll back
 
 # Create git tag
 git tag -a "v$VERSION" -m "Release v$VERSION"
@@ -159,9 +221,12 @@ echo -e "${YELLOW}Updating Homebrew tap...${NC}"
 # Clone or update tap repo
 if [ -d "$HOMEBREW_TAP_PATH" ]; then
     cd "$HOMEBREW_TAP_PATH"
+    git remote set-url origin "$TAP_SSH_REMOTE"  # force the personal alias, not a stale/work remote
     git pull origin main
 else
-    gh repo clone "$HOMEBREW_TAP_REPO" "$HOMEBREW_TAP_PATH"
+    # Clone via the personal SSH alias — NOT `gh repo clone`, which uses the
+    # default ssh key (work account) for github.com.
+    git clone "$TAP_SSH_REMOTE" "$HOMEBREW_TAP_PATH"
     cd "$HOMEBREW_TAP_PATH"
 fi
 
@@ -192,7 +257,9 @@ end
 EOF
 
 git add -A
-git commit -m "Update dont-forget-your-breaks to v$VERSION"
+# Explicit identity: this repo is in /tmp, outside the includeIf that sets it.
+git -c user.name="$GIT_NAME" -c user.email="$GIT_EMAIL" \
+    commit -m "Update dont-forget-your-breaks to v$VERSION"
 git push origin main
 
 # Return to project directory
