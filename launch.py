@@ -24,6 +24,10 @@ from dfyb.updater import (
     HOMEBREW_CASK_NAME,
 )
 from dfyb.animation import ease_out_quad, prefers_reduced_motion
+from dfyb.activity.event_log import EventLog, BREAK_TAKEN
+from dfyb.activity.sensors import read_context
+from dfyb.scheduler.adapter import states_from_configs
+from dfyb.scheduler.tick import advance
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -80,6 +84,7 @@ if sys.platform == "darwin":
 TIME_UNITS = ["sec", "min", "hour"]
 CONFIG_FILE = Path.home() / "Library" / "Preferences" / "com.yairs.dontforgetyourbreaks.json"
 LOCK_FILE = Path.home() / "Library" / "Application Support" / "DontForgetYourBreaks" / ".lock"
+EVENTS_FILE = Path.home() / "Library" / "Application Support" / "DontForgetYourBreaks" / "events.jsonl"
 GITHUB_NEW_ISSUE_URL = "https://github.com/YairShachar/dont-forget-your-breaks/issues/new"
 UPDATE_CHECK_INTERVAL_HOURS = 24
 
@@ -813,6 +818,8 @@ class BreakApp:
         self.break_queue = []
         self.active_popup = None
         self.break_start_time = None
+        self.event_log = EventLog(EVENTS_FILE)
+        self._episode = None  # idle/deferred dedup marker for the smart-timing loop
 
         # Default break configurations
         self.default_breaks = [
@@ -1326,23 +1333,23 @@ class BreakApp:
     # ------------------ TIMER ------------------
 
     def timer_loop(self):
-        """Single timer loop managing all breaks."""
+        """Single timer loop managing all breaks (context-aware via the scheduler)."""
         while self.running and not self.stop_event.is_set():
             time.sleep(1)
             if self.paused or self.active_popup:
                 continue
 
-            fired_breaks = []
-            for config in self.breaks:
-                config.remaining -= 1
-                if config.remaining <= 0:
-                    fired_breaks.append(config)
-
-            if fired_breaks:
-                longest = max(fired_breaks, key=lambda c: c.get_duration_seconds())
-                for config in fired_breaks:
-                    config.reset_timer()
-                self.trigger_break(longest)
+            ctx = read_context()
+            states = states_from_configs(self.breaks)
+            new_remaining, fire_index, events, self._episode = advance(
+                states, ctx, self._episode
+            )
+            for config, remaining in zip(self.breaks, new_remaining):
+                config.remaining = remaining
+            for event_type, data in events:
+                self.event_log.append(event_type, **data)
+            if fire_index is not None:
+                self.trigger_break(self.breaks[fire_index])
 
     def trigger_break(self, config):
         """Queue a break with the given configuration."""
@@ -1373,6 +1380,12 @@ class BreakApp:
 
         def on_popup_close():
             elapsed = int(time.time() - self.break_start_time) if self.break_start_time else 0
+            self.event_log.append(
+                BREAK_TAKEN,
+                name=break_data['name'],
+                duration=break_data['duration'],
+                used_seconds=elapsed,
+            )
             for queued_break in self.break_queue:
                 queued_break['duration'] -= elapsed
 
