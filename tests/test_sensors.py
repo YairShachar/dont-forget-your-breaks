@@ -12,15 +12,22 @@ def _fake_quartz_idle(value):
     return fake
 
 
-def _fake_quartz_windows(windows, screen=(1920, 1080)):
+class _FakeBounds:
+    """Stand-in for a Quartz CGRect: .origin.x/.y and .size.width/.height."""
+    def __init__(self, x, y, w, h):
+        self.origin = types.SimpleNamespace(x=x, y=y)
+        self.size = types.SimpleNamespace(width=w, height=h)
+
+
+def _fake_quartz_windows(windows, displays=((0, 0, 1920, 1080),)):
     fake = types.ModuleType("Quartz")
     fake.kCGWindowListOptionOnScreenOnly = 1
     fake.kCGWindowListExcludeDesktopElements = 16
     fake.kCGNullWindowID = 0
-    fake.CGMainDisplayID = lambda: 1
-    fake.CGDisplayPixelsWide = lambda d: screen[0]
-    fake.CGDisplayPixelsHigh = lambda d: screen[1]
     fake.CGWindowListCopyWindowInfo = lambda opts, wid: windows
+    display_ids = list(range(1, len(displays) + 1))
+    fake.CGGetActiveDisplayList = lambda maxd, a, b: (0, display_ids, len(displays))
+    fake.CGDisplayBounds = lambda did: _FakeBounds(*displays[did - 1])
     return fake
 
 
@@ -68,7 +75,7 @@ def test_fullscreen_failure_returns_false(monkeypatch):
     fake = _fake_quartz_windows([])
     def boom(*a, **k):
         raise RuntimeError("quartz boom")
-    fake.CGMainDisplayID = boom
+    fake.CGGetActiveDisplayList = boom
     monkeypatch.setitem(sys.modules, "Quartz", fake)
     monkeypatch.setattr(sensors.sys, "platform", "darwin")
     assert sensors.frontmost_is_fullscreen() is False
@@ -79,3 +86,44 @@ def test_read_context_combines_sensors(monkeypatch):
     monkeypatch.setattr(sensors, "frontmost_is_fullscreen", lambda: True)
     c = sensors.read_context()
     assert c.idle_seconds == 12.0 and c.is_fullscreen is True
+
+
+# --- covers_any_display: pure multi-monitor fullscreen logic ---
+# Real geometry captured from a dual-monitor Mac (main + smaller offset second).
+MAIN_DISPLAY = (0, 0, 1920, 1080)
+SECOND_DISPLAY = (1920, 64, 1512, 982)
+DISPLAYS = [MAIN_DISPLAY, SECOND_DISPLAY]
+
+
+def test_covers_fullscreen_on_main_display():
+    windows = [(0, 0, 1920, 1080), (2302, 97, 1130, 949)]
+    assert sensors.covers_any_display(windows, DISPLAYS) is True
+
+
+def test_covers_fullscreen_on_secondary_display():
+    # Regression: native fullscreen on the smaller, offset second monitor used
+    # to be missed because only the main display was checked.
+    windows = [(1920, 64, 1512, 982), (0, 122, 1920, 958)]
+    assert sensors.covers_any_display(windows, DISPLAYS) is True
+
+
+def test_windowed_chrome_is_not_fullscreen():
+    # Menu-bar-visible windowed content sits below y=0, so it covers nothing.
+    windows = [(0, 0, 1920, 41), (0, 122, 1920, 958), (2302, 97, 1130, 949)]
+    assert sensors.covers_any_display(windows, DISPLAYS) is False
+
+
+def test_thin_bar_in_front_of_fullscreen_window_still_detected():
+    # A thin auto-hide bar is frontmost; the real full window is later in the
+    # list. Scanning all windows (not just the first) still detects fullscreen.
+    windows = [(0, 0, 1920, 41), (0, 0, 1920, 1080)]
+    assert sensors.covers_any_display(windows, DISPLAYS) is True
+
+
+def test_covers_within_rounding_tolerance():
+    assert sensors.covers_any_display([(0, 0, 1919, 1079)], [MAIN_DISPLAY]) is True
+
+
+def test_no_windows_or_no_displays_is_false():
+    assert sensors.covers_any_display([], DISPLAYS) is False
+    assert sensors.covers_any_display([MAIN_DISPLAY], []) is False
