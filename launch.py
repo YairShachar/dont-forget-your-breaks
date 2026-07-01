@@ -1203,6 +1203,7 @@ class BreakApp:
         self.running = True
         self.paused = False
         self.stop_event.clear()
+        self._episode = None  # fresh idle/deferred dedup marker each session
 
         for config in self.breaks:
             config.reset_timer()
@@ -1383,6 +1384,9 @@ class BreakApp:
 
         def on_popup_close():
             elapsed = int(time.time() - self.break_start_time) if self.break_start_time else 0
+            # Runs on the main thread. EventLog.append has no internal lock, but the
+            # timer thread skips all event-log writes while self.active_popup is set
+            # (cleared further down), so this call never interleaves with the loop's appends.
             self.event_log.append(
                 BREAK_TAKEN,
                 name=break_data['name'],

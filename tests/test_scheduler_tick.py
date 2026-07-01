@@ -53,6 +53,13 @@ def test_episode_transition_idle_to_deferred_relogs():
     assert ep == DEFERRED_EPISODE
 
 
+def test_episode_transition_deferred_to_idle_relogs():
+    # was deferring, now idle -> different episode, logs the natural break
+    events, ep = events_for_tick(R(natural_break=True), ctx(idle=400), DEFERRED_EPISODE)
+    assert events == [(NATURAL_BREAK, {"idle_seconds": 400})]
+    assert ep == IDLE_EPISODE
+
+
 # --- advance (composes step + events_for_tick) ---
 
 def test_advance_natural_break():
