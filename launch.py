@@ -29,6 +29,7 @@ from dfyb.activity.sensors import read_context
 from dfyb.scheduler.adapter import states_from_configs
 from dfyb.scheduler.tick import advance
 from dfyb.timer_lifecycle import timer_should_continue
+from dfyb.macos_window import pin_to_active_space
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -204,12 +205,13 @@ class CountdownPopup:
         self.snoozed = False
         self.sound_stop_event = threading.Event()
         self._start_time = time.time()  # For smooth progress bar
-        self._previous_app = self._get_frontmost_app()  # Remember active app
-
         # Create popup window
         self.window = ctk.CTkToplevel(parent)
         self.window.title(title)
         self.window.resizable(False, False)
+        # Pin the popup to the active Space (multi-monitor #21 fix): it appears
+        # on the Space you're on instead of switching to another.
+        pin_to_active_space(self.window)
 
         # Make window always on top
         self.window.attributes('-topmost', True)
@@ -229,7 +231,8 @@ class CountdownPopup:
         if sys.platform == "darwin":
             self.window.attributes('-alpha', 0.95)
 
-        # Force focus and request attention
+        # Reliably raise the popup and take focus (like a normal alert); it is
+        # pinned to the active Space above, so activating it won't switch Spaces.
         self.window.lift()
         self.window.focus_force()
         self._request_attention()
@@ -381,10 +384,8 @@ class CountdownPopup:
             self.window.withdraw()
         except Exception:
             pass
-        self._prevent_focus_steal()  # Call before destroy
         self.window.destroy()
         self.closed = True
-        self._prevent_focus_steal()  # Call after destroy
 
     def close(self):
         if self.closed:
@@ -397,41 +398,7 @@ class CountdownPopup:
             self.window.withdraw()
         except Exception:
             pass
-        self._prevent_focus_steal()  # Call before destroy to prevent focus transfer
         self.window.destroy()
-        self._prevent_focus_steal()  # Call again after to ensure app is deactivated
-
-    def _get_frontmost_app(self):
-        """Get the name of the currently frontmost application."""
-        if sys.platform != "darwin":
-            return None
-        try:
-            result = subprocess.run(
-                ['osascript', '-e',
-                 'tell application "System Events" to get name of first process whose frontmost is true'],
-                capture_output=True, text=True, timeout=2
-            )
-            return result.stdout.strip() if result.returncode == 0 else None
-        except Exception:
-            return None
-
-    def _prevent_focus_steal(self):
-        """Prevent main window from stealing focus and triggering Space switch on macOS."""
-        if sys.platform == "darwin":
-            try:
-                # Lower the parent window
-                self.parent.lower()
-                # Reactivate the app that was active before the popup appeared
-                if self._previous_app and self._previous_app != "Python":
-                    subprocess.run(
-                        ['osascript', '-e',
-                         f'tell application "{self._previous_app}" to activate'],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        timeout=2
-                    )
-            except Exception:
-                pass
 
     def _request_attention(self):
         """Request user attention."""
@@ -463,7 +430,6 @@ class CountdownPopup:
             y = mouse_y - popup_h // 2 + 20
             self.window.geometry(f"{popup_w}x{popup_h}+{x}+{y}")
             self.window.lift()
-            self.window.focus_force()
             self.window.attributes('-topmost', True)
         except Exception:
             pass
@@ -472,7 +438,6 @@ class CountdownPopup:
         """Bring popup to user's attention when countdown ends."""
         try:
             self.window.lift()
-            self.window.focus_force()
             self.window.attributes('-topmost', True)
             self._flash_button()
         except Exception:

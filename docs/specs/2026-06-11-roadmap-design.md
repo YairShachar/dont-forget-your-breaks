@@ -145,8 +145,9 @@ Each phase maps to a **GitHub Milestone**; bullets become **issues**.
 - **Simplify main UI** — move settings behind a Settings button (#5).
 - Zero-config sensible defaults; anti-nag gentleness tuning.
 - Polish sweep: animation, sound design, visuals.
+- **Break presentation & barge-in UX** — entrance animation, how the popup grabs attention without hijacking focus (zero-focus-grab), where it appears on multi-monitor, dismiss/snooze feel. (Follows the non-intrusive popup fix, issue #21.)
 
-**Threaded principle:** every phase's definition-of-done includes "feels calm and gets out of the way." Phase 4 is the dedicated craft pass, not the only one.
+**Threaded principle:** every phase's definition-of-done includes "feels calm and gets out of the way." Phase 4 is the dedicated craft pass, not the only one. **Behaviors should be configurable** — user-facing behaviors (e.g. whether breaks defer during fullscreen) are preferences with sensible defaults, not hardcoded policy.
 
 ---
 
