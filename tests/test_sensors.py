@@ -84,8 +84,30 @@ def test_fullscreen_failure_returns_false(monkeypatch):
 def test_read_context_combines_sensors(monkeypatch):
     monkeypatch.setattr(sensors, "idle_seconds", lambda: 12.0)
     monkeypatch.setattr(sensors, "frontmost_is_fullscreen", lambda: True)
+    monkeypatch.setattr(sensors, "microphone_in_use", lambda: False)
     c = sensors.read_context()
     assert c.idle_seconds == 12.0 and c.is_fullscreen is True
+
+
+def test_microphone_in_use_non_darwin_is_false(monkeypatch):
+    monkeypatch.setattr(sensors.sys, "platform", "linux")
+    assert sensors.microphone_in_use() is False
+
+
+def test_read_context_meeting_gated_off(monkeypatch):
+    monkeypatch.setattr(sensors, "idle_seconds", lambda: 0.0)
+    monkeypatch.setattr(sensors, "frontmost_is_fullscreen", lambda: False)
+    monkeypatch.setattr(sensors, "microphone_in_use", lambda: True)
+    c = sensors.read_context(check_meeting=False)
+    assert c.is_meeting is False
+
+
+def test_read_context_meeting_on(monkeypatch):
+    monkeypatch.setattr(sensors, "idle_seconds", lambda: 0.0)
+    monkeypatch.setattr(sensors, "frontmost_is_fullscreen", lambda: False)
+    monkeypatch.setattr(sensors, "microphone_in_use", lambda: True)
+    c = sensors.read_context(check_meeting=True)
+    assert c.is_meeting is True
 
 
 # --- covers_any_display: pure multi-monitor fullscreen logic ---

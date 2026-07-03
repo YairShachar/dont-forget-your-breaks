@@ -5,6 +5,7 @@ fullscreen=False) so the scheduler falls back to today's 'always fire' behavior.
 `Quartz` is imported lazily inside each function so this module imports cleanly
 on non-macOS CI (where Quartz is absent).
 """
+import struct
 import sys
 
 from dfyb.scheduler.engine import Context
@@ -101,6 +102,45 @@ def frontmost_is_fullscreen():
         return False
 
 
-def read_context():
-    """Snapshot the current context for the scheduler."""
-    return Context(idle_seconds=idle_seconds(), is_fullscreen=frontmost_is_fullscreen())
+def microphone_in_use():
+    """True if the default input device is running somewhere (~ mic in a call,
+    incl. browser calls). False on non-macOS or any failure (fails safe)."""
+    if sys.platform != "darwin":
+        return False
+    try:
+        import CoreAudio as CA
+        import objc
+
+        def _get_u32(objid, selector):
+            addr = CA.AudioObjectPropertyAddress(
+                selector,
+                CA.kAudioObjectPropertyScopeGlobal,
+                CA.kAudioObjectPropertyElementMain,
+            )
+            # qualifier MUST be objc.NULL; out-param MUST be None (pyobjc allocates + returns it)
+            status, _size, data = CA.AudioObjectGetPropertyData(
+                objid, addr, 0, objc.NULL, 4, None)
+            if status != 0:
+                return None
+            return struct.unpack("I", bytes(data))[0]
+
+        device = _get_u32(CA.kAudioObjectSystemObject,
+                          CA.kAudioHardwarePropertyDefaultInputDevice)
+        if not device:
+            return False
+        return bool(_get_u32(device, CA.kAudioDevicePropertyDeviceIsRunningSomewhere))
+    except Exception:
+        return False
+
+
+def read_context(check_meeting=True):
+    """Snapshot the current context for the scheduler.
+
+    `check_meeting` gates the meeting signal (the app's `defer_during_meetings`
+    pref): when False, is_meeting is always False regardless of the mic.
+    """
+    return Context(
+        idle_seconds=idle_seconds(),
+        is_fullscreen=frontmost_is_fullscreen(),
+        is_meeting=check_meeting and microphone_in_use(),
+    )
