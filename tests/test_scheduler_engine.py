@@ -124,3 +124,10 @@ def test_step_fullscreen_takes_precedence_over_meeting():
 
 def test_context_is_meeting_defaults_false():
     assert Context(idle_seconds=0.0, is_fullscreen=False).is_meeting is False
+
+
+def test_step_meeting_takes_precedence_over_away():
+    # meeting + idle past the away threshold -> reason is "meeting", not "away"
+    states = [BreakState(remaining=1, interval_seconds=100, duration_seconds=5)]
+    result = step(states, Context(idle_seconds=120.0, is_fullscreen=False, is_meeting=True))
+    assert result.defer_reason == "meeting"

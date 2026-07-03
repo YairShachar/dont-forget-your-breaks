@@ -12,6 +12,8 @@ from dfyb.scheduler.engine import Context
 
 # Max active displays to enumerate (well above any real Mac's monitor count).
 MAX_DISPLAYS = 16
+# Byte size of a CoreAudio UInt32 property value (matches the struct "I" format).
+UINT32_SIZE = 4
 # A window counts as covering a display if it reaches each edge within this many
 # points — absorbs rounding between window bounds and display bounds.
 FULLSCREEN_COVER_TOLERANCE_PX = 2
@@ -119,7 +121,7 @@ def microphone_in_use():
             )
             # qualifier MUST be objc.NULL; out-param MUST be None (pyobjc allocates + returns it)
             status, _size, data = CA.AudioObjectGetPropertyData(
-                objid, addr, 0, objc.NULL, 4, None)
+                objid, addr, 0, objc.NULL, UINT32_SIZE, None)
             if status != 0:
                 return None
             return struct.unpack("I", bytes(data))[0]
