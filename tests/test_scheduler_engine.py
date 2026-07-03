@@ -98,3 +98,29 @@ def test_step_defer_prefers_fullscreen_over_away():
     states = [BreakState(remaining=1, interval_seconds=100, duration_seconds=5)]
     r = step(states, ctx(idle=120, fullscreen=True))
     assert r.defer_reason == "fullscreen"
+
+
+def test_decide_defers_during_meeting():
+    assert decide(Context(idle_seconds=0.0, is_fullscreen=False, is_meeting=True)) == DEFER
+
+
+def test_decide_fires_when_not_meeting_fullscreen_or_away():
+    assert decide(Context(idle_seconds=0.0, is_fullscreen=False, is_meeting=False)) == FIRE
+
+
+def test_step_defer_reason_meeting():
+    states = [BreakState(remaining=1, interval_seconds=100, duration_seconds=5)]
+    result = step(states, Context(idle_seconds=0.0, is_fullscreen=False, is_meeting=True))
+    assert result.defer_reason == "meeting"
+    assert result.fire_index is None
+    assert result.new_remaining == [0]
+
+
+def test_step_fullscreen_takes_precedence_over_meeting():
+    states = [BreakState(remaining=1, interval_seconds=100, duration_seconds=5)]
+    result = step(states, Context(idle_seconds=0.0, is_fullscreen=True, is_meeting=True))
+    assert result.defer_reason == "fullscreen"
+
+
+def test_context_is_meeting_defaults_false():
+    assert Context(idle_seconds=0.0, is_fullscreen=False).is_meeting is False

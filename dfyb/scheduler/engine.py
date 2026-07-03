@@ -14,6 +14,7 @@ class Context:
     """What the sensors observed this tick."""
     idle_seconds: float
     is_fullscreen: bool
+    is_meeting: bool = False
 
 
 @dataclass(frozen=True)
@@ -30,7 +31,7 @@ class StepResult:
     new_remaining: list[int]        # updated `remaining` per break (write back to configs)
     natural_break: bool = False
     fire_index: int | None = None   # which break to pop
-    defer_reason: str | None = None  # "fullscreen" | "away"
+    defer_reason: str | None = None  # "fullscreen" | "meeting" | "away"
 
 
 def is_natural_break(idle_seconds, threshold=NATURAL_BREAK_IDLE_THRESHOLD_SECONDS):
@@ -42,6 +43,8 @@ def decide(ctx, away_threshold=AWAY_IDLE_THRESHOLD_SECONDS):
     """Decide whether a due break should FIRE or DEFER given the current context."""
     if ctx.is_fullscreen:
         return DEFER          # don't interrupt fullscreen
+    if ctx.is_meeting:
+        return DEFER          # don't interrupt a call (mic in use)
     if ctx.idle_seconds >= away_threshold:
         return DEFER          # briefly away — wait until back and active
     return FIRE
@@ -66,7 +69,12 @@ def step(states, ctx,
     # 3. If any are due, decide fire vs defer.
     if due:
         if decide(ctx, away_threshold) == DEFER:
-            reason = "fullscreen" if ctx.is_fullscreen else "away"
+            if ctx.is_fullscreen:
+                reason = "fullscreen"
+            elif ctx.is_meeting:
+                reason = "meeting"
+            else:
+                reason = "away"
             for i in due:
                 new_remaining[i] = 0          # clamp — stays due, no negative drift
             return StepResult(new_remaining=new_remaining, defer_reason=reason)
