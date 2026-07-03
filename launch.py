@@ -933,6 +933,19 @@ class BreakApp:
             )
             timer_label.pack(side="right", padx=(0, PADDING_PANEL_X), pady=8)
 
+            # Break now button (quick manual trigger, left of the timer)
+            ctk.CTkButton(
+                card, text="Break now",
+                command=lambda c=config: self.break_now(c),
+                width=90, height=BUTTON_HEIGHT_SMALL,
+                corner_radius=CORNER_RADIUS_INPUT,
+                fg_color="transparent",
+                border_width=1,
+                border_color=COLORS['border'],
+                hover_color=COLORS['bg_hover'],
+                font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper'])
+            ).pack(side="right", padx=(0, 8), pady=8)
+
             self._timer_labels.append(timer_label)
 
         # Bottom bar: feedback + update banner
@@ -1423,6 +1436,16 @@ class BreakApp:
     def test_break(self, config):
         """Test a specific break configuration."""
         self.trigger_break(config)
+
+    def break_now(self, config):
+        """Take this break immediately: reset its countdown and show the popup.
+
+        Manual/explicit action — bypasses the scheduler's fullscreen/away
+        deferral (trigger_break shows the popup directly, not via the timer loop).
+        """
+        config.reset_timer()
+        self.trigger_break(config)
+        self.update_ui()
 
     # ------------------ UI UPDATE ------------------
 
