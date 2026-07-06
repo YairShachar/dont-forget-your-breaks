@@ -218,15 +218,20 @@ gh release create "v$VERSION" \
 echo ""
 echo -e "${YELLOW}Updating Homebrew tap...${NC}"
 
-# Clone or update tap repo
-if [ -d "$HOMEBREW_TAP_PATH" ]; then
+# Clone or refresh the tap repo. Reuse the dir ONLY if it's a valid git repo:
+# a leftover non-git dir (e.g. /tmp being cleaned between releases) previously
+# took the "update" branch and failed the release at the tap step. Re-clone
+# on anything unexpected.
+if [ -d "$HOMEBREW_TAP_PATH/.git" ]; then
     cd "$HOMEBREW_TAP_PATH"
     git remote set-url origin "$TAP_SSH_REMOTE"  # force the personal alias, not a stale/work remote
-    git pull origin main
+    git pull origin main || preflight_fail "tap: 'git pull' failed — brew users will NOT get v$VERSION"
 else
+    rm -rf "$HOMEBREW_TAP_PATH"  # drop any corrupted/partial dir so the clone can't collide
     # Clone via the personal SSH alias — NOT `gh repo clone`, which uses the
     # default ssh key (work account) for github.com.
-    git clone "$TAP_SSH_REMOTE" "$HOMEBREW_TAP_PATH"
+    git clone "$TAP_SSH_REMOTE" "$HOMEBREW_TAP_PATH" \
+        || preflight_fail "tap: 'git clone' failed — brew users will NOT get v$VERSION"
     cd "$HOMEBREW_TAP_PATH"
 fi
 
@@ -259,8 +264,10 @@ EOF
 git add -A
 # Explicit identity: this repo is in /tmp, outside the includeIf that sets it.
 git -c user.name="$GIT_NAME" -c user.email="$GIT_EMAIL" \
-    commit -m "Update dont-forget-your-breaks to v$VERSION"
-git push origin main
+    commit -m "Update dont-forget-your-breaks to v$VERSION" \
+    || preflight_fail "tap: nothing committed (cask unchanged?) — check the tap"
+git push origin main \
+    || preflight_fail "tap: 'git push' failed — brew users will NOT get v$VERSION"
 
 # Return to project directory
 cd - > /dev/null
