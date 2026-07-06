@@ -154,14 +154,15 @@ def microphone_in_use():
         return False
 
 
-def read_context(check_meeting=True):
+def read_context(check_meeting=True, check_fullscreen=True):
     """Snapshot the current context for the scheduler.
 
-    `check_meeting` gates the meeting signal (the app's `defer_during_meetings`
-    pref): when False, is_meeting is always False regardless of the mic.
+    `check_meeting` / `check_fullscreen` gate their signals (the app's
+    `defer_during_meetings` / `defer_during_fullscreen` prefs): when False, that
+    flag is always False regardless of the real state.
     """
     return Context(
         idle_seconds=idle_seconds(),
-        is_fullscreen=frontmost_is_fullscreen(),
+        is_fullscreen=check_fullscreen and frontmost_is_fullscreen(),
         is_meeting=check_meeting and microphone_in_use(),
     )

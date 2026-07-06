@@ -188,3 +188,19 @@ def test_fullscreen_logic_is_resolution_independent():
     assert sensors.covers_any_display([(2880, 0, 1080, 1920)], displays) is True
     # a maximized window on `main` (content only, top gap) is NOT fullscreen
     assert sensors.covers_any_display([(0, 200, 2880, 1600)], displays) is False
+
+
+def test_read_context_fullscreen_gated_off(monkeypatch):
+    monkeypatch.setattr(sensors, "idle_seconds", lambda: 0.0)
+    monkeypatch.setattr(sensors, "frontmost_is_fullscreen", lambda: True)
+    monkeypatch.setattr(sensors, "microphone_in_use", lambda: False)
+    c = sensors.read_context(check_fullscreen=False)
+    assert c.is_fullscreen is False
+
+
+def test_read_context_fullscreen_on(monkeypatch):
+    monkeypatch.setattr(sensors, "idle_seconds", lambda: 0.0)
+    monkeypatch.setattr(sensors, "frontmost_is_fullscreen", lambda: True)
+    monkeypatch.setattr(sensors, "microphone_in_use", lambda: False)
+    c = sensors.read_context(check_fullscreen=True)
+    assert c.is_fullscreen is True
