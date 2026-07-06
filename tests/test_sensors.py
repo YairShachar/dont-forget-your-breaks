@@ -171,3 +171,20 @@ def test_maximized_window_with_top_gap_is_not_fullscreen():
     # NO top strip leaves the top uncovered -> not fullscreen.
     windows = [(0, 122, 1920, 958)]
     assert sensors.covers_any_display(windows, DISPLAYS) is False
+
+
+def test_fullscreen_logic_is_resolution_independent():
+    # Different hardware than the capture (a Retina main + a portrait, offset
+    # second monitor) proves the detection is pure geometry, not tied to any
+    # specific resolution or the machine it was diagnosed on.
+    main = (0, 0, 2880, 1800)
+    second = (2880, 0, 1080, 1920)  # portrait, different size + offset
+    displays = [main, second]
+
+    # split-window fullscreen on `main` (top strip 0..220 + content 200..1800)
+    assert sensors.covers_any_display(
+        [(0, 0, 2880, 220), (0, 200, 2880, 1600)], displays) is True
+    # single-window fullscreen on the portrait second monitor
+    assert sensors.covers_any_display([(2880, 0, 1080, 1920)], displays) is True
+    # a maximized window on `main` (content only, top gap) is NOT fullscreen
+    assert sensors.covers_any_display([(0, 200, 2880, 1600)], displays) is False
