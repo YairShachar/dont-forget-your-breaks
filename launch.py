@@ -136,6 +136,11 @@ BUTTON_MIN_WIDTH = 80      # Minimum touch target
 # Collapsible panel settings
 PANEL_COLLAPSED_HEIGHT = 48      # Height of collapsed panel header
 
+# Settings window
+SETTINGS_WINDOW_WIDTH = 600             # px; height auto-fits the content
+SETTINGS_WINDOW_MAX_HEIGHT_RATIO = 0.9  # cap auto-height at 90% of screen height
+SETTINGS_WINDOW_Y_OFFSET = 80           # px the window sits above the main window
+
 # Animation timing
 ANIMATION_FRAME_INTERVAL = 16      # ms (60fps)
 ANIMATION_EXPAND_DURATION = 250    # ms
@@ -1280,19 +1285,11 @@ class BreakApp:
 
         self._settings_window = ctk.CTkToplevel(self.root)
         self._settings_window.title("Break Settings")
-        self._settings_window.geometry("600x480")
         self._settings_window.resizable(False, True)
         self._settings_window.attributes('-topmost', self.always_on_top.get())
-
-        # Position centered on main window
-        self._settings_window.update_idletasks()
-        main_x = self.root.winfo_x()
-        main_y = self.root.winfo_y()
-        main_w = self.root.winfo_width()
-        settings_w = 600
-        x = main_x + (main_w - settings_w) // 2
-        y = main_y - 80
-        self._settings_window.geometry(f"+{x}+{y}")
+        # Build hidden, then size to content and show — avoids a flash at the
+        # wrong size and guarantees added settings are never clipped.
+        self._settings_window.withdraw()
 
         def on_settings_close():
             self._settings_window.withdraw()
@@ -1338,6 +1335,22 @@ class BreakApp:
             variable=self.defer_during_fullscreen,
             font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
         ).pack(padx=PADDING_PANEL_X, pady=(4, PADDING_PANEL_Y), anchor="w")
+
+        # Size the window to fit its content (so added settings never clip),
+        # capped at the screen height; center on the main window, then show.
+        self._settings_window.update_idletasks()
+        max_height = int(self._settings_window.winfo_screenheight()
+                         * SETTINGS_WINDOW_MAX_HEIGHT_RATIO)
+        height = min(self._settings_window.winfo_reqheight(), max_height)
+        main_x = self.root.winfo_x()
+        main_y = self.root.winfo_y()
+        main_w = self.root.winfo_width()
+        x = main_x + (main_w - SETTINGS_WINDOW_WIDTH) // 2
+        y = main_y - SETTINGS_WINDOW_Y_OFFSET
+        self._settings_window.geometry(f"{SETTINGS_WINDOW_WIDTH}x{height}+{x}+{y}")
+        self._settings_window.deiconify()
+        self._settings_window.lift()
+        self._settings_window.focus_force()
 
     # ------------------ TIMER ------------------
 
