@@ -820,6 +820,11 @@ class BreakApp:
         )
         self.defer_during_meetings.trace_add('write', self._save_preferences)
 
+        self.defer_during_fullscreen = ctk.BooleanVar(
+            value=self.saved_prefs.get("defer_during_fullscreen", True)
+        )
+        self.defer_during_fullscreen.trace_add('write', self._save_preferences)
+
         # Update check preference (default True)
         self.check_for_updates = ctk.BooleanVar(
             value=self.saved_prefs.get("check_for_updates", True)
@@ -1029,6 +1034,7 @@ class BreakApp:
             "always_on_top": self.always_on_top.get(),
             "check_for_updates": self.check_for_updates.get(),
             "defer_during_meetings": self.defer_during_meetings.get(),
+            "defer_during_fullscreen": self.defer_during_fullscreen.get(),
             "last_update_check": self.saved_prefs.get("last_update_check", 0),
         }
         for config in self.breaks:
@@ -1325,6 +1331,12 @@ class BreakApp:
             general_frame, text="Pause breaks during calls",
             variable=self.defer_during_meetings,
             font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+        ).pack(padx=PADDING_PANEL_X, pady=(4, 4), anchor="w")
+
+        ctk.CTkCheckBox(
+            general_frame, text="Pause breaks during fullscreen",
+            variable=self.defer_during_fullscreen,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
         ).pack(padx=PADDING_PANEL_X, pady=(4, PADDING_PANEL_Y), anchor="w")
 
     # ------------------ TIMER ------------------
@@ -1349,7 +1361,10 @@ class BreakApp:
                 continue
 
             try:
-                ctx = read_context(check_meeting=self.defer_during_meetings.get())
+                ctx = read_context(
+                    check_meeting=self.defer_during_meetings.get(),
+                    check_fullscreen=self.defer_during_fullscreen.get(),
+                )
                 states = states_from_configs(self.breaks)
                 new_remaining, fire_index, events, self._episode = advance(
                     states, ctx, self._episode
