@@ -1328,7 +1328,7 @@ class BreakApp:
         ).pack(padx=PADDING_PANEL_X, pady=(4, 4), anchor="w")
 
         ctk.CTkCheckBox(
-            general_frame, text="Pause breaks during calls",
+            general_frame, text="Pause breaks while microphone is in use",
             variable=self.defer_during_meetings,
             font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
         ).pack(padx=PADDING_PANEL_X, pady=(4, 4), anchor="w")
