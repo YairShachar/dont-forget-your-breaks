@@ -149,3 +149,25 @@ def test_covers_within_rounding_tolerance():
 def test_no_windows_or_no_displays_is_false():
     assert sensors.covers_any_display([], DISPLAYS) is False
     assert sensors.covers_any_display([MAIN_DISPLAY], []) is False
+
+
+def test_covers_multiwindow_fullscreen():
+    # Real capture (#23): Chrome native fullscreen presents as several windows
+    # — thin top strips at y=0 plus a content pane at y=122 — so NO single
+    # window covers the display, but their full-width vertical extents union to
+    # the full height. Must be detected as fullscreen.
+    windows = [
+        (0, 0, 1920, 41),       # top strip
+        (0, 41, 1920, 81),      # strip filling 41..122
+        (0, 0, 1920, 158),      # overlapping strip
+        (0, 122, 1920, 958),    # content pane, reaches the bottom (1080)
+        (2099, 97, 1333, 943),  # iTerm on the 2nd monitor (non-covering)
+    ]
+    assert sensors.covers_any_display(windows, DISPLAYS) is True
+
+
+def test_maximized_window_with_top_gap_is_not_fullscreen():
+    # A single maximized content window starting below the menu bar (y=122) with
+    # NO top strip leaves the top uncovered -> not fullscreen.
+    windows = [(0, 122, 1920, 958)]
+    assert sensors.covers_any_display(windows, DISPLAYS) is False

@@ -33,28 +33,47 @@ def idle_seconds():
         return 0.0
 
 
-def _window_covers_display(window, display, tol=FULLSCREEN_COVER_TOLERANCE_PX):
-    """True if `window` fully covers `display`. Each is an (x, y, w, h) rect in
-    global points (top-left origin), so a fullscreen window sits exactly on the
-    display it fills — this works for a smaller/offset second monitor too."""
-    wx, wy, ww, wh = window
+def _covers_interval(intervals, lo, hi, tol=FULLSCREEN_COVER_TOLERANCE_PX):
+    """Do the (start, end) intervals union-cover [lo, hi]? Pure 1D coverage."""
+    cursor = lo
+    for start, end in sorted(intervals):
+        if start > cursor + tol:
+            return False  # gap before this interval -> not fully covered
+        cursor = max(cursor, end)
+        if cursor >= hi - tol:
+            return True
+    return cursor >= hi - tol
+
+
+def _display_is_covered(windows, display, tol=FULLSCREEN_COVER_TOLERANCE_PX):
+    """True if `windows` together cover `display` top to bottom.
+
+    A native-fullscreen app can present as SEVERAL windows (e.g. thin auto-hide
+    top strips at y=0 plus a content pane below them), so no single window fills
+    the display — but the full-width windows' vertical extents union to the full
+    height. This checks exactly that. A plain maximized window (content starting
+    below the menu bar, with no top strip) leaves a top gap and is NOT counted.
+    Each rect is (x, y, w, h) in global points.
+    """
     dx, dy, dw, dh = display
-    return (
-        wx <= dx + tol
-        and wy <= dy + tol
-        and wx + ww >= dx + dw - tol
-        and wy + wh >= dy + dh - tol
-    )
+    intervals = []
+    for wx, wy, ww, wh in windows:
+        spans_width = wx <= dx + tol and wx + ww >= dx + dw - tol
+        if not spans_width:
+            continue
+        top = max(wy, dy)
+        bottom = min(wy + wh, dy + dh)
+        if bottom > top:
+            intervals.append((top, bottom))
+    return _covers_interval(intervals, dy, dy + dh, tol)
 
 
 def covers_any_display(windows, displays, tol=FULLSCREEN_COVER_TOLERANCE_PX):
-    """True if any window fully covers any display — the multi-monitor native
-    fullscreen heuristic. Pure (no Quartz), so it is unit-tested off macOS."""
-    return any(
-        _window_covers_display(window, display, tol)
-        for window in windows
-        for display in displays
-    )
+    """True if any display is fully covered (native fullscreen) by the windows.
+
+    Handles fullscreen apps that split into a top strip + content pane, not just
+    single-window fullscreen. Pure (no Quartz), so it is unit-tested off macOS."""
+    return any(_display_is_covered(windows, d, tol) for d in displays)
 
 
 def _active_display_rects(Quartz):
