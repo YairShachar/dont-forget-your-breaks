@@ -8,6 +8,7 @@ import subprocess
 import json
 import os
 import atexit
+import random
 import webbrowser
 import platform
 from urllib.parse import quote as url_quote
@@ -23,8 +24,8 @@ from dfyb.updater import (
     VERSION_FILE,
     HOMEBREW_CASK_NAME,
 )
-from dfyb.animation import ease_out_quad, prefers_reduced_motion
-from dfyb.activity.event_log import EventLog, BREAK_TAKEN
+from dfyb.animation import ease_out_quad, prefers_reduced_motion, lerp_color
+from dfyb.activity.event_log import EventLog, BREAK_TAKEN, BREAK_SNOOZED
 from dfyb.activity.sensors import read_context, frontmost_window_rect
 from dfyb.popup_placement import screen_for_point, center_on_screen, clamp_onscreen
 from dfyb.scheduler.adapter import states_from_configs
@@ -152,6 +153,16 @@ POPUP_PLACEMENT_LABELS = {
     "Cursor's screen": "cursor",
 }
 
+# Gentle rotating messages for the break popup (generic for now; per-break-kind
+# copy comes with the break-kind model, #30).
+BREAK_MESSAGES = [
+    "Time for a break.",
+    "Rest for a moment — you've earned it.",
+    "Ease off the screen for a bit.",
+    "Take a breath and unwind.",
+    "A gentle pause.",
+]
+
 
 def _display_rects():
     """Active display rects (x, y, w, h) in global top-left points; [] off-macOS
@@ -252,15 +263,18 @@ class CountdownPopup:
         self.window.update_idletasks()
         self._position_popup()
 
-        # Glassmorphism effect (semi-transparent on macOS)
+        # Glassmorphism + a gentle entrance fade on macOS (respects reduced-motion).
         if sys.platform == "darwin":
-            self.window.attributes('-alpha', 0.95)
+            if prefers_reduced_motion():
+                self.window.attributes('-alpha', 0.95)
+            else:
+                self.window.attributes('-alpha', 0.0)
+                self._fade_in()
 
         # Reliably raise the popup and take focus (like a normal alert); it is
         # pinned to the active Space above, so activating it won't switch Spaces.
         self.window.lift()
         self.window.focus_force()
-        self._request_attention()
 
         # Main container with padding
         container = ctk.CTkFrame(
@@ -391,6 +405,8 @@ class CountdownPopup:
             elapsed = time.time() - self._start_time
             progress_value = max(0, 1 - (elapsed / self.duration)) if self.duration > 0 else 0
             self.progress.set(progress_value)
+            self.progress.configure(progress_color=lerp_color(
+                COLORS['accent_blue'], COLORS['accent_green'], 1 - progress_value))
         except Exception:
             pass
 
@@ -425,12 +441,17 @@ class CountdownPopup:
             pass
         self.window.destroy()
 
-    def _request_attention(self):
-        """Request user attention."""
+    def _fade_in(self, frame=0, frames=8):
+        """Fade the popup in (macOS alpha) so it doesn't snap into view."""
+        if self.closed or sys.platform != "darwin":
+            return
         try:
-            self.window.bell()
+            self.window.attributes('-alpha', 0.95 * ease_out_quad(frame / frames))
         except Exception:
-            pass
+            return
+        if frame < frames:
+            self.window.after(ANIMATION_FRAME_INTERVAL,
+                              lambda: self._fade_in(frame + 1, frames))
 
     def _keep_on_top(self):
         """Periodically ensure popup stays on top and visible."""
@@ -1534,6 +1555,7 @@ class BreakApp:
             self.root.after(0, self._process_break_queue)
 
         def on_snooze(snooze_minutes):
+            self._record_event(BREAK_SNOOZED, name=break_data['name'], minutes=snooze_minutes)
             self.active_popup = None
             self.break_start_time = None
             if self.running and not self.paused:
@@ -1548,7 +1570,7 @@ class BreakApp:
         self.active_popup = CountdownPopup(
             self.root,
             break_data['name'],
-            "Take a break!",
+            random.choice(BREAK_MESSAGES),
             break_data['duration'],
             auto_dismiss=break_data['auto_dismiss'],
             on_close=on_popup_close,
