@@ -104,6 +104,7 @@ FONT_SIZES = {
     'timer': 13,
     'helper': 10,
     'control': 14,
+    'message': 16,
 }
 
 # Colors (dark mode)
@@ -146,6 +147,7 @@ SETTINGS_WINDOW_Y_OFFSET = 80           # px the window sits above the main wind
 # Break popup
 POPUP_WIDTH = 380
 POPUP_HEIGHT = 300
+POPUP_FADE_FRAMES = 16   # ~256ms entrance fade at ANIMATION_FRAME_INTERVAL
 # Settings dropdown label -> stored popup_placement value
 POPUP_PLACEMENT_LABELS = {
     "Active screen": "active",
@@ -296,8 +298,7 @@ class CountdownPopup:
         msg_label = ctk.CTkLabel(
             container,
             text=message,
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input']),
-            text_color=COLORS['text_secondary']
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['message'])
         )
         msg_label.pack(pady=(0, ROW_SPACING))
 
@@ -421,12 +422,8 @@ class CountdownPopup:
         self.sound_stop_event.set()
         if self.on_snooze:
             self.on_snooze(self.SNOOZE_MINUTES)
-        try:
-            self.window.withdraw()
-        except Exception:
-            pass
-        self.window.destroy()
         self.closed = True
+        self._dismiss()
 
     def close(self):
         if self.closed:
@@ -435,23 +432,49 @@ class CountdownPopup:
         self.sound_stop_event.set()
         if self.on_close:
             self.on_close()
-        try:
-            self.window.withdraw()
-        except Exception:
-            pass
-        self.window.destroy()
+        self._dismiss()
 
-    def _fade_in(self, frame=0, frames=8):
-        """Fade the popup in (macOS alpha) so it doesn't snap into view."""
+    def _fade_in(self, frame=0, frames=POPUP_FADE_FRAMES):
+        """Fade the popup in (macOS alpha) with a gentle, visible linear ramp."""
         if self.closed or sys.platform != "darwin":
             return
         try:
-            self.window.attributes('-alpha', 0.95 * ease_out_quad(frame / frames))
+            self.window.attributes('-alpha', 0.95 * (frame / frames))
         except Exception:
             return
         if frame < frames:
             self.window.after(ANIMATION_FRAME_INTERVAL,
                               lambda: self._fade_in(frame + 1, frames))
+
+    def _fade_out(self, frame=0, frames=POPUP_FADE_FRAMES, then=None):
+        """Fade the popup out (macOS alpha), then run `then` (e.g. destroy)."""
+        try:
+            self.window.attributes('-alpha', 0.95 * (1 - frame / frames))
+        except Exception:
+            if then:
+                then()
+            return
+        if frame < frames:
+            self.window.after(ANIMATION_FRAME_INTERVAL,
+                              lambda: self._fade_out(frame + 1, frames, then))
+        elif then:
+            then()
+
+    def _dismiss(self):
+        """Fade the popup out (macOS, unless reduced-motion), then destroy it."""
+        def _destroy():
+            try:
+                self.window.withdraw()
+            except Exception:
+                pass
+            try:
+                self.window.destroy()
+            except Exception:
+                pass
+        if sys.platform == "darwin" and not prefers_reduced_motion():
+            self._fade_out(then=_destroy)
+        else:
+            _destroy()
 
     def _keep_on_top(self):
         """Periodically ensure popup stays on top and visible."""
