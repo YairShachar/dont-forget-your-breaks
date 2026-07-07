@@ -32,6 +32,7 @@ from dfyb.scheduler.adapter import states_from_configs
 from dfyb.scheduler.tick import advance
 from dfyb.timer_lifecycle import timer_should_continue
 from dfyb.macos_window import pin_to_active_space
+from dfyb.insights.transparency import track_held, held_message
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -235,10 +236,11 @@ class CountdownPopup:
     def __init__(self, parent, title, message, duration,
                  auto_dismiss=True, on_close=None, on_snooze=None,
                  end_sound=None, loop_end_sound=False, placement="active",
-                 target_screen=None):
+                 target_screen=None, held_reason=None):
         self.parent = parent
         self.placement = placement
         self.target_screen = target_screen
+        self.held_reason = held_reason
         self.duration = duration
         self.remaining = duration
         self.auto_dismiss = auto_dismiss
@@ -293,6 +295,16 @@ class CountdownPopup:
             font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['title'], weight="bold")
         )
         title_label.pack(pady=(PADDING_PANEL_Y, 5))
+
+        # "Waited while you were …" line when the break was held (transparency).
+        if self.held_reason:
+            held_text = held_message(self.held_reason)
+            if held_text:
+                ctk.CTkLabel(
+                    container, text=held_text,
+                    font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper']),
+                    text_color=COLORS['text_secondary']
+                ).pack(pady=(0, 6))
 
         # Message
         msg_label = ctk.CTkLabel(
@@ -876,6 +888,7 @@ class BreakApp:
         self.break_start_time = None
         self.event_log = EventLog(EVENTS_FILE)
         self._episode = None  # idle/deferred dedup marker for the smart-timing loop
+        self._held = None      # reason the due break is currently held (transparency)
         self._timer_generation = 0  # bumped each start(); stale threads exit
 
         # Default break configurations
@@ -1292,6 +1305,7 @@ class BreakApp:
         self.paused = False
         self.stop_event.clear()
         self._episode = None  # fresh idle/deferred dedup marker each session
+        self._held = None      # reset the held-reason each session
 
         for config in self.breaks:
             config.reset_timer()
@@ -1497,14 +1511,17 @@ class BreakApp:
                     config.remaining = remaining
                 for event_type, data in events:
                     self._record_event(event_type, **data)
+                held_reason, self._held = track_held(
+                    events, fire_index is not None, self._held)
                 if fire_index is not None:
                     logging.info(
-                        "break due, firing: %s (idle=%.0fs fullscreen=%s)",
+                        "break due, firing: %s (idle=%.0fs fullscreen=%s held=%s)",
                         self.breaks[fire_index].name.get(),
                         ctx.idle_seconds,
                         ctx.is_fullscreen,
+                        held_reason,
                     )
-                    self.trigger_break(self.breaks[fire_index])
+                    self.trigger_break(self.breaks[fire_index], held_reason=held_reason)
             except Exception as e:
                 logging.error(f"timer_loop tick failed: {e}", exc_info=True)
 
@@ -1528,7 +1545,7 @@ class BreakApp:
             pass
         return screens[0]
 
-    def trigger_break(self, config):
+    def trigger_break(self, config, held_reason=None):
         """Queue a break with the given configuration."""
         break_data = {
             'name': config.name.get(),
@@ -1536,7 +1553,8 @@ class BreakApp:
             'auto_dismiss': config.auto_dismiss.get(),
             'start_sound': config.start_sound.get(),
             'end_sound': config.end_sound.get(),
-            'loop_end_sound': config.loop_end_sound.get()
+            'loop_end_sound': config.loop_end_sound.get(),
+            'held_reason': held_reason,
         }
         self.break_queue.append(break_data)
         self.root.after(0, self._process_break_queue)
@@ -1602,6 +1620,7 @@ class BreakApp:
             loop_end_sound=break_data['loop_end_sound'],
             placement=self.popup_placement.get(),
             target_screen=target_screen,
+            held_reason=break_data.get('held_reason'),
         )
 
     def _requeue_break(self, break_data):
