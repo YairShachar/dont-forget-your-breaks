@@ -152,6 +152,19 @@ POPUP_PLACEMENT_LABELS = {
     "Follow cursor": "cursor",
 }
 
+
+def _display_rects():
+    """Active display rects (x, y, w, h) in global top-left points; [] off-macOS
+    or on any failure (so callers degrade to the Tk screen)."""
+    if sys.platform != "darwin":
+        return []
+    try:
+        import Quartz
+        from dfyb.activity.sensors import _active_display_rects
+        return _active_display_rects(Quartz)
+    except Exception:
+        return []
+
 # Animation timing
 ANIMATION_FRAME_INTERVAL = 16      # ms (60fps)
 ANIMATION_EXPAND_DURATION = 250    # ms
@@ -208,9 +221,11 @@ class CountdownPopup:
 
     def __init__(self, parent, title, message, duration,
                  auto_dismiss=True, on_close=None, on_snooze=None,
-                 end_sound=None, loop_end_sound=False, placement="active"):
+                 end_sound=None, loop_end_sound=False, placement="active",
+                 target_screen=None):
         self.parent = parent
         self.placement = placement
+        self.target_screen = target_screen
         self.duration = duration
         self.remaining = duration
         self.auto_dismiss = auto_dismiss
@@ -434,32 +449,25 @@ class CountdownPopup:
             point = (self.window.winfo_pointerx(), self.window.winfo_pointery())
             return screen_for_point(point, screens) or (screens[0] if screens else None)
         if self.placement == "active":
-            rect = frontmost_window_rect()
-            if rect:
-                center = (rect[0] + rect[2] / 2, rect[1] + rect[3] / 2)
-                hit = screen_for_point(center, screens)
-                if hit:
-                    return hit
-            return screens[0] if screens else None  # fallback: primary
+            # target_screen was captured BEFORE the popup stole focus.
+            return self.target_screen or (screens[0] if screens else None)
         return screens[0] if screens else None      # "primary"
 
     def _position_popup(self):
         """Center the popup on the chosen screen (per placement mode)."""
-        from dfyb.activity.sensors import _active_display_rects
-        screens = []
-        if sys.platform == "darwin":
-            try:
-                import Quartz
-                screens = _active_display_rects(Quartz)
-            except Exception:
-                screens = []
+        screens = _display_rects()
         screen = self._target_screen(screens)
         if screen is None:  # non-macOS / no Quartz: use the Tk screen
             screen = (0, 0, self.window.winfo_screenwidth(),
                       self.window.winfo_screenheight())
         x, y = center_on_screen(screen, POPUP_WIDTH, POPUP_HEIGHT)
         x, y = clamp_onscreen(x, y, POPUP_WIDTH, POPUP_HEIGHT, screen)
-        self.window.geometry(f"{POPUP_WIDTH}x{POPUP_HEIGHT}+{x}+{y}")
+        # CustomTkinter's .geometry() override mislocates cross-monitor +x+y
+        # (it recomputes the position for the window's current monitor). Set the
+        # raw Tk geometry with integer coords so the popup lands on the target
+        # screen we chose.
+        self.window.tk.call("wm", "geometry", self.window,
+                            f"{POPUP_WIDTH}x{POPUP_HEIGHT}+{int(x)}+{int(y)}")
 
     def bring_to_user(self):
         """Bring popup to user's current location."""
@@ -1456,6 +1464,26 @@ class BreakApp:
             except Exception as e:
                 logging.error(f"timer_loop tick failed: {e}", exc_info=True)
 
+    def _capture_active_screen(self):
+        """Screen (x, y, w, h) the user is working on, captured BEFORE the popup
+        is built (while their app is still frontmost). Falls back to dfyb's own
+        window's screen, then the primary; None off-macOS."""
+        screens = _display_rects()
+        if not screens:
+            return None
+        rect = frontmost_window_rect()
+        if rect:
+            hit = screen_for_point((rect[0] + rect[2] / 2, rect[1] + rect[3] / 2), screens)
+            if hit:
+                return hit
+        try:  # fallback: the screen dfyb's own window sits on
+            hit = screen_for_point((self.root.winfo_rootx(), self.root.winfo_rooty()), screens)
+            if hit:
+                return hit
+        except Exception:
+            pass
+        return screens[0]
+
     def trigger_break(self, config):
         """Queue a break with the given configuration."""
         break_data = {
@@ -1514,6 +1542,9 @@ class BreakApp:
                 self.root.after(snooze_ms, lambda: self._requeue_break(break_data))
 
         self.status.configure(text=break_data['name'], text_color=COLORS['accent_orange'])
+        # Capture the active screen NOW, before the popup's window steals focus.
+        target_screen = (self._capture_active_screen()
+                         if self.popup_placement.get() == "active" else None)
         self.active_popup = CountdownPopup(
             self.root,
             break_data['name'],
@@ -1525,6 +1556,7 @@ class BreakApp:
             end_sound=break_data['end_sound'],
             loop_end_sound=break_data['loop_end_sound'],
             placement=self.popup_placement.get(),
+            target_screen=target_screen,
         )
 
     def _requeue_break(self, break_data):
