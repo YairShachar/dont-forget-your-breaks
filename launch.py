@@ -149,7 +149,7 @@ POPUP_HEIGHT = 300
 POPUP_PLACEMENT_LABELS = {
     "Active screen": "active",
     "Primary screen": "primary",
-    "Follow cursor": "cursor",
+    "Cursor's screen": "cursor",
 }
 
 
