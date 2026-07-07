@@ -1,5 +1,5 @@
 import dfyb.animation as animation
-from dfyb.animation import ease_out_quad, ease_in_quad, prefers_reduced_motion
+from dfyb.animation import ease_out_quad, ease_in_quad, prefers_reduced_motion, lerp_color
 
 
 class FakeProc:
@@ -37,3 +37,11 @@ def test_prefers_reduced_motion_darwin_disabled(monkeypatch):
     monkeypatch.setattr(animation.sys, "platform", "darwin")
     monkeypatch.setattr(animation.subprocess, "run", lambda *a, **k: FakeProc("0\n"))
     assert prefers_reduced_motion() is False
+
+
+def test_lerp_color_endpoints_midpoint_and_clamp():
+    assert lerp_color("#000000", "#ffffff", 0) == "#000000"
+    assert lerp_color("#000000", "#ffffff", 1) == "#ffffff"
+    assert lerp_color("#000000", "#ffffff", 0.5) == "#808080"
+    assert lerp_color("#000000", "#ffffff", 2) == "#ffffff"    # clamps high
+    assert lerp_color("#ffffff", "#000000", -1) == "#ffffff"   # clamps low
