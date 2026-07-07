@@ -25,7 +25,8 @@ from dfyb.updater import (
 )
 from dfyb.animation import ease_out_quad, prefers_reduced_motion
 from dfyb.activity.event_log import EventLog, BREAK_TAKEN
-from dfyb.activity.sensors import read_context
+from dfyb.activity.sensors import read_context, frontmost_window_rect
+from dfyb.popup_placement import screen_for_point, center_on_screen, clamp_onscreen
 from dfyb.scheduler.adapter import states_from_configs
 from dfyb.scheduler.tick import advance
 from dfyb.timer_lifecycle import timer_should_continue
@@ -141,6 +142,16 @@ SETTINGS_WINDOW_WIDTH = 600             # px; height auto-fits the content
 SETTINGS_WINDOW_MAX_HEIGHT_RATIO = 0.9  # cap auto-height at 90% of screen height
 SETTINGS_WINDOW_Y_OFFSET = 80           # px the window sits above the main window
 
+# Break popup
+POPUP_WIDTH = 380
+POPUP_HEIGHT = 300
+# Settings dropdown label -> stored popup_placement value
+POPUP_PLACEMENT_LABELS = {
+    "Active screen": "active",
+    "Primary screen": "primary",
+    "Follow cursor": "cursor",
+}
+
 # Animation timing
 ANIMATION_FRAME_INTERVAL = 16      # ms (60fps)
 ANIMATION_EXPAND_DURATION = 250    # ms
@@ -197,8 +208,9 @@ class CountdownPopup:
 
     def __init__(self, parent, title, message, duration,
                  auto_dismiss=True, on_close=None, on_snooze=None,
-                 end_sound=None, loop_end_sound=False):
+                 end_sound=None, loop_end_sound=False, placement="active"):
         self.parent = parent
+        self.placement = placement
         self.duration = duration
         self.remaining = duration
         self.auto_dismiss = auto_dismiss
@@ -221,16 +233,9 @@ class CountdownPopup:
         # Make window always on top
         self.window.attributes('-topmost', True)
 
-        # Larger popup size with modern styling
-        popup_w, popup_h = 380, 300
-
-        # Position popup at mouse cursor location (works across all monitors)
+        # Position the popup on the chosen screen (per the placement pref).
         self.window.update_idletasks()
-        mouse_x = self.window.winfo_pointerx()
-        mouse_y = self.window.winfo_pointery()
-        x = mouse_x - popup_w // 2 + 20
-        y = mouse_y - popup_h // 2 + 20
-        self.window.geometry(f"{popup_w}x{popup_h}+{x}+{y}")
+        self._position_popup()
 
         # Glassmorphism effect (semi-transparent on macOS)
         if sys.platform == "darwin":
@@ -423,17 +428,45 @@ class CountdownPopup:
             return
         self.window.after(2000, self._keep_on_top)
 
+    def _target_screen(self, screens):
+        """Pick the screen rect (x, y, w, h) to place the popup on, per mode."""
+        if self.placement == "cursor":
+            point = (self.window.winfo_pointerx(), self.window.winfo_pointery())
+            return screen_for_point(point, screens) or (screens[0] if screens else None)
+        if self.placement == "active":
+            rect = frontmost_window_rect()
+            if rect:
+                center = (rect[0] + rect[2] / 2, rect[1] + rect[3] / 2)
+                hit = screen_for_point(center, screens)
+                if hit:
+                    return hit
+            return screens[0] if screens else None  # fallback: primary
+        return screens[0] if screens else None      # "primary"
+
+    def _position_popup(self):
+        """Center the popup on the chosen screen (per placement mode)."""
+        from dfyb.activity.sensors import _active_display_rects
+        screens = []
+        if sys.platform == "darwin":
+            try:
+                import Quartz
+                screens = _active_display_rects(Quartz)
+            except Exception:
+                screens = []
+        screen = self._target_screen(screens)
+        if screen is None:  # non-macOS / no Quartz: use the Tk screen
+            screen = (0, 0, self.window.winfo_screenwidth(),
+                      self.window.winfo_screenheight())
+        x, y = center_on_screen(screen, POPUP_WIDTH, POPUP_HEIGHT)
+        x, y = clamp_onscreen(x, y, POPUP_WIDTH, POPUP_HEIGHT, screen)
+        self.window.geometry(f"{POPUP_WIDTH}x{POPUP_HEIGHT}+{x}+{y}")
+
     def bring_to_user(self):
         """Bring popup to user's current location."""
         if self.closed:
             return
         try:
-            mouse_x = self.window.winfo_pointerx()
-            mouse_y = self.window.winfo_pointery()
-            popup_w, popup_h = 380, 300
-            x = mouse_x - popup_w // 2 + 20
-            y = mouse_y - popup_h // 2 + 20
-            self.window.geometry(f"{popup_w}x{popup_h}+{x}+{y}")
+            self._position_popup()
             self.window.lift()
             self.window.attributes('-topmost', True)
         except Exception:
@@ -830,6 +863,11 @@ class BreakApp:
         )
         self.defer_during_fullscreen.trace_add('write', self._save_preferences)
 
+        self.popup_placement = ctk.StringVar(
+            value=self.saved_prefs.get("popup_placement", "active")
+        )
+        self.popup_placement.trace_add('write', self._save_preferences)
+
         # Update check preference (default True)
         self.check_for_updates = ctk.BooleanVar(
             value=self.saved_prefs.get("check_for_updates", True)
@@ -1040,6 +1078,7 @@ class BreakApp:
             "check_for_updates": self.check_for_updates.get(),
             "defer_during_meetings": self.defer_during_meetings.get(),
             "defer_during_fullscreen": self.defer_during_fullscreen.get(),
+            "popup_placement": self.popup_placement.get(),
             "last_update_check": self.saved_prefs.get("last_update_check", 0),
         }
         for config in self.breaks:
@@ -1334,7 +1373,27 @@ class BreakApp:
             general_frame, text="Pause breaks during fullscreen",
             variable=self.defer_during_fullscreen,
             font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
-        ).pack(padx=PADDING_PANEL_X, pady=(4, PADDING_PANEL_Y), anchor="w")
+        ).pack(padx=PADDING_PANEL_X, pady=(4, 4), anchor="w")
+
+        placement_row = ctk.CTkFrame(general_frame, fg_color="transparent")
+        placement_row.pack(padx=PADDING_PANEL_X, pady=(4, PADDING_PANEL_Y),
+                           anchor="w", fill="x")
+        ctk.CTkLabel(
+            placement_row, text="Break popup appears on",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+        ).pack(side="left")
+        value_to_label = {v: k for k, v in POPUP_PLACEMENT_LABELS.items()}
+
+        def _on_placement(label):
+            self.popup_placement.set(POPUP_PLACEMENT_LABELS[label])
+
+        placement_menu = ctk.CTkOptionMenu(
+            placement_row, values=list(POPUP_PLACEMENT_LABELS.keys()),
+            command=_on_placement,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+        )
+        placement_menu.set(value_to_label.get(self.popup_placement.get(), "Active screen"))
+        placement_menu.pack(side="right")
 
         # Size the window to fit its content (so added settings never clip),
         # capped at the screen height; center on the main window, then show.
@@ -1464,7 +1523,8 @@ class BreakApp:
             on_close=on_popup_close,
             on_snooze=on_snooze,
             end_sound=break_data['end_sound'],
-            loop_end_sound=break_data['loop_end_sound']
+            loop_end_sound=break_data['loop_end_sound'],
+            placement=self.popup_placement.get(),
         )
 
     def _requeue_break(self, break_data):
