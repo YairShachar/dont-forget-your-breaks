@@ -53,3 +53,19 @@ def test_phase1_event_constants_exist():
     from dfyb.activity.event_log import BREAK_DEFERRED, NATURAL_BREAK
     assert BREAK_DEFERRED == "break_deferred"
     assert NATURAL_BREAK == "natural_break"
+
+
+def test_append_stamps_schema_version(tmp_path):
+    from dfyb.activity.event_log import EventLog, SCHEMA_VERSION
+    log = EventLog(tmp_path / "e.jsonl", clock=lambda: 1.0)
+    event = log.append("break_taken", name="Micro")
+    assert event["v"] == SCHEMA_VERSION
+    assert log.read()[0]["v"] == SCHEMA_VERSION
+
+
+def test_read_tolerates_unversioned_events(tmp_path):
+    from dfyb.activity.event_log import EventLog
+    p = tmp_path / "e.jsonl"
+    p.write_text('{"ts": 1.0, "type": "break_taken", "data": {}}\n')  # old, no "v"
+    events = EventLog(p).read()
+    assert events == [{"ts": 1.0, "type": "break_taken", "data": {}}]

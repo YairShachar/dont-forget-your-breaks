@@ -17,6 +17,10 @@ IDLE_DETECTED = "idle_detected"
 BREAK_DEFERRED = "break_deferred"
 NATURAL_BREAK = "natural_break"
 
+# Event record schema version. Bump when the event shape changes; readers may
+# branch on it. Old records lacking "v" are treated as unversioned.
+SCHEMA_VERSION = 1
+
 
 class EventLog:
     """Append-only JSON Lines event store."""
@@ -26,8 +30,9 @@ class EventLog:
         self._clock = clock
 
     def append(self, event_type, **data):
-        """Append an event and return it. Each event: {ts, type, data}."""
-        event = {"ts": self._clock(), "type": event_type, "data": data}
+        """Append an event and return it. Each event: {ts, type, data, v}."""
+        event = {"ts": self._clock(), "type": event_type,
+                 "data": data, "v": SCHEMA_VERSION}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(event) + "\n")
