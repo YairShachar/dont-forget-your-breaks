@@ -154,6 +154,42 @@ def microphone_in_use():
         return False
 
 
+def frontmost_window_rect():
+    """(x, y, w, h) of the frontmost APPLICATION's frontmost on-screen layer-0
+    window, in global top-left points. None on non-macOS / failure / none.
+
+    Uses NSWorkspace.frontmostApplication() (the app you're working in — never
+    Stage Manager / WindowManager) and matches its PID in the on-screen window
+    list, so system overlays don't pollute the result. Only the resulting
+    screen is used, so picking a minor window of that app is fine.
+    """
+    if sys.platform != "darwin":
+        return None
+    try:
+        import Quartz
+        from AppKit import NSWorkspace
+        app = NSWorkspace.sharedWorkspace().frontmostApplication()
+        if app is None:
+            return None
+        pid = app.processIdentifier()
+        windows = Quartz.CGWindowListCopyWindowInfo(
+            Quartz.kCGWindowListOptionOnScreenOnly
+            | Quartz.kCGWindowListExcludeDesktopElements,
+            Quartz.kCGNullWindowID,
+        )
+        for window in windows:
+            if window.get("kCGWindowLayer", 1) != 0:
+                continue
+            if window.get("kCGWindowOwnerPID") != pid:
+                continue
+            bounds = window.get("kCGWindowBounds", {})
+            return (bounds.get("X", 0.0), bounds.get("Y", 0.0),
+                    bounds.get("Width", 0.0), bounds.get("Height", 0.0))
+        return None
+    except Exception:
+        return None
+
+
 def read_context(check_meeting=True, check_fullscreen=True):
     """Snapshot the current context for the scheduler.
 
