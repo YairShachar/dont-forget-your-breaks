@@ -1515,10 +1515,11 @@ class BreakApp:
                     events, fire_index is not None, self._held)
                 if fire_index is not None:
                     logging.info(
-                        "break due, firing: %s (idle=%.0fs fullscreen=%s held=%s)",
+                        "break due, firing: %s (idle=%.0fs fullscreen=%s meeting=%s held=%s)",
                         self.breaks[fire_index].name.get(),
                         ctx.idle_seconds,
                         ctx.is_fullscreen,
+                        ctx.is_meeting,
                         held_reason,
                     )
                     self.trigger_break(self.breaks[fire_index], held_reason=held_reason)
