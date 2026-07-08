@@ -131,3 +131,26 @@ def test_step_meeting_takes_precedence_over_away():
     states = [BreakState(remaining=1, interval_seconds=100, duration_seconds=5)]
     result = step(states, Context(idle_seconds=120.0, is_fullscreen=False, is_meeting=True))
     assert result.defer_reason == "meeting"
+
+
+def test_step_defers_micro_and_normal_together():
+    # Micro (short) + Normal (long) both due, in a meeting -> BOTH held, neither
+    # fires. Deferral is context-based, not per-break-type.
+    micro = BreakState(remaining=1, interval_seconds=1200, duration_seconds=20)
+    normal = BreakState(remaining=1, interval_seconds=3600, duration_seconds=300)
+    r = step([micro, normal], Context(idle_seconds=0.0, is_fullscreen=False, is_meeting=True))
+    assert r.defer_reason == "meeting"
+    assert r.fire_index is None
+    assert r.new_remaining == [0, 0]   # both held
+
+
+def test_step_defers_the_normal_break_when_it_is_the_only_one_due():
+    # Only the Normal (long) break is due (Micro still counting), in fullscreen
+    # -> the Normal break defers exactly like the Micro would.
+    micro = BreakState(remaining=500, interval_seconds=1200, duration_seconds=20)
+    normal = BreakState(remaining=1, interval_seconds=3600, duration_seconds=300)
+    r = step([micro, normal], Context(idle_seconds=0.0, is_fullscreen=True))
+    assert r.defer_reason == "fullscreen"
+    assert r.fire_index is None
+    assert r.new_remaining[1] == 0     # Normal held
+    assert r.new_remaining[0] == 499   # Micro just decrements
