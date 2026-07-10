@@ -151,6 +151,7 @@ POPUP_HEIGHT = 300
 # Activity-pause deferral (#34) slider bounds
 ACTIVITY_PAUSE_MIN = 2
 ACTIVITY_PAUSE_MAX = 15
+ACTIVITY_PAUSE_DEFAULT = 2   # seconds of stillness before a due break fires
 POPUP_FADE_FRAMES = 16   # ~256ms entrance fade at ANIMATION_FRAME_INTERVAL
 # Settings dropdown label -> stored popup_placement value
 POPUP_PLACEMENT_LABELS = {
@@ -936,7 +937,7 @@ class BreakApp:
         )
         self.defer_while_active.trace_add('write', self._save_preferences)
         self.activity_pause_seconds = ctk.IntVar(
-            value=self.saved_prefs.get("activity_pause_seconds", 5)
+            value=self.saved_prefs.get("activity_pause_seconds", ACTIVITY_PAUSE_DEFAULT)
         )
         self.activity_pause_seconds.trace_add('write', self._save_preferences)
 
@@ -1462,17 +1463,19 @@ class BreakApp:
         ).pack(padx=PADDING_PANEL_X, pady=(4, 4), anchor="w")
 
         pause_row = ctk.CTkFrame(general_frame, fg_color="transparent")
-        pause_row.pack(padx=PADDING_PANEL_X, pady=(4, 4), anchor="w", fill="x")
+        pause_row.pack(padx=(PADDING_PANEL_X + ROW_SPACING, PADDING_PANEL_X),
+                       pady=(0, 4), anchor="w", fill="x")
         pause_value_label = ctk.CTkLabel(
-            pause_row, text=f"Pause: {self.activity_pause_seconds.get()} sec",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+            pause_row, text=f"↳ Pause length: {self.activity_pause_seconds.get()} sec",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label']),
+            text_color=COLORS['text_secondary']
         )
         pause_value_label.pack(side="left")
 
         def _on_pause(value):
             secs = int(round(value))
             self.activity_pause_seconds.set(secs)
-            pause_value_label.configure(text=f"Pause: {secs} sec")
+            pause_value_label.configure(text=f"↳ Pause length: {secs} sec")
 
         pause_slider = ctk.CTkSlider(
             pause_row, from_=ACTIVITY_PAUSE_MIN, to=ACTIVITY_PAUSE_MAX,

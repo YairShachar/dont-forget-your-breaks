@@ -4,7 +4,6 @@ from dataclasses import dataclass
 # Configurable thresholds (can surface to a settings UI in a later phase).
 NATURAL_BREAK_IDLE_THRESHOLD_SECONDS = 300  # idle >= this => natural break (reset all timers)
 AWAY_IDLE_THRESHOLD_SECONDS = 60            # idle >= this at fire time => defer (briefly away)
-ACTIVITY_PAUSE_DEFAULT_SECONDS = 5          # idle < this at fire time => defer (mid-activity)
 
 FIRE = "fire"
 DEFER = "defer"
