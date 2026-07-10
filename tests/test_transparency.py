@@ -29,7 +29,7 @@ def test_track_held_natural_break_clears():
 
 
 def test_held_message_maps_each_reason():
-    assert held_message("meeting") == "Waited while you were in a meeting."
+    assert held_message("meeting") == "Waited while your microphone was in use."
     assert held_message("fullscreen") == "Waited while you were in full screen."
     assert held_message("away") == "Waited until you were back."
     assert held_message("nonsense") is None

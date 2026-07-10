@@ -4,7 +4,7 @@ from dfyb.activity.event_log import BREAK_DEFERRED, NATURAL_BREAK
 
 # reason -> the calm line shown under the break title when it was held.
 HELD_MESSAGES = {
-    "meeting": "Waited while you were in a meeting.",
+    "meeting": "Waited while your microphone was in use.",
     "fullscreen": "Waited while you were in full screen.",
     "away": "Waited until you were back.",
 }
