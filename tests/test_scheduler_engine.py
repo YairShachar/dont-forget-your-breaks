@@ -154,3 +154,45 @@ def test_step_defers_the_normal_break_when_it_is_the_only_one_due():
     assert r.fire_index is None
     assert r.new_remaining[1] == 0     # Normal held
     assert r.new_remaining[0] == 499   # Micro just decrements
+
+
+def test_decide_defers_when_active():
+    assert decide(ctx(idle=2), pause_threshold=5) == DEFER
+
+
+def test_decide_fires_in_the_pause_window():
+    # past the pause threshold, before away -> fire
+    assert decide(ctx(idle=10), pause_threshold=5) == FIRE
+
+
+def test_decide_pause_threshold_zero_disables():
+    # default 0 -> active idle still fires (feature off)
+    assert decide(ctx(idle=0)) == FIRE
+
+
+def test_step_defer_reason_active():
+    states = [BreakState(remaining=1, interval_seconds=100, duration_seconds=5)]
+    r = step(states, ctx(idle=2), pause_threshold=5)
+    assert r.defer_reason == "active"
+    assert r.fire_index is None
+    assert r.new_remaining == [0]
+
+
+def test_step_fires_in_pause_window():
+    states = [BreakState(remaining=1, interval_seconds=100, duration_seconds=5)]
+    r = step(states, ctx(idle=10), pause_threshold=5)
+    assert r.fire_index == 0
+
+
+def test_step_away_beats_active():
+    # idle >= away threshold -> "away" (can't be both < pause and >= away)
+    states = [BreakState(remaining=1, interval_seconds=100, duration_seconds=5)]
+    r = step(states, ctx(idle=120), pause_threshold=5)
+    assert r.defer_reason == "away"
+
+
+def test_step_meeting_beats_active():
+    states = [BreakState(remaining=1, interval_seconds=100, duration_seconds=5)]
+    r = step(states, Context(idle_seconds=1.0, is_fullscreen=False, is_meeting=True),
+             pause_threshold=5)
+    assert r.defer_reason == "meeting"

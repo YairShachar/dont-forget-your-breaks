@@ -4,6 +4,7 @@ from dataclasses import dataclass
 # Configurable thresholds (can surface to a settings UI in a later phase).
 NATURAL_BREAK_IDLE_THRESHOLD_SECONDS = 300  # idle >= this => natural break (reset all timers)
 AWAY_IDLE_THRESHOLD_SECONDS = 60            # idle >= this at fire time => defer (briefly away)
+ACTIVITY_PAUSE_DEFAULT_SECONDS = 5          # idle < this at fire time => defer (mid-activity)
 
 FIRE = "fire"
 DEFER = "defer"
@@ -39,7 +40,7 @@ def is_natural_break(idle_seconds, threshold=NATURAL_BREAK_IDLE_THRESHOLD_SECOND
     return idle_seconds >= threshold
 
 
-def decide(ctx, away_threshold=AWAY_IDLE_THRESHOLD_SECONDS):
+def decide(ctx, away_threshold=AWAY_IDLE_THRESHOLD_SECONDS, pause_threshold=0):
     """Decide whether a due break should FIRE or DEFER given the current context."""
     if ctx.is_fullscreen:
         return DEFER          # don't interrupt fullscreen
@@ -47,12 +48,15 @@ def decide(ctx, away_threshold=AWAY_IDLE_THRESHOLD_SECONDS):
         return DEFER          # don't interrupt a call (mic in use)
     if ctx.idle_seconds >= away_threshold:
         return DEFER          # briefly away — wait until back and active
+    if ctx.idle_seconds < pause_threshold:
+        return DEFER          # mid-activity — wait for a pause (0 disables)
     return FIRE
 
 
 def step(states, ctx,
          natural_threshold=NATURAL_BREAK_IDLE_THRESHOLD_SECONDS,
-         away_threshold=AWAY_IDLE_THRESHOLD_SECONDS):
+         away_threshold=AWAY_IDLE_THRESHOLD_SECONDS,
+         pause_threshold=0):
     """Advance one 1-second tick. Returns a StepResult describing what to do.
 
     `states` is a list[BreakState] parallel to the app's break configs.
@@ -68,13 +72,15 @@ def step(states, ctx,
 
     # 3. If any are due, decide fire vs defer.
     if due:
-        if decide(ctx, away_threshold) == DEFER:
+        if decide(ctx, away_threshold, pause_threshold) == DEFER:
             if ctx.is_fullscreen:
                 reason = "fullscreen"
             elif ctx.is_meeting:
                 reason = "meeting"
-            else:
+            elif ctx.idle_seconds >= away_threshold:
                 reason = "away"
+            else:
+                reason = "active"             # idle < pause_threshold
             for i in due:
                 new_remaining[i] = 0          # clamp — stays due, no negative drift
             return StepResult(new_remaining=new_remaining, defer_reason=reason)
