@@ -34,3 +34,7 @@ def test_held_message_maps_each_reason():
     assert held_message("away") == "Waited until you were back."
     assert held_message("nonsense") is None
     assert held_message(None) is None
+
+
+def test_held_message_active():
+    assert held_message("active") == "Waited for a pause in your activity."

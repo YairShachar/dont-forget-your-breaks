@@ -29,8 +29,8 @@ def events_for_tick(result, ctx, episode):
     return [], None
 
 
-def advance(states, ctx, episode):
+def advance(states, ctx, episode, pause_threshold=0):
     """Run one tick. Returns (new_remaining, fire_index, events, new_episode)."""
-    result = step(states, ctx)
+    result = step(states, ctx, pause_threshold=pause_threshold)
     events, new_episode = events_for_tick(result, ctx, episode)
     return result.new_remaining, result.fire_index, events, new_episode

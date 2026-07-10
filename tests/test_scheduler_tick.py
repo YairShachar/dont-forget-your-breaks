@@ -94,3 +94,11 @@ def test_advance_decrements_when_not_due():
     new_remaining, fire_index, events, ep = advance(states, ctx(idle=0), None)
     assert new_remaining == [4]
     assert fire_index is None and events == [] and ep is None
+
+
+def test_advance_defers_active():
+    states = [BreakState(remaining=1, interval_seconds=100, duration_seconds=5)]
+    new_remaining, fire_index, events, ep = advance(states, ctx(idle=2), None, pause_threshold=5)
+    assert fire_index is None
+    assert events == [(BREAK_DEFERRED, {"reason": "active"})]
+    assert ep == DEFERRED_EPISODE

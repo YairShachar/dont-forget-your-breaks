@@ -7,6 +7,7 @@ HELD_MESSAGES = {
     "meeting": "Waited while your microphone was in use.",
     "fullscreen": "Waited while you were in full screen.",
     "away": "Waited until you were back.",
+    "active": "Waited for a pause in your activity.",
 }
 
 
