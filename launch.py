@@ -148,6 +148,9 @@ SETTINGS_WINDOW_Y_OFFSET = 80           # px the window sits above the main wind
 # Break popup
 POPUP_WIDTH = 380
 POPUP_HEIGHT = 300
+# Activity-pause deferral (#34) slider bounds
+ACTIVITY_PAUSE_MIN = 2
+ACTIVITY_PAUSE_MAX = 15
 POPUP_FADE_FRAMES = 16   # ~256ms entrance fade at ANIMATION_FRAME_INTERVAL
 # Settings dropdown label -> stored popup_placement value
 POPUP_PLACEMENT_LABELS = {
@@ -928,6 +931,15 @@ class BreakApp:
         )
         self.defer_during_fullscreen.trace_add('write', self._save_preferences)
 
+        self.defer_while_active = ctk.BooleanVar(
+            value=self.saved_prefs.get("defer_while_active", True)
+        )
+        self.defer_while_active.trace_add('write', self._save_preferences)
+        self.activity_pause_seconds = ctk.IntVar(
+            value=self.saved_prefs.get("activity_pause_seconds", 5)
+        )
+        self.activity_pause_seconds.trace_add('write', self._save_preferences)
+
         self.popup_placement = ctk.StringVar(
             value=self.saved_prefs.get("popup_placement", "active")
         )
@@ -1144,6 +1156,8 @@ class BreakApp:
             "defer_during_meetings": self.defer_during_meetings.get(),
             "defer_during_fullscreen": self.defer_during_fullscreen.get(),
             "popup_placement": self.popup_placement.get(),
+            "defer_while_active": self.defer_while_active.get(),
+            "activity_pause_seconds": self.activity_pause_seconds.get(),
             "last_update_check": self.saved_prefs.get("last_update_check", 0),
         }
         for config in self.breaks:
@@ -1441,6 +1455,32 @@ class BreakApp:
             font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
         ).pack(padx=PADDING_PANEL_X, pady=(4, 4), anchor="w")
 
+        ctk.CTkCheckBox(
+            general_frame, text="Wait until you pause (keyboard or mouse)",
+            variable=self.defer_while_active,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+        ).pack(padx=PADDING_PANEL_X, pady=(4, 4), anchor="w")
+
+        pause_row = ctk.CTkFrame(general_frame, fg_color="transparent")
+        pause_row.pack(padx=PADDING_PANEL_X, pady=(4, 4), anchor="w", fill="x")
+        pause_value_label = ctk.CTkLabel(
+            pause_row, text=f"Pause: {self.activity_pause_seconds.get()} sec",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+        )
+        pause_value_label.pack(side="left")
+
+        def _on_pause(value):
+            secs = int(round(value))
+            self.activity_pause_seconds.set(secs)
+            pause_value_label.configure(text=f"Pause: {secs} sec")
+
+        pause_slider = ctk.CTkSlider(
+            pause_row, from_=ACTIVITY_PAUSE_MIN, to=ACTIVITY_PAUSE_MAX,
+            number_of_steps=ACTIVITY_PAUSE_MAX - ACTIVITY_PAUSE_MIN, command=_on_pause
+        )
+        pause_slider.set(self.activity_pause_seconds.get())
+        pause_slider.pack(side="right")
+
         placement_row = ctk.CTkFrame(general_frame, fg_color="transparent")
         placement_row.pack(padx=PADDING_PANEL_X, pady=(4, PADDING_PANEL_Y),
                            anchor="w", fill="x")
@@ -1504,8 +1544,10 @@ class BreakApp:
                     check_fullscreen=self.defer_during_fullscreen.get(),
                 )
                 states = states_from_configs(self.breaks)
+                pause = (self.activity_pause_seconds.get()
+                         if self.defer_while_active.get() else 0)
                 new_remaining, fire_index, events, self._episode = advance(
-                    states, ctx, self._episode
+                    states, ctx, self._episode, pause_threshold=pause
                 )
                 for config, remaining in zip(self.breaks, new_remaining):
                     config.remaining = remaining
