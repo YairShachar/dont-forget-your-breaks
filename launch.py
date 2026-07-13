@@ -36,6 +36,7 @@ from dfyb.timer_lifecycle import timer_should_continue
 from dfyb.macos_window import pin_to_active_space
 from dfyb.insights.transparency import track_held, held_message, holding_cue
 from dfyb.insights.over_break import format_over_time
+from dfyb.snooze import snooze_delay_ms
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -159,6 +160,8 @@ SNOOZE_RECHECK_MS = 5000     # while a snoozed break is context-deferred, re-che
 CONFIG_COMMIT_DEBOUNCE_MS = 800  # wait this long after the last keystroke before applying a typed interval/duration
 BREAK_OVER_TEXT = "Break over ✓"       # big popup label once a break's duration elapses
 OVER_BREAK_SUFFIX = "over your break"  # trails the +MM:SS over-breaking count-up
+SNOOZE_OPTIONS_MINUTES = [5, 10, 15, 30]  # snooze durations offered on the popup ▾ menu
+DEFAULT_SNOOZE_MINUTES = 5                 # default snooze length (persisted as snooze_minutes)
 POPUP_FADE_FRAMES = 16   # ~256ms entrance fade at ANIMATION_FRAME_INTERVAL
 # Settings dropdown label -> stored popup_placement value
 POPUP_PLACEMENT_LABELS = {
@@ -975,6 +978,11 @@ class BreakApp:
         )
         self.activity_pause_seconds.trace_add('write', self._save_preferences)
 
+        # Default snooze length, remembered from the popup's ▾ picker (#29)
+        self.snooze_minutes = ctk.IntVar(
+            value=self.saved_prefs.get("snooze_minutes", DEFAULT_SNOOZE_MINUTES)
+        )
+
         self.popup_placement = ctk.StringVar(
             value=self.saved_prefs.get("popup_placement", "active")
         )
@@ -1213,6 +1221,7 @@ class BreakApp:
             "popup_placement": self.popup_placement.get(),
             "defer_while_active": self.defer_while_active.get(),
             "activity_pause_seconds": self.activity_pause_seconds.get(),
+            "snooze_minutes": self.snooze_minutes.get(),
             "last_update_check": self.saved_prefs.get("last_update_check", 0),
         }
         for config in self.breaks:
