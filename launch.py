@@ -33,7 +33,7 @@ from dfyb.scheduler.tick import advance
 from dfyb.scheduler.engine import decide, DEFER
 from dfyb.timer_lifecycle import timer_should_continue
 from dfyb.macos_window import pin_to_active_space
-from dfyb.insights.transparency import track_held, held_message
+from dfyb.insights.transparency import track_held, held_message, holding_cue
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -1057,25 +1057,29 @@ class BreakApp:
 
         # Compact timer display cards
         self._timer_labels = []
+        self._cue_labels = []
         for config in self.breaks:
             card = ctk.CTkFrame(main_frame, corner_radius=CORNER_RADIUS_PANEL, fg_color=COLORS['bg_panel'])
             card.pack(fill="x", pady=(0, 6))
 
+            top_row = ctk.CTkFrame(card, fg_color="transparent")
+            top_row.pack(fill="x")
+
             name_label = ctk.CTkLabel(
-                card, text=config.name.get(),
+                top_row, text=config.name.get(),
                 font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
             )
             name_label.pack(side="left", padx=(PADDING_PANEL_X, 0), pady=8)
 
             timer_label = ctk.CTkLabel(
-                card, text="--:--",
+                top_row, text="--:--",
                 font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['timer'], weight="bold")
             )
             timer_label.pack(side="right", padx=(0, PADDING_PANEL_X), pady=8)
 
             # Break now button (quick manual trigger, left of the timer)
             ctk.CTkButton(
-                card, text="Break now",
+                top_row, text="Break now",
                 command=lambda c=config: self.break_now(c),
                 width=90, height=BUTTON_HEIGHT_SMALL,
                 corner_radius=CORNER_RADIUS_INPUT,
@@ -1088,9 +1092,18 @@ class BreakApp:
 
             self._timer_labels.append(timer_label)
 
+            # Gentle "holding" cue (#44): explains why a due break is waiting.
+            # Hidden until held; shown/hidden by update_ui.
+            cue_label = ctk.CTkLabel(
+                card, text="", anchor="w",
+                text_color=COLORS['text_secondary'],
+                font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper'])
+            )
+            self._cue_labels.append(cue_label)
+
             # Double-click the card (name or countdown) jumps into this break's
             # configuration (#43). The "Break now" button keeps its own click.
-            for widget in (card, name_label, timer_label):
+            for widget in (card, top_row, name_label, timer_label):
                 widget.bind("<Double-Button-1>",
                             lambda e, c=config: self._edit_break_config(c))
 
