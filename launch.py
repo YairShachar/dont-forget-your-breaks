@@ -1061,10 +1061,11 @@ class BreakApp:
             card = ctk.CTkFrame(main_frame, corner_radius=CORNER_RADIUS_PANEL, fg_color=COLORS['bg_panel'])
             card.pack(fill="x", pady=(0, 6))
 
-            ctk.CTkLabel(
+            name_label = ctk.CTkLabel(
                 card, text=config.name.get(),
                 font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
-            ).pack(side="left", padx=(PADDING_PANEL_X, 0), pady=8)
+            )
+            name_label.pack(side="left", padx=(PADDING_PANEL_X, 0), pady=8)
 
             timer_label = ctk.CTkLabel(
                 card, text="--:--",
@@ -1086,6 +1087,12 @@ class BreakApp:
             ).pack(side="right", padx=(0, 8), pady=8)
 
             self._timer_labels.append(timer_label)
+
+            # Double-click the card (name or countdown) jumps into this break's
+            # configuration (#43). The "Break now" button keeps its own click.
+            for widget in (card, name_label, timer_label):
+                widget.bind("<Double-Button-1>",
+                            lambda e, c=config: self._edit_break_config(c))
 
         # Bottom bar: feedback + update banner
         bottom_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
@@ -1402,6 +1409,10 @@ class BreakApp:
             self.start()
         else:
             self.toggle_pause()
+
+    def _edit_break_config(self, config):
+        """Open settings focused on the given break (double-click a card)."""
+        self._open_settings(focus_config=config)
 
     def _open_settings(self, focus_config=None):
         """Open the settings window, or bring it to front if already open.
