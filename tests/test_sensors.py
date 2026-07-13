@@ -190,6 +190,45 @@ def test_fullscreen_logic_is_resolution_independent():
     assert sensors.covers_any_display([(0, 200, 2880, 1600)], displays) is False
 
 
+# --- smooth_fullscreen: hysteresis over transient detection gaps (#46) ---
+
+def test_smooth_fullscreen_true_arms_full_grace():
+    # a real fullscreen observation resets the grace to the full window
+    assert sensors.smooth_fullscreen(True, 0, 3) == (True, 3)
+    assert sensors.smooth_fullscreen(True, 1, 3) == (True, 3)
+
+
+def test_smooth_fullscreen_false_within_grace_holds_true():
+    # transient False (e.g. a Space-to-Space swipe) stays fullscreen, decrementing
+    assert sensors.smooth_fullscreen(False, 3, 3) == (True, 2)
+    assert sensors.smooth_fullscreen(False, 1, 3) == (True, 0)
+
+
+def test_smooth_fullscreen_false_after_grace_is_false():
+    assert sensors.smooth_fullscreen(False, 0, 3) == (False, 0)
+
+
+def test_smooth_fullscreen_bridges_a_one_tick_gap():
+    # sequence: fullscreen, then one transient dropout, then fullscreen again
+    eff, grace = sensors.smooth_fullscreen(True, 0, 3)
+    assert eff is True
+    eff, grace = sensors.smooth_fullscreen(False, grace, 3)   # the swipe tick
+    assert eff is True                                        # bridged, not fired
+    eff, grace = sensors.smooth_fullscreen(True, grace, 3)    # arrived in new Space
+    assert eff is True and grace == 3
+
+
+def test_smooth_fullscreen_expires_after_grace_ticks():
+    # after the last True, exactly grace_ticks of False stay True, then False
+    _, grace = sensors.smooth_fullscreen(True, 0, 2)
+    eff, grace = sensors.smooth_fullscreen(False, grace, 2)
+    assert eff is True and grace == 1
+    eff, grace = sensors.smooth_fullscreen(False, grace, 2)
+    assert eff is True and grace == 0
+    eff, grace = sensors.smooth_fullscreen(False, grace, 2)
+    assert eff is False and grace == 0
+
+
 def test_read_context_fullscreen_gated_off(monkeypatch):
     monkeypatch.setattr(sensors, "idle_seconds", lambda: 0.0)
     monkeypatch.setattr(sensors, "frontmost_is_fullscreen", lambda: True)

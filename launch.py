@@ -11,6 +11,7 @@ import atexit
 import random
 import webbrowser
 import platform
+from dataclasses import replace as dataclass_replace
 from urllib.parse import quote as url_quote
 import logging
 from pathlib import Path
@@ -26,7 +27,7 @@ from dfyb.updater import (
 )
 from dfyb.animation import ease_out_quad, prefers_reduced_motion, lerp_color
 from dfyb.activity.event_log import EventLog, BREAK_TAKEN, BREAK_SNOOZED
-from dfyb.activity.sensors import read_context, frontmost_window_rect
+from dfyb.activity.sensors import read_context, frontmost_window_rect, smooth_fullscreen
 from dfyb.popup_placement import screen_for_point, center_on_screen, clamp_onscreen
 from dfyb.scheduler.adapter import states_from_configs
 from dfyb.scheduler.tick import advance
@@ -901,6 +902,7 @@ class BreakApp:
         self.event_log = EventLog(EVENTS_FILE)
         self._episode = None  # idle/deferred dedup marker for the smart-timing loop
         self._held = None      # reason the due break is currently held (transparency)
+        self._fullscreen_grace = 0  # ticks of fullscreen hysteresis left (#46)
         self._timer_generation = 0  # bumped each start(); stale threads exit
 
         # Default break configurations
@@ -1349,6 +1351,7 @@ class BreakApp:
         self.stop_event.clear()
         self._episode = None  # fresh idle/deferred dedup marker each session
         self._held = None      # reset the held-reason each session
+        self._fullscreen_grace = 0  # reset fullscreen hysteresis each session (#46)
 
         for config in self.breaks:
             config.reset_timer()
@@ -1593,6 +1596,11 @@ class BreakApp:
                     check_meeting=self.defer_during_meetings.get(),
                     check_fullscreen=self.defer_during_fullscreen.get(),
                 )
+                # Bridge transient fullscreen dropouts (e.g. Space-to-Space
+                # swipes) so a due break doesn't fire behind a fullscreen app (#46).
+                effective_fullscreen, self._fullscreen_grace = smooth_fullscreen(
+                    ctx.is_fullscreen, self._fullscreen_grace)
+                ctx = dataclass_replace(ctx, is_fullscreen=effective_fullscreen)
                 states = states_from_configs(self.breaks)
                 pause = (self.activity_pause_seconds.get()
                          if self.defer_while_active.get() else 0)
