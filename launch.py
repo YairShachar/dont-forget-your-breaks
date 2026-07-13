@@ -35,6 +35,7 @@ from dfyb.scheduler.engine import decide, DEFER
 from dfyb.timer_lifecycle import timer_should_continue
 from dfyb.macos_window import pin_to_active_space
 from dfyb.insights.transparency import track_held, held_message, holding_cue
+from dfyb.insights.over_break import format_over_time
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -156,6 +157,8 @@ ACTIVITY_PAUSE_MAX = 15
 ACTIVITY_PAUSE_DEFAULT = 2   # seconds of stillness before a due break fires
 SNOOZE_RECHECK_MS = 5000     # while a snoozed break is context-deferred, re-check this often
 CONFIG_COMMIT_DEBOUNCE_MS = 800  # wait this long after the last keystroke before applying a typed interval/duration
+BREAK_OVER_TEXT = "Break over ✓"       # big popup label once a break's duration elapses
+OVER_BREAK_SUFFIX = "over your break"  # trails the +MM:SS over-breaking count-up
 POPUP_FADE_FRAMES = 16   # ~256ms entrance fade at ANIMATION_FRAME_INTERVAL
 # Settings dropdown label -> stored popup_placement value
 POPUP_PLACEMENT_LABELS = {
@@ -330,6 +333,14 @@ class CountdownPopup:
         )
         self.countdown_label.pack(pady=10)
 
+        # Amber count-up shown only when a break runs past its duration (#33).
+        self.over_label = ctk.CTkLabel(
+            container, text="",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper']),
+            text_color=COLORS['accent_orange']
+        )
+        # not packed yet — revealed by update_countdown once over the duration
+
         # Progress bar
         self.progress = ctk.CTkProgressBar(
             container,
@@ -395,10 +406,14 @@ class CountdownPopup:
             return
 
         self.remaining -= 1
-        self.countdown_label.configure(text=self._format_time(self.remaining))
 
-        if self.remaining <= 0:
-            # Timer finished - handle end sound
+        if self.remaining > 0:
+            self.countdown_label.configure(text=self._format_time(self.remaining))
+            self.window.after(1000, self.update_countdown)
+            return
+
+        if self.remaining == 0:
+            # Duration just elapsed — fire the end sound + attention once.
             if self.end_sound and self.end_sound != "None":
                 if self.loop_end_sound:
                     threading.Thread(
@@ -411,11 +426,18 @@ class CountdownPopup:
 
             if self.auto_dismiss:
                 self.close()
-            else:
-                self.countdown_label.configure(text="Done!")
-                self._bring_to_attention()
-        else:
-            self.window.after(1000, self.update_countdown)
+                return
+            self.countdown_label.configure(text=BREAK_OVER_TEXT)
+            self._bring_to_attention()
+
+        # auto-dismiss off: count up the time spent over the break (#33).
+        over_seconds = -self.remaining
+        if over_seconds >= 1:
+            self.over_label.configure(
+                text=f"{format_over_time(over_seconds)} {OVER_BREAK_SUFFIX}")
+            if self.over_label.winfo_manager() != "pack":
+                self.over_label.pack(after=self.countdown_label, pady=(0, ROW_SPACING))
+        self.window.after(1000, self.update_countdown)
 
     def _update_progress_smooth(self):
         """Smooth progress bar update (runs every 50ms for fluid animation)."""
