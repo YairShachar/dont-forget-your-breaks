@@ -1875,15 +1875,15 @@ class BreakApp:
                 self.status.configure(text="Idle", text_color=COLORS['text_secondary'])
             self.root.after(0, self._process_break_queue)
 
-        def on_snooze(snooze_minutes):
-            self._record_event(BREAK_SNOOZED, name=break_data['name'], minutes=snooze_minutes)
-            self.snooze_minutes.set(snooze_minutes)   # remember as the new default
+        def on_snooze(snooze_seconds):
+            self._record_event(BREAK_SNOOZED, name=break_data['name'], seconds=snooze_seconds)
+            self.snooze_seconds.set(snooze_seconds)   # remember as the new default
             self._save_preferences()
             self.active_popup = None
             self.break_start_time = None
             if self.running and not self.paused:
                 self.status.configure(text="Working", text_color=COLORS['accent_green'])
-                self.root.after(snooze_delay_ms(snooze_minutes),
+                self.root.after(snooze_delay_ms(snooze_seconds),
                                 lambda: self._requeue_break(break_data))
 
         self.status.configure(text=break_data['name'], text_color=COLORS['accent_orange'])
@@ -1908,7 +1908,7 @@ class BreakApp:
             placement=self.popup_placement.get(),
             target_screen=target_screen,
             held_reason=break_data.get('held_reason'),
-            snooze_minutes=self.snooze_minutes.get(),
+            snooze_seconds=self.snooze_seconds.get(),
             snooze_count=snooze_count,
             first_snooze_ago=first_snooze_ago,
         )
