@@ -644,13 +644,13 @@ class BreakConfigPanel(ctk.CTkFrame):
             row1, text="Every:",
             font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
         ).pack(side="left")
-        interval_entry = ctk.CTkEntry(
+        self.interval_entry = ctk.CTkEntry(
             row1, width=70, height=36,
             textvariable=self.config.interval_value,
             font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input']),
             corner_radius=CORNER_RADIUS_INPUT
         )
-        interval_entry.pack(side="left", padx=(8, 4))
+        self.interval_entry.pack(side="left", padx=(8, 4))
         interval_unit = ctk.CTkComboBox(
             row1, variable=self.config.interval_unit,
             values=TIME_UNITS, width=80, height=36, state="readonly",
@@ -808,6 +808,12 @@ class BreakConfigPanel(ctk.CTkFrame):
             ANIMATION_EXPAND_DURATION,
             on_complete
         )
+
+    def focus_config(self):
+        """Expand (if collapsed) and put keyboard focus in the interval field."""
+        if not self._expanded:
+            self.expand()
+        self.interval_entry.focus_set()
 
     def collapse(self):
         """Collapse the panel to show only header with timer and test button."""
