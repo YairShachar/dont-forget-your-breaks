@@ -37,6 +37,8 @@ from dfyb.macos_window import pin_to_active_space
 from dfyb.insights.transparency import track_held, held_message, holding_cue
 from dfyb.insights.over_break import format_over_time
 from dfyb.snooze import snooze_delay_ms
+from dfyb.insights.counts import (
+    snooze_count_since_taken, first_snooze_seconds_ago, snooze_summary_label)
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -249,12 +251,15 @@ class CountdownPopup:
                  auto_dismiss=True, on_close=None, on_snooze=None,
                  end_sound=None, loop_end_sound=False, placement="active",
                  target_screen=None, held_reason=None,
-                 snooze_minutes=DEFAULT_SNOOZE_MINUTES):
+                 snooze_minutes=DEFAULT_SNOOZE_MINUTES,
+                 snooze_count=0, first_snooze_ago=None):
         self.parent = parent
         self.placement = placement
         self.target_screen = target_screen
         self.held_reason = held_reason
         self.snooze_minutes = snooze_minutes
+        self.snooze_count = snooze_count
+        self.first_snooze_ago = first_snooze_ago
         self.duration = duration
         self.remaining = duration
         self.auto_dismiss = auto_dismiss
@@ -319,6 +324,15 @@ class CountdownPopup:
                     font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper']),
                     text_color=COLORS['text_secondary']
                 ).pack(pady=(0, 6))
+
+        # Snooze insight line (#37): "Snoozed 2× already (originally due 15 min ago)".
+        summary = snooze_summary_label(self.snooze_count, self.first_snooze_ago)
+        if summary:
+            ctk.CTkLabel(
+                container, text=summary,
+                font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper']),
+                text_color=COLORS['text_secondary']
+            ).pack(pady=(0, 6))
 
         # Message
         msg_label = ctk.CTkLabel(
