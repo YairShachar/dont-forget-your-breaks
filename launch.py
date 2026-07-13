@@ -1776,6 +1776,19 @@ class BreakApp:
                 except Exception:
                     pass
 
+            # Gentle "holding" cue (#44): show why a due break is waiting.
+            cue = holding_cue(config.remaining, self._held) if (
+                self.running and not self.paused) else None
+            if i < len(self._cue_labels):
+                label = self._cue_labels[i]
+                if cue:
+                    label.configure(text=f"↳ {cue}")
+                    if label.winfo_manager() != "pack":   # not already packed
+                        label.pack(side="top", anchor="w",
+                                   padx=(PADDING_PANEL_X, 0), pady=(0, 8))
+                elif label.winfo_manager() == "pack":     # currently packed → hide
+                    label.pack_forget()
+
             if self.running and not self.paused and config.remaining < min_remaining:
                 min_remaining = config.remaining
                 next_break = config
