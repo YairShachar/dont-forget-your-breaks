@@ -1403,12 +1403,17 @@ class BreakApp:
         else:
             self.toggle_pause()
 
-    def _open_settings(self):
-        """Open the settings window, or bring it to front if already open."""
+    def _open_settings(self, focus_config=None):
+        """Open the settings window, or bring it to front if already open.
+
+        If focus_config is a BreakConfig, focus that break's settings panel
+        (expanding it and landing keyboard focus in its interval field).
+        """
         if hasattr(self, '_settings_window') and self._settings_window and self._settings_window.winfo_exists():
             self._settings_window.deiconify()
             self._settings_window.lift()
             self._settings_window.focus_force()
+            self._focus_settings_panel(focus_config)
             return
 
         self._settings_window = ctk.CTkToplevel(self.root)
@@ -1527,6 +1532,16 @@ class BreakApp:
         self._settings_window.deiconify()
         self._settings_window.lift()
         self._settings_window.focus_force()
+        self._focus_settings_panel(focus_config)
+
+    def _focus_settings_panel(self, config):
+        """Focus the settings panel that edits the given break (by identity)."""
+        if config is None:
+            return
+        for panel in self._settings_panels:
+            if panel.config is config:
+                panel.focus_config()
+                break
 
     # ------------------ TIMER ------------------
 
