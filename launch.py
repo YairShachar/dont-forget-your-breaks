@@ -30,6 +30,7 @@ from dfyb.activity.sensors import read_context, frontmost_window_rect
 from dfyb.popup_placement import screen_for_point, center_on_screen, clamp_onscreen
 from dfyb.scheduler.adapter import states_from_configs
 from dfyb.scheduler.tick import advance
+from dfyb.scheduler.engine import decide, DEFER
 from dfyb.timer_lifecycle import timer_should_continue
 from dfyb.macos_window import pin_to_active_space
 from dfyb.insights.transparency import track_held, held_message
@@ -152,6 +153,7 @@ POPUP_HEIGHT = 300
 ACTIVITY_PAUSE_MIN = 2
 ACTIVITY_PAUSE_MAX = 15
 ACTIVITY_PAUSE_DEFAULT = 2   # seconds of stillness before a due break fires
+SNOOZE_RECHECK_MS = 5000     # while a snoozed break is context-deferred, re-check this often
 POPUP_FADE_FRAMES = 16   # ~256ms entrance fade at ANIMATION_FRAME_INTERVAL
 # Settings dropdown label -> stored popup_placement value
 POPUP_PLACEMENT_LABELS = {
@@ -1670,10 +1672,25 @@ class BreakApp:
         )
 
     def _requeue_break(self, break_data):
-        """Re-queue a snoozed break."""
-        if self.running and not self.paused:
-            self.break_queue.append(break_data)
-            self.root.after(0, self._process_break_queue)
+        """Re-show a snoozed break — but respect context (defer during a
+        meeting/fullscreen/away/mid-activity) like a scheduled break, instead of
+        barging in unconditionally (#42)."""
+        if not (self.running and not self.paused):
+            return
+        ctx = read_context(
+            check_meeting=self.defer_during_meetings.get(),
+            check_fullscreen=self.defer_during_fullscreen.get(),
+        )
+        pause = (self.activity_pause_seconds.get()
+                 if self.defer_while_active.get() else 0)
+        if decide(ctx, pause_threshold=pause) == DEFER:
+            # Not a good moment — wait and re-check, don't pop over the user.
+            logging.info("snoozed break held (context deferred, fullscreen=%s meeting=%s), re-checking",
+                         ctx.is_fullscreen, ctx.is_meeting)
+            self.root.after(SNOOZE_RECHECK_MS, lambda: self._requeue_break(break_data))
+            return
+        self.break_queue.append(break_data)
+        self.root.after(0, self._process_break_queue)
 
     def test_break(self, config):
         """Test a specific break configuration."""
