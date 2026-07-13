@@ -33,3 +33,29 @@ def track_held(events, fired, prev_held):
 def held_message(reason):
     """The calm line for a held break, or None for no/unknown reason."""
     return HELD_MESSAGES.get(reason)
+
+
+# reason -> the calm live line shown while a due break is still being held.
+# Present-tense counterpart to HELD_MESSAGES (which is shown after it fires).
+HOLDING_MESSAGES = {
+    "meeting": "waiting until your mic is free…",
+    "fullscreen": "waiting for full screen to end…",
+    "away": "waiting until you're back…",
+    "active": "waiting for a pause…",
+}
+
+
+def holding_message(reason):
+    """Present-tense live cue for a currently-held break (or None)."""
+    return HOLDING_MESSAGES.get(reason)
+
+
+def holding_cue(remaining, held_reason):
+    """Live cue text for a break card, or None when it isn't being held.
+
+    A break is 'held' when it is due (remaining clamped to 0) and a defer
+    reason is active.
+    """
+    if remaining == 0 and held_reason:
+        return holding_message(held_reason)
+    return None

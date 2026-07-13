@@ -38,3 +38,35 @@ def test_held_message_maps_each_reason():
 
 def test_held_message_active():
     assert held_message("active") == "Waited for a pause in your activity."
+
+
+from dfyb.insights.transparency import holding_message, holding_cue
+
+
+def test_holding_message_maps_each_reason():
+    assert holding_message("meeting") == "waiting until your mic is free…"
+    assert holding_message("fullscreen") == "waiting for full screen to end…"
+    assert holding_message("away") == "waiting until you're back…"
+    assert holding_message("active") == "waiting for a pause…"
+
+
+def test_holding_message_unknown_or_none():
+    assert holding_message("nonsense") is None
+    assert holding_message(None) is None
+
+
+def test_holding_cue_shows_when_due_and_held():
+    assert holding_cue(0, "active") == "waiting for a pause…"
+    assert holding_cue(0, "meeting") == "waiting until your mic is free…"
+
+
+def test_holding_cue_none_when_not_due():
+    assert holding_cue(5, "active") is None
+
+
+def test_holding_cue_none_when_not_held():
+    assert holding_cue(0, None) is None
+
+
+def test_holding_cue_none_for_unknown_reason():
+    assert holding_cue(0, "nonsense") is None
