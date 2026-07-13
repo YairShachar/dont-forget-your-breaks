@@ -935,7 +935,7 @@ class BreakApp:
         self.defer_during_fullscreen.trace_add('write', self._save_preferences)
 
         self.defer_while_active = ctk.BooleanVar(
-            value=self.saved_prefs.get("defer_while_active", True)
+            value=self.saved_prefs.get("defer_while_active", False)
         )
         self.defer_while_active.trace_add('write', self._save_preferences)
         self.activity_pause_seconds = ctk.IntVar(
@@ -1649,7 +1649,7 @@ class BreakApp:
             self.break_start_time = None
             if self.running and not self.paused:
                 self.status.configure(text="Working", text_color=COLORS['accent_green'])
-                snooze_ms = snooze_minutes * 60 * 1000
+                snooze_ms = int(snooze_minutes * 60 * 1000)
                 self.root.after(snooze_ms, lambda: self._requeue_break(break_data))
 
         self.status.configure(text=break_data['name'], text_color=COLORS['accent_orange'])
