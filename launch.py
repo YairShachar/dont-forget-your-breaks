@@ -35,6 +35,7 @@ from dfyb.scheduler.engine import decide, DEFER
 from dfyb.timer_lifecycle import timer_should_continue
 from dfyb.macos_window import pin_to_active_space
 from dfyb.insights.transparency import track_held, held_message, holding_cue
+from dfyb.insights.over_break import format_over_time
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -156,6 +157,8 @@ ACTIVITY_PAUSE_MAX = 15
 ACTIVITY_PAUSE_DEFAULT = 2   # seconds of stillness before a due break fires
 SNOOZE_RECHECK_MS = 5000     # while a snoozed break is context-deferred, re-check this often
 CONFIG_COMMIT_DEBOUNCE_MS = 800  # wait this long after the last keystroke before applying a typed interval/duration
+BREAK_OVER_TEXT = "Break over ✓"       # big popup label once a break's duration elapses
+OVER_BREAK_SUFFIX = "over your break"  # trails the +MM:SS over-breaking count-up
 POPUP_FADE_FRAMES = 16   # ~256ms entrance fade at ANIMATION_FRAME_INTERVAL
 # Settings dropdown label -> stored popup_placement value
 POPUP_PLACEMENT_LABELS = {
