@@ -333,6 +333,14 @@ class CountdownPopup:
         )
         self.countdown_label.pack(pady=10)
 
+        # Amber count-up shown only when a break runs past its duration (#33).
+        self.over_label = ctk.CTkLabel(
+            container, text="",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper']),
+            text_color=COLORS['accent_orange']
+        )
+        # not packed yet — revealed by update_countdown once over the duration
+
         # Progress bar
         self.progress = ctk.CTkProgressBar(
             container,
