@@ -218,22 +218,16 @@ gh release create "v$VERSION" \
 echo ""
 echo -e "${YELLOW}Updating Homebrew tap...${NC}"
 
-# Clone or refresh the tap repo. Reuse the dir ONLY if it's a valid git repo:
-# a leftover non-git dir (e.g. /tmp being cleaned between releases) previously
-# took the "update" branch and failed the release at the tap step. Re-clone
-# on anything unexpected.
-if [ -d "$HOMEBREW_TAP_PATH/.git" ]; then
-    cd "$HOMEBREW_TAP_PATH"
-    git remote set-url origin "$TAP_SSH_REMOTE"  # force the personal alias, not a stale/work remote
-    git pull origin main || preflight_fail "tap: 'git pull' failed — brew users will NOT get v$VERSION"
-else
-    rm -rf "$HOMEBREW_TAP_PATH"  # drop any corrupted/partial dir so the clone can't collide
-    # Clone via the personal SSH alias — NOT `gh repo clone`, which uses the
-    # default ssh key (work account) for github.com.
-    git clone "$TAP_SSH_REMOTE" "$HOMEBREW_TAP_PATH" \
-        || preflight_fail "tap: 'git clone' failed — brew users will NOT get v$VERSION"
-    cd "$HOMEBREW_TAP_PATH"
-fi
+# Always clone the tap FRESH. Reusing a /tmp checkout across releases is
+# fragile: macOS periodically cleans /tmp, leaving a missing or partial repo,
+# and a stale-but-valid clone can fail `git pull` and abort the release. The tap
+# repo is tiny, so a fresh clone every time is cheap and immune to all of that.
+rm -rf "$HOMEBREW_TAP_PATH"
+# Clone via the personal SSH alias — NOT `gh repo clone`, which uses the
+# default ssh key (work account) for github.com.
+git clone "$TAP_SSH_REMOTE" "$HOMEBREW_TAP_PATH" \
+    || preflight_fail "tap: 'git clone' failed — brew users will NOT get v$VERSION"
+cd "$HOMEBREW_TAP_PATH"
 
 # Update cask formula
 cat > "Casks/dont-forget-your-breaks.rb" << EOF
@@ -268,6 +262,12 @@ git -c user.name="$GIT_NAME" -c user.email="$GIT_EMAIL" \
     || preflight_fail "tap: nothing committed (cask unchanged?) — check the tap"
 git push origin main \
     || preflight_fail "tap: 'git push' failed — brew users will NOT get v$VERSION"
+
+# Confirm the remote actually advanced to our commit — the tap has silently
+# lagged before, so verify at the git level (not a cache-able API read).
+if [ "$(git rev-parse HEAD)" != "$(git ls-remote origin main | cut -f1)" ]; then
+    preflight_fail "tap: remote main != our commit after push — verify the tap manually"
+fi
 
 # Return to project directory
 cd - > /dev/null
