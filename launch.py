@@ -255,13 +255,13 @@ class CountdownPopup:
                  auto_dismiss=True, on_close=None, on_snooze=None,
                  end_sound=None, loop_end_sound=False, placement="active",
                  target_screen=None, held_reason=None,
-                 snooze_minutes=DEFAULT_SNOOZE_MINUTES,
+                 snooze_seconds=DEFAULT_SNOOZE_SECONDS,
                  snooze_count=0, first_snooze_ago=None):
         self.parent = parent
         self.placement = placement
         self.target_screen = target_screen
         self.held_reason = held_reason
-        self.snooze_minutes = snooze_minutes
+        self.snooze_seconds = snooze_seconds
         self.snooze_count = snooze_count
         self.first_snooze_ago = first_snooze_ago
         self.duration = duration
@@ -384,7 +384,7 @@ class CountdownPopup:
 
             self.snooze_btn = ctk.CTkButton(
                 snooze_group,
-                text=f"Snooze {self.snooze_minutes}m",
+                text=f"Snooze {format_snooze_short(self.snooze_seconds)}",
                 command=self.snooze,
                 width=104,
                 height=40,
@@ -496,11 +496,11 @@ class CountdownPopup:
         if self.remaining > 0:
             self.window.after(50, self._update_progress_smooth)
 
-    def snooze(self, minutes=None):
-        """Snooze the break; `minutes` defaults to the current default."""
+    def snooze(self, seconds=None):
+        """Snooze the break; `seconds` defaults to the current default."""
         if self.closed or self.snoozed:
             return
-        chosen = self.snooze_minutes if minutes is None else minutes
+        chosen = self.snooze_seconds if seconds is None else seconds
         self.snoozed = True
         self.sound_stop_event.set()
         if self.on_snooze:
@@ -509,16 +509,79 @@ class CountdownPopup:
         self._dismiss()
 
     def _open_snooze_menu(self):
-        """Pop a small menu of snooze durations under the ▾ button."""
+        """Pop a menu of snooze durations (+ Custom…) under the ▾ button."""
         menu = tk.Menu(self.window, tearoff=0)
-        selected = tk.IntVar(value=self.snooze_minutes)
-        for minutes in SNOOZE_OPTIONS_MINUTES:
+        selected = tk.IntVar(value=self.snooze_seconds)
+        for seconds in SNOOZE_OPTIONS_SECONDS:
             menu.add_radiobutton(
-                label=f"{minutes} min", value=minutes, variable=selected,
-                command=lambda m=minutes: self.snooze(m))
+                label=format_snooze_long(seconds), value=seconds, variable=selected,
+                command=lambda s=seconds: self.snooze(s))
+        menu.add_separator()
+        menu.add_command(label="Custom…", command=self._open_custom_snooze)
         menu.tk_popup(
             self.snooze_menu_btn.winfo_rootx(),
             self.snooze_menu_btn.winfo_rooty() + self.snooze_menu_btn.winfo_height())
+
+    def _open_custom_snooze(self):
+        """Small styled dialog to snooze for an arbitrary duration."""
+        dialog = ctk.CTkToplevel(self.window)
+        dialog.title("Custom snooze")
+        dialog.resizable(False, False)
+        dialog.attributes('-topmost', True)
+
+        frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        frame.pack(padx=PADDING_WINDOW, pady=PADDING_WINDOW)
+
+        ctk.CTkLabel(
+            frame, text="Snooze for",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+        ).pack(anchor="w", pady=(0, 6))
+
+        row = ctk.CTkFrame(frame, fg_color="transparent")
+        row.pack(fill="x")
+
+        entry = ctk.CTkEntry(
+            row, width=80, height=36, corner_radius=CORNER_RADIUS_INPUT,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input'])
+        )
+        entry.pack(side="left")
+        entry.focus_set()
+
+        unit = ctk.StringVar(value=CUSTOM_SNOOZE_DEFAULT_UNIT)
+        unit_btn = ctk.CTkSegmentedButton(
+            row, values=CUSTOM_SNOOZE_UNITS, variable=unit,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+        )
+        unit_btn.set(CUSTOM_SNOOZE_DEFAULT_UNIT)
+        unit_btn.pack(side="left", padx=(8, 0))
+
+        hint = ctk.CTkLabel(
+            frame, text="", text_color=COLORS['accent_orange'],
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper'])
+        )
+        hint.pack(anchor="w", pady=(6, 0))
+
+        def do_set(*_):
+            secs = custom_snooze_seconds(entry.get(), unit.get(), MAX_SNOOZE_SECONDS)
+            if secs is None:
+                hint.configure(text="Enter a positive number")
+                return
+            dialog.destroy()
+            self.snooze(secs)
+
+        ctk.CTkButton(
+            frame, text="Set", command=do_set, height=40,
+            corner_radius=CORNER_RADIUS_BUTTON,
+            fg_color=COLORS['accent_blue'], hover_color=COLORS['accent_hover'],
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input'], weight="bold")
+        ).pack(fill="x", pady=(10, 0))
+
+        entry.bind("<Return>", do_set)
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
+        dialog.update_idletasks()
+        px = self.window.winfo_rootx() + (self.window.winfo_width() - dialog.winfo_reqwidth()) // 2
+        py = self.window.winfo_rooty() + (self.window.winfo_height() - dialog.winfo_reqheight()) // 2
+        dialog.geometry(f"+{px}+{py}")
 
     def close(self):
         if self.closed:
