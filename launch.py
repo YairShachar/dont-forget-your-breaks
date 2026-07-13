@@ -36,6 +36,7 @@ from dfyb.timer_lifecycle import timer_should_continue
 from dfyb.macos_window import pin_to_active_space
 from dfyb.insights.transparency import track_held, held_message, holding_cue
 from dfyb.insights.over_break import format_over_time
+from dfyb.snooze import snooze_delay_ms
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -159,6 +160,8 @@ SNOOZE_RECHECK_MS = 5000     # while a snoozed break is context-deferred, re-che
 CONFIG_COMMIT_DEBOUNCE_MS = 800  # wait this long after the last keystroke before applying a typed interval/duration
 BREAK_OVER_TEXT = "Break over ✓"       # big popup label once a break's duration elapses
 OVER_BREAK_SUFFIX = "over your break"  # trails the +MM:SS over-breaking count-up
+SNOOZE_OPTIONS_MINUTES = [5, 10, 15, 30]  # snooze durations offered on the popup ▾ menu
+DEFAULT_SNOOZE_MINUTES = 5                 # default snooze length (persisted as snooze_minutes)
 POPUP_FADE_FRAMES = 16   # ~256ms entrance fade at ANIMATION_FRAME_INTERVAL
 # Settings dropdown label -> stored popup_placement value
 POPUP_PLACEMENT_LABELS = {
@@ -242,16 +245,16 @@ class BreakConfig:
 class CountdownPopup:
     """A modern popup with countdown timer, progress bar, glassmorphism effect."""
 
-    SNOOZE_MINUTES = 5
-
     def __init__(self, parent, title, message, duration,
                  auto_dismiss=True, on_close=None, on_snooze=None,
                  end_sound=None, loop_end_sound=False, placement="active",
-                 target_screen=None, held_reason=None):
+                 target_screen=None, held_reason=None,
+                 snooze_minutes=DEFAULT_SNOOZE_MINUTES):
         self.parent = parent
         self.placement = placement
         self.target_screen = target_screen
         self.held_reason = held_reason
+        self.snooze_minutes = snooze_minutes
         self.duration = duration
         self.remaining = duration
         self.auto_dismiss = auto_dismiss
@@ -355,13 +358,17 @@ class CountdownPopup:
         btn_frame = ctk.CTkFrame(container, fg_color="transparent")
         btn_frame.pack(pady=ROW_SPACING)
 
-        # Snooze button (only if not auto-dismiss) - secondary style
+        # Snooze split control (only if not auto-dismiss): main = snooze for the
+        # current default, ▾ = pick another duration (which becomes the default).
         if not auto_dismiss:
+            snooze_group = ctk.CTkFrame(btn_frame, fg_color="transparent")
+            snooze_group.pack(side="left", padx=8)
+
             self.snooze_btn = ctk.CTkButton(
-                btn_frame,
-                text=f"Snooze {self.SNOOZE_MINUTES}m",
+                snooze_group,
+                text=f"Snooze {self.snooze_minutes}m",
                 command=self.snooze,
-                width=130,
+                width=104,
                 height=40,
                 corner_radius=CORNER_RADIUS_BUTTON,
                 fg_color="transparent",
@@ -370,7 +377,22 @@ class CountdownPopup:
                 hover_color=COLORS['bg_hover'],
                 font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input'])
             )
-            self.snooze_btn.pack(side="left", padx=8)
+            self.snooze_btn.pack(side="left")
+
+            self.snooze_menu_btn = ctk.CTkButton(
+                snooze_group,
+                text="▾",
+                command=self._open_snooze_menu,
+                width=28,
+                height=40,
+                corner_radius=CORNER_RADIUS_BUTTON,
+                fg_color="transparent",
+                border_width=1,
+                border_color=COLORS['border'],
+                hover_color=COLORS['bg_hover'],
+                font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input'])
+            )
+            self.snooze_menu_btn.pack(side="left", padx=(4, 0))
 
         # Done button - primary style
         self.ok_btn = ctk.CTkButton(
@@ -456,16 +478,29 @@ class CountdownPopup:
         if self.remaining > 0:
             self.window.after(50, self._update_progress_smooth)
 
-    def snooze(self):
-        """Snooze the break for a few minutes."""
+    def snooze(self, minutes=None):
+        """Snooze the break; `minutes` defaults to the current default."""
         if self.closed or self.snoozed:
             return
+        chosen = self.snooze_minutes if minutes is None else minutes
         self.snoozed = True
         self.sound_stop_event.set()
         if self.on_snooze:
-            self.on_snooze(self.SNOOZE_MINUTES)
+            self.on_snooze(chosen)
         self.closed = True
         self._dismiss()
+
+    def _open_snooze_menu(self):
+        """Pop a small menu of snooze durations under the ▾ button."""
+        menu = tk.Menu(self.window, tearoff=0)
+        selected = tk.IntVar(value=self.snooze_minutes)
+        for minutes in SNOOZE_OPTIONS_MINUTES:
+            menu.add_radiobutton(
+                label=f"{minutes} min", value=minutes, variable=selected,
+                command=lambda m=minutes: self.snooze(m))
+        menu.tk_popup(
+            self.snooze_menu_btn.winfo_rootx(),
+            self.snooze_menu_btn.winfo_rooty() + self.snooze_menu_btn.winfo_height())
 
     def close(self):
         if self.closed:
@@ -975,6 +1010,11 @@ class BreakApp:
         )
         self.activity_pause_seconds.trace_add('write', self._save_preferences)
 
+        # Default snooze length, remembered from the popup's ▾ picker (#29)
+        self.snooze_minutes = ctk.IntVar(
+            value=self.saved_prefs.get("snooze_minutes", DEFAULT_SNOOZE_MINUTES)
+        )
+
         self.popup_placement = ctk.StringVar(
             value=self.saved_prefs.get("popup_placement", "active")
         )
@@ -1213,6 +1253,7 @@ class BreakApp:
             "popup_placement": self.popup_placement.get(),
             "defer_while_active": self.defer_while_active.get(),
             "activity_pause_seconds": self.activity_pause_seconds.get(),
+            "snooze_minutes": self.snooze_minutes.get(),
             "last_update_check": self.saved_prefs.get("last_update_check", 0),
         }
         for config in self.breaks:
@@ -1752,12 +1793,14 @@ class BreakApp:
 
         def on_snooze(snooze_minutes):
             self._record_event(BREAK_SNOOZED, name=break_data['name'], minutes=snooze_minutes)
+            self.snooze_minutes.set(snooze_minutes)   # remember as the new default
+            self._save_preferences()
             self.active_popup = None
             self.break_start_time = None
             if self.running and not self.paused:
                 self.status.configure(text="Working", text_color=COLORS['accent_green'])
-                snooze_ms = int(snooze_minutes * 60 * 1000)
-                self.root.after(snooze_ms, lambda: self._requeue_break(break_data))
+                self.root.after(snooze_delay_ms(snooze_minutes),
+                                lambda: self._requeue_break(break_data))
 
         self.status.configure(text=break_data['name'], text_color=COLORS['accent_orange'])
         # Capture the active screen NOW, before the popup's window steals focus.
@@ -1776,6 +1819,7 @@ class BreakApp:
             placement=self.popup_placement.get(),
             target_screen=target_screen,
             held_reason=break_data.get('held_reason'),
+            snooze_minutes=self.snooze_minutes.get(),
         )
 
     def _requeue_break(self, break_data):
