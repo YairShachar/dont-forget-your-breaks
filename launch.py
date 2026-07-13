@@ -212,7 +212,7 @@ class BreakConfig:
 
     def __init__(self, name, interval_val, interval_unit,
                  duration_val, duration_unit, start_sound, end_sound,
-                 loop_end_sound=False, auto_dismiss=True):
+                 loop_end_sound=False, auto_dismiss=True, snoozable=True):
         self.name = ctk.StringVar(value=name)
         self.interval_value = ctk.StringVar(value=str(interval_val))
         self.interval_unit = ctk.StringVar(value=interval_unit)
@@ -222,6 +222,7 @@ class BreakConfig:
         self.end_sound = ctk.StringVar(value=end_sound)
         self.loop_end_sound = ctk.BooleanVar(value=loop_end_sound)
         self.auto_dismiss = ctk.BooleanVar(value=auto_dismiss)
+        self.snoozable = ctk.BooleanVar(value=snoozable)
         self.remaining = self.get_interval_seconds()
         self.timer_label = None  # Will be set by UI
 
@@ -1049,10 +1050,12 @@ class BreakApp:
         self.default_breaks = [
             {"name": "Micro Break", "interval_val": 25, "interval_unit": "min",
              "duration_val": 5, "duration_unit": "sec", "start_sound": "Ping",
-             "end_sound": "Glass", "loop_end_sound": False, "auto_dismiss": True},
+             "end_sound": "Glass", "loop_end_sound": False, "auto_dismiss": True,
+             "snoozable": False},
             {"name": "Normal Break", "interval_val": 50, "interval_unit": "min",
              "duration_val": 10, "duration_unit": "min", "start_sound": "Glass",
-             "end_sound": "Submarine", "loop_end_sound": True, "auto_dismiss": False}
+             "end_sound": "Submarine", "loop_end_sound": True, "auto_dismiss": False,
+             "snoozable": True}
         ]
 
         # Load saved preferences or use defaults
@@ -1124,7 +1127,8 @@ class BreakApp:
                 start_sound=break_prefs.get("start_sound", default["start_sound"]),
                 end_sound=break_prefs.get("end_sound", default["end_sound"]),
                 loop_end_sound=break_prefs.get("loop_end_sound", default["loop_end_sound"]),
-                auto_dismiss=break_prefs.get("auto_dismiss", default["auto_dismiss"])
+                auto_dismiss=break_prefs.get("auto_dismiss", default["auto_dismiss"]),
+                snoozable=break_prefs.get("snoozable", default["snoozable"])
             ))
 
         self._build_ui()
@@ -1350,7 +1354,8 @@ class BreakApp:
                 "start_sound": config.start_sound.get(),
                 "end_sound": config.end_sound.get(),
                 "loop_end_sound": config.loop_end_sound.get(),
-                "auto_dismiss": config.auto_dismiss.get()
+                "auto_dismiss": config.auto_dismiss.get(),
+                "snoozable": config.snoozable.get()
             })
         if include_geometry:
             prefs["window_geometry"] = self.root.geometry()
@@ -1494,6 +1499,7 @@ class BreakApp:
             config.end_sound.trace_add('write', self._save_preferences)
             config.loop_end_sound.trace_add('write', self._save_preferences)
             config.auto_dismiss.trace_add('write', self._save_preferences)
+            config.snoozable.trace_add('write', self._save_preferences)
 
     def _debounce(self, key, callback):
         """Run `callback` once `CONFIG_COMMIT_DEBOUNCE_MS` passes with no newer
