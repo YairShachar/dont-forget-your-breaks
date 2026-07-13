@@ -644,13 +644,13 @@ class BreakConfigPanel(ctk.CTkFrame):
             row1, text="Every:",
             font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
         ).pack(side="left")
-        interval_entry = ctk.CTkEntry(
+        self.interval_entry = ctk.CTkEntry(
             row1, width=70, height=36,
             textvariable=self.config.interval_value,
             font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input']),
             corner_radius=CORNER_RADIUS_INPUT
         )
-        interval_entry.pack(side="left", padx=(8, 4))
+        self.interval_entry.pack(side="left", padx=(8, 4))
         interval_unit = ctk.CTkComboBox(
             row1, variable=self.config.interval_unit,
             values=TIME_UNITS, width=80, height=36, state="readonly",
@@ -808,6 +808,12 @@ class BreakConfigPanel(ctk.CTkFrame):
             ANIMATION_EXPAND_DURATION,
             on_complete
         )
+
+    def focus_config(self):
+        """Expand (if collapsed) and put keyboard focus in the interval field."""
+        if not self._expanded:
+            self.expand()
+        self.interval_entry.focus_set()
 
     def collapse(self):
         """Collapse the panel to show only header with timer and test button."""
@@ -1055,10 +1061,11 @@ class BreakApp:
             card = ctk.CTkFrame(main_frame, corner_radius=CORNER_RADIUS_PANEL, fg_color=COLORS['bg_panel'])
             card.pack(fill="x", pady=(0, 6))
 
-            ctk.CTkLabel(
+            name_label = ctk.CTkLabel(
                 card, text=config.name.get(),
                 font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
-            ).pack(side="left", padx=(PADDING_PANEL_X, 0), pady=8)
+            )
+            name_label.pack(side="left", padx=(PADDING_PANEL_X, 0), pady=8)
 
             timer_label = ctk.CTkLabel(
                 card, text="--:--",
@@ -1080,6 +1087,12 @@ class BreakApp:
             ).pack(side="right", padx=(0, 8), pady=8)
 
             self._timer_labels.append(timer_label)
+
+            # Double-click the card (name or countdown) jumps into this break's
+            # configuration (#43). The "Break now" button keeps its own click.
+            for widget in (card, name_label, timer_label):
+                widget.bind("<Double-Button-1>",
+                            lambda e, c=config: self._edit_break_config(c))
 
         # Bottom bar: feedback + update banner
         bottom_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
@@ -1397,12 +1410,21 @@ class BreakApp:
         else:
             self.toggle_pause()
 
-    def _open_settings(self):
-        """Open the settings window, or bring it to front if already open."""
+    def _edit_break_config(self, config):
+        """Open settings focused on the given break (double-click a card)."""
+        self._open_settings(focus_config=config)
+
+    def _open_settings(self, focus_config=None):
+        """Open the settings window, or bring it to front if already open.
+
+        If focus_config is a BreakConfig, focus that break's settings panel
+        (expanding it and landing keyboard focus in its interval field).
+        """
         if hasattr(self, '_settings_window') and self._settings_window and self._settings_window.winfo_exists():
             self._settings_window.deiconify()
             self._settings_window.lift()
             self._settings_window.focus_force()
+            self._focus_settings_panel(focus_config)
             return
 
         self._settings_window = ctk.CTkToplevel(self.root)
@@ -1521,6 +1543,16 @@ class BreakApp:
         self._settings_window.deiconify()
         self._settings_window.lift()
         self._settings_window.focus_force()
+        self._focus_settings_panel(focus_config)
+
+    def _focus_settings_panel(self, config):
+        """Focus the settings panel that edits the given break (by identity)."""
+        if config is None:
+            return
+        for panel in self._settings_panels:
+            if panel.config is config:
+                panel.focus_config()
+                break
 
     # ------------------ TIMER ------------------
 
