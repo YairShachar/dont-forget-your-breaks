@@ -1635,6 +1635,13 @@ class BreakApp:
             for queued_break in self.break_queue:
                 queued_break['duration'] -= elapsed
 
+            # Taking a break restarts its own scheduler timer so it can't be
+            # re-fired immediately (e.g. after a snooze / short interval) (#45).
+            for config in self.breaks:
+                if config.name.get() == break_data['name']:
+                    config.reset_timer()
+                    break
+
             self.active_popup = None
             self.break_start_time = None
             if self.running and not self.paused:
