@@ -879,6 +879,12 @@ class BreakConfigPanel(ctk.CTkFrame):
             font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
         ).pack(side="left", padx=(16, 0))
 
+        ctk.CTkCheckBox(
+            row3, text="Snoozable",
+            variable=self.config.snoozable,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+        ).pack(side="left", padx=(16, 0))
+
         # Test button on right
         ctk.CTkButton(
             row3, text="Test",
