@@ -36,7 +36,8 @@ from dfyb.timer_lifecycle import timer_should_continue
 from dfyb.macos_window import pin_to_active_space
 from dfyb.insights.transparency import track_held, held_message, holding_cue
 from dfyb.insights.over_break import format_over_time
-from dfyb.snooze import snooze_delay_ms
+from dfyb.snooze import (
+    snooze_delay_ms, format_snooze_short, format_snooze_long, custom_snooze_seconds)
 from dfyb.insights.counts import (
     snooze_count_since_taken, first_snooze_seconds_ago, snooze_summary_label)
 
@@ -162,8 +163,11 @@ SNOOZE_RECHECK_MS = 5000     # while a snoozed break is context-deferred, re-che
 CONFIG_COMMIT_DEBOUNCE_MS = 800  # wait this long after the last keystroke before applying a typed interval/duration
 BREAK_OVER_TEXT = "Break over ✓"       # big popup label once a break's duration elapses
 OVER_BREAK_SUFFIX = "over your break"  # trails the +MM:SS over-breaking count-up
-SNOOZE_OPTIONS_MINUTES = [5, 10, 15, 30]  # snooze durations offered on the popup ▾ menu
-DEFAULT_SNOOZE_MINUTES = 5                 # default snooze length (persisted as snooze_minutes)
+SNOOZE_OPTIONS_SECONDS = [30, 60, 120, 300, 600, 900, 1800]  # ▾ menu presets
+DEFAULT_SNOOZE_SECONDS = 300                                  # default snooze (5 min)
+MAX_SNOOZE_SECONDS = 24 * 60 * 60                             # cap for a custom value
+CUSTOM_SNOOZE_UNITS = ["sec", "min"]                          # segmented-control options
+CUSTOM_SNOOZE_DEFAULT_UNIT = "sec"                            # unit selected first in the dialog
 POPUP_FADE_FRAMES = 16   # ~256ms entrance fade at ANIMATION_FRAME_INTERVAL
 # Settings dropdown label -> stored popup_placement value
 POPUP_PLACEMENT_LABELS = {
@@ -1024,9 +1028,12 @@ class BreakApp:
         )
         self.activity_pause_seconds.trace_add('write', self._save_preferences)
 
-        # Default snooze length, remembered from the popup's ▾ picker (#29)
-        self.snooze_minutes = ctk.IntVar(
-            value=self.saved_prefs.get("snooze_minutes", DEFAULT_SNOOZE_MINUTES)
+        # Default snooze length (seconds), remembered from the ▾ picker.
+        # Migrates an old minutes-based pref (×60) so existing configs still load.
+        self.snooze_seconds = ctk.IntVar(
+            value=self.saved_prefs.get(
+                "snooze_seconds",
+                self.saved_prefs.get("snooze_minutes", DEFAULT_SNOOZE_SECONDS // 60) * 60)
         )
 
         self.popup_placement = ctk.StringVar(
@@ -1267,7 +1274,7 @@ class BreakApp:
             "popup_placement": self.popup_placement.get(),
             "defer_while_active": self.defer_while_active.get(),
             "activity_pause_seconds": self.activity_pause_seconds.get(),
-            "snooze_minutes": self.snooze_minutes.get(),
+            "snooze_seconds": self.snooze_seconds.get(),
             "last_update_check": self.saved_prefs.get("last_update_check", 0),
         }
         for config in self.breaks:
