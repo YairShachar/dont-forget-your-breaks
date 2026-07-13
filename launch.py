@@ -253,7 +253,7 @@ class CountdownPopup:
     """A modern popup with countdown timer, progress bar, glassmorphism effect."""
 
     def __init__(self, parent, title, message, duration,
-                 auto_dismiss=True, on_close=None, on_snooze=None,
+                 auto_dismiss=True, snoozable=True, on_close=None, on_snooze=None,
                  end_sound=None, loop_end_sound=False, placement="active",
                  target_screen=None, held_reason=None,
                  snooze_seconds=DEFAULT_SNOOZE_SECONDS,
@@ -268,6 +268,7 @@ class CountdownPopup:
         self.duration = duration
         self.remaining = duration
         self.auto_dismiss = auto_dismiss
+        self.snoozable = snoozable
         self.on_close = on_close
         self.on_snooze = on_snooze
         self.end_sound = end_sound
@@ -377,9 +378,9 @@ class CountdownPopup:
         btn_frame = ctk.CTkFrame(container, fg_color="transparent")
         btn_frame.pack(pady=ROW_SPACING)
 
-        # Snooze split control (only if not auto-dismiss): main = snooze for the
-        # current default, ▾ = pick another duration (which becomes the default).
-        if not auto_dismiss:
+        # Snooze split control (only if the break is snoozable): main = snooze for
+        # the current default, ▾ = pick another duration (which becomes the default).
+        if self.snoozable:
             snooze_group = ctk.CTkFrame(btn_frame, fg_color="transparent")
             snooze_group.pack(side="left", padx=8)
 
@@ -1836,6 +1837,7 @@ class BreakApp:
             'name': config.name.get(),
             'duration': config.get_duration_seconds(),
             'auto_dismiss': config.auto_dismiss.get(),
+            'snoozable': config.snoozable.get(),
             'start_sound': config.start_sound.get(),
             'end_sound': config.end_sound.get(),
             'loop_end_sound': config.loop_end_sound.get(),
@@ -1913,6 +1915,7 @@ class BreakApp:
             random.choice(BREAK_MESSAGES),
             break_data['duration'],
             auto_dismiss=break_data['auto_dismiss'],
+            snoozable=break_data['snoozable'],
             on_close=on_popup_close,
             on_snooze=on_snooze,
             end_sound=break_data['end_sound'],
