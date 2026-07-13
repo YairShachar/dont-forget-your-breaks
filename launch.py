@@ -245,16 +245,16 @@ class BreakConfig:
 class CountdownPopup:
     """A modern popup with countdown timer, progress bar, glassmorphism effect."""
 
-    SNOOZE_MINUTES = 5
-
     def __init__(self, parent, title, message, duration,
                  auto_dismiss=True, on_close=None, on_snooze=None,
                  end_sound=None, loop_end_sound=False, placement="active",
-                 target_screen=None, held_reason=None):
+                 target_screen=None, held_reason=None,
+                 snooze_minutes=DEFAULT_SNOOZE_MINUTES):
         self.parent = parent
         self.placement = placement
         self.target_screen = target_screen
         self.held_reason = held_reason
+        self.snooze_minutes = snooze_minutes
         self.duration = duration
         self.remaining = duration
         self.auto_dismiss = auto_dismiss
@@ -358,13 +358,17 @@ class CountdownPopup:
         btn_frame = ctk.CTkFrame(container, fg_color="transparent")
         btn_frame.pack(pady=ROW_SPACING)
 
-        # Snooze button (only if not auto-dismiss) - secondary style
+        # Snooze split control (only if not auto-dismiss): main = snooze for the
+        # current default, ▾ = pick another duration (which becomes the default).
         if not auto_dismiss:
+            snooze_group = ctk.CTkFrame(btn_frame, fg_color="transparent")
+            snooze_group.pack(side="left", padx=8)
+
             self.snooze_btn = ctk.CTkButton(
-                btn_frame,
-                text=f"Snooze {self.SNOOZE_MINUTES}m",
+                snooze_group,
+                text=f"Snooze {self.snooze_minutes}m",
                 command=self.snooze,
-                width=130,
+                width=104,
                 height=40,
                 corner_radius=CORNER_RADIUS_BUTTON,
                 fg_color="transparent",
@@ -373,7 +377,22 @@ class CountdownPopup:
                 hover_color=COLORS['bg_hover'],
                 font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input'])
             )
-            self.snooze_btn.pack(side="left", padx=8)
+            self.snooze_btn.pack(side="left")
+
+            self.snooze_menu_btn = ctk.CTkButton(
+                snooze_group,
+                text="▾",
+                command=self._open_snooze_menu,
+                width=28,
+                height=40,
+                corner_radius=CORNER_RADIUS_BUTTON,
+                fg_color="transparent",
+                border_width=1,
+                border_color=COLORS['border'],
+                hover_color=COLORS['bg_hover'],
+                font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input'])
+            )
+            self.snooze_menu_btn.pack(side="left", padx=(4, 0))
 
         # Done button - primary style
         self.ok_btn = ctk.CTkButton(
@@ -459,16 +478,29 @@ class CountdownPopup:
         if self.remaining > 0:
             self.window.after(50, self._update_progress_smooth)
 
-    def snooze(self):
-        """Snooze the break for a few minutes."""
+    def snooze(self, minutes=None):
+        """Snooze the break; `minutes` defaults to the current default."""
         if self.closed or self.snoozed:
             return
+        chosen = self.snooze_minutes if minutes is None else minutes
         self.snoozed = True
         self.sound_stop_event.set()
         if self.on_snooze:
-            self.on_snooze(self.SNOOZE_MINUTES)
+            self.on_snooze(chosen)
         self.closed = True
         self._dismiss()
+
+    def _open_snooze_menu(self):
+        """Pop a small menu of snooze durations under the ▾ button."""
+        menu = tk.Menu(self.window, tearoff=0)
+        selected = tk.IntVar(value=self.snooze_minutes)
+        for minutes in SNOOZE_OPTIONS_MINUTES:
+            menu.add_radiobutton(
+                label=f"{minutes} min", value=minutes, variable=selected,
+                command=lambda m=minutes: self.snooze(m))
+        menu.tk_popup(
+            self.snooze_menu_btn.winfo_rootx(),
+            self.snooze_menu_btn.winfo_rooty() + self.snooze_menu_btn.winfo_height())
 
     def close(self):
         if self.closed:
