@@ -406,10 +406,14 @@ class CountdownPopup:
             return
 
         self.remaining -= 1
-        self.countdown_label.configure(text=self._format_time(self.remaining))
 
-        if self.remaining <= 0:
-            # Timer finished - handle end sound
+        if self.remaining > 0:
+            self.countdown_label.configure(text=self._format_time(self.remaining))
+            self.window.after(1000, self.update_countdown)
+            return
+
+        if self.remaining == 0:
+            # Duration just elapsed — fire the end sound + attention once.
             if self.end_sound and self.end_sound != "None":
                 if self.loop_end_sound:
                     threading.Thread(
@@ -422,11 +426,18 @@ class CountdownPopup:
 
             if self.auto_dismiss:
                 self.close()
-            else:
-                self.countdown_label.configure(text="Done!")
-                self._bring_to_attention()
-        else:
-            self.window.after(1000, self.update_countdown)
+                return
+            self.countdown_label.configure(text=BREAK_OVER_TEXT)
+            self._bring_to_attention()
+
+        # auto-dismiss off: count up the time spent over the break (#33).
+        over_seconds = -self.remaining
+        if over_seconds >= 1:
+            self.over_label.configure(
+                text=f"{format_over_time(over_seconds)} {OVER_BREAK_SUFFIX}")
+            if self.over_label.winfo_manager() != "pack":
+                self.over_label.pack(after=self.countdown_label, pady=(0, ROW_SPACING))
+        self.window.after(1000, self.update_countdown)
 
     def _update_progress_smooth(self):
         """Smooth progress bar update (runs every 50ms for fluid animation)."""
