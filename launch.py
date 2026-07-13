@@ -1817,6 +1817,11 @@ class BreakApp:
                                 lambda: self._requeue_break(break_data))
 
         self.status.configure(text=break_data['name'], text_color=COLORS['accent_orange'])
+        # How many times this break was snoozed / when it was first due (#37).
+        events = self.event_log.read()
+        snooze_count = snooze_count_since_taken(events, break_data['name'])
+        first_snooze_ago = first_snooze_seconds_ago(
+            events, break_data['name'], time.time())
         # Capture the active screen NOW, before the popup's window steals focus.
         target_screen = (self._capture_active_screen()
                          if self.popup_placement.get() == "active" else None)
@@ -1834,6 +1839,8 @@ class BreakApp:
             target_screen=target_screen,
             held_reason=break_data.get('held_reason'),
             snooze_minutes=self.snooze_minutes.get(),
+            snooze_count=snooze_count,
+            first_snooze_ago=first_snooze_ago,
         )
 
     def _requeue_break(self, break_data):
