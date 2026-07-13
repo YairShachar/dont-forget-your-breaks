@@ -17,6 +17,11 @@ UINT32_SIZE = 4
 # A window counts as covering a display if it reaches each edge within this many
 # points — absorbs rounding between window bounds and display bounds.
 FULLSCREEN_COVER_TOLERANCE_PX = 2
+# Once fullscreen is really observed, keep treating the context as fullscreen for
+# this many subsequent ticks even if the raw signal drops out. Bridges the brief
+# gap during a Space-to-Space swipe (CGWindowList shows no covering window
+# mid-transition), so a due break doesn't fire behind the destination Space (#46).
+FULLSCREEN_GRACE_TICKS = 3
 
 
 def idle_seconds():
@@ -121,6 +126,21 @@ def frontmost_is_fullscreen():
         return covers_any_display(windows, displays)
     except Exception:
         return False
+
+
+def smooth_fullscreen(raw_fullscreen, grace_left, grace_ticks=FULLSCREEN_GRACE_TICKS):
+    """Hysteresis over transient fullscreen-detection gaps (e.g. Space swipes).
+
+    Pure and tick-based (no clock) so it is unit-tested off macOS. Once fullscreen
+    is really observed, it 'sticks' for up to `grace_ticks` subsequent ticks even
+    if the raw signal drops out. Returns (effective_fullscreen, new_grace_left);
+    the caller carries `new_grace_left` into the next tick.
+    """
+    if raw_fullscreen:
+        return True, grace_ticks
+    if grace_left > 0:
+        return True, grace_left - 1
+    return False, 0
 
 
 def microphone_in_use():

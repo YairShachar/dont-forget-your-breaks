@@ -11,6 +11,7 @@ import atexit
 import random
 import webbrowser
 import platform
+from dataclasses import replace as dataclass_replace
 from urllib.parse import quote as url_quote
 import logging
 from pathlib import Path
@@ -26,7 +27,7 @@ from dfyb.updater import (
 )
 from dfyb.animation import ease_out_quad, prefers_reduced_motion, lerp_color
 from dfyb.activity.event_log import EventLog, BREAK_TAKEN, BREAK_SNOOZED
-from dfyb.activity.sensors import read_context, frontmost_window_rect
+from dfyb.activity.sensors import read_context, frontmost_window_rect, smooth_fullscreen
 from dfyb.popup_placement import screen_for_point, center_on_screen, clamp_onscreen
 from dfyb.scheduler.adapter import states_from_configs
 from dfyb.scheduler.tick import advance
@@ -154,6 +155,7 @@ ACTIVITY_PAUSE_MIN = 2
 ACTIVITY_PAUSE_MAX = 15
 ACTIVITY_PAUSE_DEFAULT = 2   # seconds of stillness before a due break fires
 SNOOZE_RECHECK_MS = 5000     # while a snoozed break is context-deferred, re-check this often
+CONFIG_COMMIT_DEBOUNCE_MS = 800  # wait this long after the last keystroke before applying a typed interval/duration
 POPUP_FADE_FRAMES = 16   # ~256ms entrance fade at ANIMATION_FRAME_INTERVAL
 # Settings dropdown label -> stored popup_placement value
 POPUP_PLACEMENT_LABELS = {
@@ -901,6 +903,8 @@ class BreakApp:
         self.event_log = EventLog(EVENTS_FILE)
         self._episode = None  # idle/deferred dedup marker for the smart-timing loop
         self._held = None      # reason the due break is currently held (transparency)
+        self._fullscreen_grace = 0  # ticks of fullscreen hysteresis left (#46)
+        self._debounce_after = {}   # key -> pending after-id for debounced commits (#47)
         self._timer_generation = 0  # bumped each start(); stale threads exit
 
         # Default break configurations
@@ -1323,19 +1327,42 @@ class BreakApp:
         webbrowser.open(url)
 
     def _setup_auto_save(self):
-        """Setup auto-save when any preference changes."""
+        """Setup auto-save when any preference changes.
+
+        Free-text entries (interval / duration) are debounced so a value typed
+        digit-by-digit is only applied once the user stops typing — typing "10"
+        never commits the interim "1" and fires a break (#47). Discrete controls
+        (unit menus, sound menus, checkboxes) save immediately.
+        """
         for config in self.breaks:
-            config.interval_value.trace_add('write', lambda *a, c=config: self._on_interval_changed(c))
-            config.interval_unit.trace_add('write', lambda *a, c=config: self._on_interval_changed(c))
-            config.duration_value.trace_add('write', self._save_preferences)
+            config.interval_value.trace_add(
+                'write', lambda *a, c=config: self._debounce(
+                    ('interval', id(c)), lambda: self._commit_interval(c)))
+            config.interval_unit.trace_add(
+                'write', lambda *a, c=config: self._commit_interval(c))
+            config.duration_value.trace_add(
+                'write', lambda *a: self._debounce(('duration',), self._save_preferences))
             config.duration_unit.trace_add('write', self._save_preferences)
             config.start_sound.trace_add('write', self._save_preferences)
             config.end_sound.trace_add('write', self._save_preferences)
             config.loop_end_sound.trace_add('write', self._save_preferences)
             config.auto_dismiss.trace_add('write', self._save_preferences)
 
-    def _on_interval_changed(self, config):
-        """Handle interval change — reset timer and save preferences."""
+    def _debounce(self, key, callback):
+        """Run `callback` once `CONFIG_COMMIT_DEBOUNCE_MS` passes with no newer
+        call for the same `key` (a rapid burst of keystrokes commits once)."""
+        pending = self._debounce_after.get(key)
+        if pending is not None:
+            self.root.after_cancel(pending)
+        self._debounce_after[key] = self.root.after(
+            CONFIG_COMMIT_DEBOUNCE_MS, lambda: self._run_debounced(key, callback))
+
+    def _run_debounced(self, key, callback):
+        self._debounce_after.pop(key, None)
+        callback()
+
+    def _commit_interval(self, config):
+        """Apply a settled interval change — reset the countdown and save."""
         config.reset_timer()
         self._save_preferences()
 
@@ -1349,6 +1376,7 @@ class BreakApp:
         self.stop_event.clear()
         self._episode = None  # fresh idle/deferred dedup marker each session
         self._held = None      # reset the held-reason each session
+        self._fullscreen_grace = 0  # reset fullscreen hysteresis each session (#46)
 
         for config in self.breaks:
             config.reset_timer()
@@ -1593,6 +1621,11 @@ class BreakApp:
                     check_meeting=self.defer_during_meetings.get(),
                     check_fullscreen=self.defer_during_fullscreen.get(),
                 )
+                # Bridge transient fullscreen dropouts (e.g. Space-to-Space
+                # swipes) so a due break doesn't fire behind a fullscreen app (#46).
+                effective_fullscreen, self._fullscreen_grace = smooth_fullscreen(
+                    ctx.is_fullscreen, self._fullscreen_grace)
+                ctx = dataclass_replace(ctx, is_fullscreen=effective_fullscreen)
                 states = states_from_configs(self.breaks)
                 pause = (self.activity_pause_seconds.get()
                          if self.defer_while_active.get() else 0)
