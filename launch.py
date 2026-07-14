@@ -26,6 +26,7 @@ from dfyb.updater import (
     HOMEBREW_CASK_NAME,
 )
 from dfyb.animation import ease_out_quad, prefers_reduced_motion, lerp_color
+from dfyb.theme import resolve_font_family, resolve_color
 from dfyb.activity.event_log import (
     EventLog, BREAK_TAKEN, BREAK_SNOOZED,
     BREAK_SNOOZE_CANCELLED, BREAK_SNOOZE_RETURNED)
@@ -104,20 +105,23 @@ EVENTS_FILE = Path.home() / "Library" / "Application Support" / "DontForgetYourB
 GITHUB_NEW_ISSUE_URL = "https://github.com/YairShachar/dont-forget-your-breaks/issues/new"
 UPDATE_CHECK_INTERVAL_HOURS = 24
 
-# Design constants
-FONT_FAMILY = "SF Pro Display" if sys.platform == "darwin" else "Segoe UI"
-
-# Typography sizes
+# Typography sizes (role-based; family auto-picked by the 20pt optical split)
 FONT_SIZES = {
-    'title': 15,
-    'status': 13,
-    'label': 12,
-    'input': 13,
-    'timer': 13,
-    'helper': 10,
-    'control': 14,
-    'message': 16,
+    'display': 48,        # popup countdown
+    'heading': 17,        # panel header, window title
+    'body_emphasis': 16,  # popup primary message
+    'subheading': 14,     # main control buttons, gear icon
+    'body': 13,           # status, entries, timers
+    'label': 12,          # field labels, chevron/▾ glyphs
+    'caption': 10,        # helper/hint text
 }
+
+
+def make_font(role, weight=None):
+    """CTkFont for a type-scale role; family auto-picked by the 20pt optical split."""
+    size = FONT_SIZES[role]
+    family = resolve_font_family(size)
+    return ctk.CTkFont(family=family, size=size, **({"weight": weight} if weight else {}))
 
 # Colors (dark mode)
 COLORS = {
@@ -321,7 +325,7 @@ class CountdownPopup:
         title_label = ctk.CTkLabel(
             container,
             text=title,
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['title'], weight="bold")
+            font=make_font('heading', weight="bold")
         )
         title_label.pack(pady=(PADDING_PANEL_Y, 5))
 
@@ -331,7 +335,7 @@ class CountdownPopup:
             if held_text:
                 ctk.CTkLabel(
                     container, text=held_text,
-                    font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper']),
+                    font=make_font('caption'),
                     text_color=COLORS['text_secondary']
                 ).pack(pady=(0, 6))
 
@@ -340,7 +344,7 @@ class CountdownPopup:
         if summary:
             ctk.CTkLabel(
                 container, text=summary,
-                font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper']),
+                font=make_font('caption'),
                 text_color=COLORS['text_secondary']
             ).pack(pady=(0, 6))
 
@@ -348,7 +352,7 @@ class CountdownPopup:
         msg_label = ctk.CTkLabel(
             container,
             text=message,
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['message'])
+            font=make_font('body_emphasis')
         )
         msg_label.pack(pady=(0, ROW_SPACING))
 
@@ -356,14 +360,14 @@ class CountdownPopup:
         self.countdown_label = ctk.CTkLabel(
             container,
             text=self._format_time(self.remaining),
-            font=ctk.CTkFont(family=FONT_FAMILY, size=48, weight="bold")
+            font=make_font('display', weight="bold")
         )
         self.countdown_label.pack(pady=10)
 
         # Amber count-up shown only when a break runs past its duration (#33).
         self.over_label = ctk.CTkLabel(
             container, text="",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper']),
+            font=make_font('caption'),
             text_color=COLORS['accent_orange']
         )
         # not packed yet — revealed by update_countdown once over the duration
@@ -399,7 +403,7 @@ class CountdownPopup:
                 border_width=1,
                 border_color=COLORS['border'],
                 hover_color=COLORS['bg_hover'],
-                font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input'])
+                font=make_font('body')
             )
             self.snooze_btn.pack(side="left")
 
@@ -414,7 +418,7 @@ class CountdownPopup:
                 border_width=1,
                 border_color=COLORS['border'],
                 hover_color=COLORS['bg_hover'],
-                font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input'])
+                font=make_font('body')
             )
             self.snooze_menu_btn.pack(side="left", padx=(4, 0))
 
@@ -428,7 +432,7 @@ class CountdownPopup:
             corner_radius=CORNER_RADIUS_BUTTON,
             fg_color=COLORS['accent_blue'],
             hover_color=COLORS['accent_hover'],
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input'], weight="bold")
+            font=make_font('body', weight="bold")
         )
         self.ok_btn.pack(side="left", padx=8)
 
@@ -540,7 +544,7 @@ class CountdownPopup:
 
         ctk.CTkLabel(
             frame, text="Snooze for",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+            font=make_font('label')
         ).pack(anchor="w", pady=(0, 6))
 
         row = ctk.CTkFrame(frame, fg_color="transparent")
@@ -548,7 +552,7 @@ class CountdownPopup:
 
         entry = ctk.CTkEntry(
             row, width=80, height=36, corner_radius=CORNER_RADIUS_INPUT,
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input'])
+            font=make_font('body')
         )
         entry.pack(side="left")
         entry.focus_set()
@@ -556,14 +560,14 @@ class CountdownPopup:
         unit = ctk.StringVar(value=CUSTOM_SNOOZE_DEFAULT_UNIT)
         unit_btn = ctk.CTkSegmentedButton(
             row, values=CUSTOM_SNOOZE_UNITS, variable=unit,
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+            font=make_font('label')
         )
         unit_btn.set(CUSTOM_SNOOZE_DEFAULT_UNIT)
         unit_btn.pack(side="left", padx=(8, 0))
 
         hint = ctk.CTkLabel(
             frame, text="", text_color=COLORS['accent_orange'],
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper'])
+            font=make_font('caption')
         )
         hint.pack(anchor="w", pady=(6, 0))
 
@@ -579,7 +583,7 @@ class CountdownPopup:
             frame, text="Set", command=do_set, height=40,
             corner_radius=CORNER_RADIUS_BUTTON,
             fg_color=COLORS['accent_blue'], hover_color=COLORS['accent_hover'],
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input'], weight="bold")
+            font=make_font('body', weight="bold")
         ).pack(fill="x", pady=(10, 0))
 
         entry.bind("<Return>", do_set)
@@ -743,7 +747,7 @@ class BreakConfigPanel(ctk.CTkFrame):
         self.header_label = ctk.CTkLabel(
             self.header_frame,
             text=self.config.name.get(),
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['status'], weight="bold"),
+            font=make_font('body', weight="bold"),
             cursor="hand2"
         )
         self.header_label.pack(side="left")
@@ -755,7 +759,7 @@ class BreakConfigPanel(ctk.CTkFrame):
         # Timer in header (visible when collapsed)
         self.header_timer = ctk.CTkLabel(
             header_right, text="--:--",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['timer'], weight="bold")
+            font=make_font('body', weight="bold")
         )
         self.header_timer.pack(side="left", padx=(0, 12))
         self.header_timer.pack_forget()  # Hidden by default (shown when collapsed)
@@ -764,7 +768,7 @@ class BreakConfigPanel(ctk.CTkFrame):
         self.chevron = ctk.CTkLabel(
             header_right,
             text="\u25B2",  # Up arrow when expanded
-            font=ctk.CTkFont(family=FONT_FAMILY, size=12),
+            font=make_font('label'),
             text_color=COLORS['text_secondary'],
             cursor="hand2"
         )
@@ -788,38 +792,38 @@ class BreakConfigPanel(ctk.CTkFrame):
 
         ctk.CTkLabel(
             row1, text="Every:",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+            font=make_font('label')
         ).pack(side="left")
         self.interval_entry = ctk.CTkEntry(
             row1, width=70, height=36,
             textvariable=self.config.interval_value,
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input']),
+            font=make_font('body'),
             corner_radius=CORNER_RADIUS_INPUT
         )
         self.interval_entry.pack(side="left", padx=(8, 4))
         interval_unit = ctk.CTkComboBox(
             row1, variable=self.config.interval_unit,
             values=TIME_UNITS, width=80, height=36, state="readonly",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input']),
+            font=make_font('body'),
             corner_radius=CORNER_RADIUS_INPUT
         )
         interval_unit.pack(side="left")
 
         ctk.CTkLabel(
             row1, text="Duration:",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+            font=make_font('label')
         ).pack(side="left", padx=(24, 0))
         duration_entry = ctk.CTkEntry(
             row1, width=70, height=36,
             textvariable=self.config.duration_value,
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input']),
+            font=make_font('body'),
             corner_radius=CORNER_RADIUS_INPUT
         )
         duration_entry.pack(side="left", padx=(8, 4))
         duration_unit = ctk.CTkComboBox(
             row1, variable=self.config.duration_unit,
             values=TIME_UNITS, width=80, height=36, state="readonly",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input']),
+            font=make_font('body'),
             corner_radius=CORNER_RADIUS_INPUT
         )
         duration_unit.pack(side="left")
@@ -830,12 +834,12 @@ class BreakConfigPanel(ctk.CTkFrame):
 
         ctk.CTkLabel(
             row2, text="Start:",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+            font=make_font('label')
         ).pack(side="left")
         start_sound = ctk.CTkComboBox(
             row2, variable=self.config.start_sound,
             values=list(SOUNDS.keys()), width=130, height=36, state="readonly",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input']),
+            font=make_font('body'),
             corner_radius=CORNER_RADIUS_INPUT
         )
         start_sound.pack(side="left", padx=(8, 4))
@@ -844,18 +848,18 @@ class BreakConfigPanel(ctk.CTkFrame):
             corner_radius=CORNER_RADIUS_INPUT,
             fg_color=COLORS['bg_hover'],
             hover_color=COLORS['border'],
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper']),
+            font=make_font('caption'),
             command=lambda: play_sound(self.config.start_sound.get())
         ).pack(side="left", padx=(0, 16))
 
         ctk.CTkLabel(
             row2, text="End:",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+            font=make_font('label')
         ).pack(side="left")
         end_sound = ctk.CTkComboBox(
             row2, variable=self.config.end_sound,
             values=list(SOUNDS.keys()), width=130, height=36, state="readonly",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input']),
+            font=make_font('body'),
             corner_radius=CORNER_RADIUS_INPUT
         )
         end_sound.pack(side="left", padx=(8, 4))
@@ -864,7 +868,7 @@ class BreakConfigPanel(ctk.CTkFrame):
             corner_radius=CORNER_RADIUS_INPUT,
             fg_color=COLORS['bg_hover'],
             hover_color=COLORS['border'],
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper']),
+            font=make_font('caption'),
             command=lambda: play_sound(self.config.end_sound.get())
         ).pack(side="left")
 
@@ -875,19 +879,19 @@ class BreakConfigPanel(ctk.CTkFrame):
         ctk.CTkCheckBox(
             row3, text="Loop end sound",
             variable=self.config.loop_end_sound,
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+            font=make_font('label')
         ).pack(side="left")
 
         ctk.CTkCheckBox(
             row3, text="Auto-dismiss",
             variable=self.config.auto_dismiss,
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+            font=make_font('label')
         ).pack(side="left", padx=(16, 0))
 
         ctk.CTkCheckBox(
             row3, text="Snoozable",
             variable=self.config.snoozable,
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+            font=make_font('label')
         ).pack(side="left", padx=(16, 0))
 
         # Test button on right
@@ -901,18 +905,18 @@ class BreakConfigPanel(ctk.CTkFrame):
             border_color=COLORS['border'],
             hover_color=COLORS['bg_hover'],
             text_color=COLORS['text_secondary'],
-            font=ctk.CTkFont(family=FONT_FAMILY, size=12)
+            font=make_font('label')
         ).pack(side="right")
 
         self.config.timer_label = ctk.CTkLabel(
             row3, text="--:--",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['timer'], weight="bold")
+            font=make_font('body', weight="bold")
         )
         self.config.timer_label.pack(side="right", padx=(0, 16))
 
         ctk.CTkLabel(
             row3, text="Next:",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label']),
+            font=make_font('label'),
             text_color=COLORS['text_secondary']
         ).pack(side="right")
 
@@ -1173,7 +1177,7 @@ class BreakApp:
         self.status = ctk.CTkLabel(
             status_frame,
             text="Idle",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['title'], weight="bold"),
+            font=make_font('heading', weight="bold"),
             text_color=COLORS['text_secondary']
         )
         self.status.pack(side="left")
@@ -1188,13 +1192,13 @@ class BreakApp:
             fg_color="transparent",
             hover_color=COLORS['bg_hover'],
             text_color=COLORS['text_secondary'],
-            font=ctk.CTkFont(size=15)
+            font=make_font('subheading')
         )
         self.settings_btn.pack(side="right", padx=(6, 0))
 
         self.next_break_label = ctk.CTkLabel(
             status_frame, text="",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['timer'], weight="bold"),
+            font=make_font('body', weight="bold"),
             text_color=COLORS['text_secondary']
         )
         self.next_break_label.pack(side="right")
@@ -1210,7 +1214,7 @@ class BreakApp:
             corner_radius=CORNER_RADIUS_BUTTON,
             fg_color=COLORS['accent_blue'],
             hover_color=COLORS['accent_hover'],
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['control'], weight="bold")
+            font=make_font('subheading', weight="bold")
         )
         self.toggle_btn.pack(side="left", padx=(0, 4), expand=True, fill="x")
 
@@ -1223,7 +1227,7 @@ class BreakApp:
             border_width=1,
             border_color=COLORS['border'],
             hover_color=COLORS['bg_panel'],
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['control']),
+            font=make_font('subheading'),
             state="disabled"
         )
         self.reset_btn.pack(side="left", padx=(4, 0), expand=True, fill="x")
@@ -1240,13 +1244,13 @@ class BreakApp:
 
             name_label = ctk.CTkLabel(
                 top_row, text=config.name.get(),
-                font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+                font=make_font('label')
             )
             name_label.pack(side="left", padx=(PADDING_PANEL_X, 0), pady=8)
 
             timer_label = ctk.CTkLabel(
                 top_row, text="--:--",
-                font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['timer'], weight="bold")
+                font=make_font('body', weight="bold")
             )
             timer_label.pack(side="right", padx=(0, PADDING_PANEL_X), pady=8)
 
@@ -1260,7 +1264,7 @@ class BreakApp:
                 border_width=1,
                 border_color=COLORS['border'],
                 hover_color=COLORS['bg_hover'],
-                font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper'])
+                font=make_font('caption')
             ).pack(side="right", padx=(0, 8), pady=8)
 
             self._timer_labels.append(timer_label)
@@ -1270,7 +1274,7 @@ class BreakApp:
             cue_label = ctk.CTkLabel(
                 card, text="", anchor="w",
                 text_color=COLORS['text_secondary'],
-                font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper'])
+                font=make_font('caption')
             )
             self._cue_labels.append(cue_label)
 
@@ -1285,7 +1289,7 @@ class BreakApp:
         self._snoozed_container.pack(fill="x")
         self._snooze_header = ctk.CTkLabel(
             self._snoozed_container, text="Snoozed",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper']),
+            font=make_font('caption'),
             text_color=COLORS['text_secondary'])
         # header + rows packed/cleared by _render_snooze_rows
 
@@ -1303,7 +1307,7 @@ class BreakApp:
             fg_color="transparent",
             hover_color=COLORS['bg_hover'],
             text_color=COLORS['accent_green'],
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper'])
+            font=make_font('caption')
         )
         # Hidden by default, shown when update is available
 
@@ -1317,14 +1321,14 @@ class BreakApp:
             fg_color="transparent",
             hover_color=COLORS['bg_hover'],
             text_color="gray50",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper'])
+            font=make_font('caption')
         ).pack(side="right")
 
         # Version label
         ctk.CTkLabel(
             bottom_frame,
             text=f"v{get_current_version()}",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper']),
+            font=make_font('caption'),
             text_color="gray40"
         ).pack(side="right", padx=(0, 4))
 
@@ -1682,37 +1686,37 @@ class BreakApp:
         ctk.CTkCheckBox(
             general_frame, text="Always on top",
             variable=self.always_on_top,
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+            font=make_font('label')
         ).pack(padx=PADDING_PANEL_X, pady=(PADDING_PANEL_Y, 4), anchor="w")
 
         ctk.CTkCheckBox(
             general_frame, text="Check for updates automatically",
             variable=self.check_for_updates,
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+            font=make_font('label')
         ).pack(padx=PADDING_PANEL_X, pady=(4, 4), anchor="w")
 
         ctk.CTkCheckBox(
             general_frame, text="Pause breaks while microphone is in use",
             variable=self.defer_during_meetings,
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+            font=make_font('label')
         ).pack(padx=PADDING_PANEL_X, pady=(4, 4), anchor="w")
 
         ctk.CTkCheckBox(
             general_frame, text="Pause breaks during fullscreen",
             variable=self.defer_during_fullscreen,
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+            font=make_font('label')
         ).pack(padx=PADDING_PANEL_X, pady=(4, 4), anchor="w")
 
         ctk.CTkCheckBox(
             general_frame, text="Wait until you pause (typing or clicking)",
             variable=self.defer_while_active,
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+            font=make_font('label')
         ).pack(padx=PADDING_PANEL_X, pady=(4, 4), anchor="w")
 
         ctk.CTkCheckBox(
             general_frame, text="↳ also count mouse movement",
             variable=self.count_mouse_move,
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label']),
+            font=make_font('label'),
             text_color=COLORS['text_secondary']
         ).pack(padx=(PADDING_PANEL_X + ROW_SPACING, PADDING_PANEL_X),
                pady=(0, 4), anchor="w")
@@ -1722,7 +1726,7 @@ class BreakApp:
                        pady=(0, 4), anchor="w", fill="x")
         pause_value_label = ctk.CTkLabel(
             pause_row, text=f"↳ Pause length: {self.activity_pause_seconds.get()} sec",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label']),
+            font=make_font('label'),
             text_color=COLORS['text_secondary']
         )
         pause_value_label.pack(side="left")
@@ -1744,7 +1748,7 @@ class BreakApp:
                            anchor="w", fill="x")
         ctk.CTkLabel(
             placement_row, text="Break popup appears on",
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+            font=make_font('label')
         ).pack(side="left")
         value_to_label = {v: k for k, v in POPUP_PLACEMENT_LABELS.items()}
 
@@ -1754,7 +1758,7 @@ class BreakApp:
         placement_menu = ctk.CTkOptionMenu(
             placement_row, values=list(POPUP_PLACEMENT_LABELS.keys()),
             command=_on_placement,
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+            font=make_font('label')
         )
         placement_menu.set(value_to_label.get(self.popup_placement.get(), "Active screen"))
         placement_menu.pack(side="right")
@@ -2046,18 +2050,18 @@ class BreakApp:
         row.pack(fill="x", pady=(0, 6))
         ctk.CTkLabel(
             row, text=entry['name'],
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+            font=make_font('label')
         ).pack(side="left", padx=(PADDING_PANEL_X, 0), pady=8)
         ctk.CTkButton(
             row, text="✕", width=28, height=BUTTON_HEIGHT_SMALL,
             corner_radius=CORNER_RADIUS_INPUT, fg_color="transparent",
             border_width=1, border_color=COLORS['border'], hover_color=COLORS['bg_hover'],
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper']),
+            font=make_font('caption'),
             command=lambda: self._cancel_snooze(entry)
         ).pack(side="right", padx=(0, PADDING_PANEL_X), pady=8)
         status_label = ctk.CTkLabel(
             row, text=status,
-            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper']),
+            font=make_font('caption'),
             text_color=COLORS['text_secondary'])
         status_label.pack(side="right", padx=(0, 8), pady=8)
         return {"frame": row, "status": status_label}
