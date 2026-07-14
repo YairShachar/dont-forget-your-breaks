@@ -36,6 +36,11 @@ def should_hold_snooze(paused, context_defers):
     return bool(paused or context_defers)
 
 
+def snooze_remaining(fire_time, now):
+    """Whole seconds until a snoozed break returns (clamped at 0)."""
+    return max(0, int(fire_time - now))
+
+
 def custom_snooze_seconds(raw_text, unit, max_seconds):
     """Parse the custom dialog (a number + 'sec'/'min') to seconds, or None if
     not a positive integer within `max_seconds`."""

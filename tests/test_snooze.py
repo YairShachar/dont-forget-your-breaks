@@ -96,3 +96,22 @@ def test_custom_empty_is_none():
 
 def test_custom_over_cap_is_none():
     assert custom_snooze_seconds("99999999", "min", 86400) is None
+
+
+from dfyb.snooze import snooze_remaining
+
+
+def test_remaining_counts_down():
+    assert snooze_remaining(1000, 970) == 30
+
+
+def test_remaining_zero_at_fire():
+    assert snooze_remaining(1000, 1000) == 0
+
+
+def test_remaining_clamps_past_due():
+    assert snooze_remaining(1000, 1010) == 0
+
+
+def test_remaining_ten_seconds():
+    assert snooze_remaining(1010, 1000) == 10
