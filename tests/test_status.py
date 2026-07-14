@@ -1,0 +1,50 @@
+from dfyb.insights.status import format_countdown, progress_fraction, compute_status
+
+
+class TestFormat:
+    def test_mmss(self):
+        assert format_countdown(272) == "4:32"
+
+    def test_floor_zero(self):
+        assert format_countdown(-5) == "0:00"
+
+    def test_hours(self):
+        assert format_countdown(3723) == "1:02:03"
+
+
+class TestProgress:
+    def test_mid(self):
+        assert progress_fraction(300, 600) == 0.5
+
+    def test_clamped(self):
+        assert progress_fraction(-10, 600) == 1.0
+
+    def test_zero_interval(self):
+        assert progress_fraction(5, 0) == 0.0
+
+
+class TestCompute:
+    def base(self, **kw):
+        d = dict(running=True, paused=False, held_reason=None, next_name="Micro Break",
+                 next_remaining=272, next_interval=900, break_active=False)
+        d.update(kw)
+        return d
+
+    def test_idle(self):
+        v = compute_status(**self.base(running=False))
+        assert v.state == "idle" and v.dot == "idle" and v.progress == 0
+
+    def test_paused(self):
+        v = compute_status(**self.base(paused=True))
+        assert v.state == "paused" and v.dot == "warning"
+
+    def test_on_track(self):
+        v = compute_status(**self.base())
+        assert v.state == "on_track" and v.dot == "good"
+        assert v.headline == "Next break in 4:32" and v.subtext == "Micro Break"
+        assert abs(v.progress - (1 - 272 / 900)) < 1e-9 and v.chip is None
+
+    def test_holding(self):
+        v = compute_status(**self.base(held_reason="a call"))
+        assert v.state == "holding" and v.dot == "warning"
+        assert v.headline == "Waiting — a call" and v.chip == "Breaks pause during a call"
