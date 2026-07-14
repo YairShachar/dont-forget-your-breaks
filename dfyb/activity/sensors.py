@@ -38,6 +38,31 @@ def idle_seconds():
         return 0.0
 
 
+def _event_idle_seconds(Quartz, event_type):
+    return float(Quartz.CGEventSourceSecondsSinceLastEventType(
+        Quartz.kCGEventSourceStateHIDSystemState, event_type))
+
+
+def active_idle_seconds(include_mouse_move=False):
+    """Seconds since the last MEANINGFUL input for wait-until-you-pause:
+    keyboard + clicks + scroll (+ mouse-move only if include_mouse_move). Bare
+    cursor movement is excluded by default — it's noise, not 'busy working'.
+    Falls back to idle_seconds() on non-macOS / failure (never worse than today).
+    """
+    if sys.platform != "darwin":
+        return idle_seconds()
+    try:
+        import Quartz
+        types = [Quartz.kCGEventKeyDown, Quartz.kCGEventFlagsChanged,
+                 Quartz.kCGEventLeftMouseDown, Quartz.kCGEventRightMouseDown,
+                 Quartz.kCGEventScrollWheel]
+        if include_mouse_move:
+            types.append(Quartz.kCGEventMouseMoved)
+        return min(_event_idle_seconds(Quartz, t) for t in types)
+    except Exception:
+        return idle_seconds()
+
+
 def _covers_interval(intervals, lo, hi, tol=FULLSCREEN_COVER_TOLERANCE_PX):
     """Do the (start, end) intervals union-cover [lo, hi]? Pure 1D coverage."""
     cursor = lo
@@ -210,7 +235,7 @@ def frontmost_window_rect():
         return None
 
 
-def read_context(check_meeting=True, check_fullscreen=True):
+def read_context(check_meeting=True, check_fullscreen=True, count_mouse_move=False):
     """Snapshot the current context for the scheduler.
 
     `check_meeting` / `check_fullscreen` gate their signals (the app's
@@ -221,4 +246,5 @@ def read_context(check_meeting=True, check_fullscreen=True):
         idle_seconds=idle_seconds(),
         is_fullscreen=check_fullscreen and frontmost_is_fullscreen(),
         is_meeting=check_meeting and microphone_in_use(),
+        active_idle_seconds=active_idle_seconds(include_mouse_move=count_mouse_move),
     )
