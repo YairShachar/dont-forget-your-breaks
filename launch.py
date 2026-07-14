@@ -180,7 +180,7 @@ ACTIVITY_PAUSE_MAX = 15
 ACTIVITY_PAUSE_DEFAULT = 2   # seconds of stillness before a due break fires
 SNOOZE_RECHECK_MS = 5000     # while a snoozed break is context-deferred, re-check this often
 CONFIG_COMMIT_DEBOUNCE_MS = 800  # wait this long after the last keystroke before applying a typed interval/duration
-BREAK_OVER_TEXT = "Break over ✓"       # big popup label once a break's duration elapses
+BREAK_OVER_TEXT = "Break over"       # big popup label once a break's duration elapses
 OVER_BREAK_SUFFIX = "over your break"  # trails the +MM:SS over-breaking count-up
 SNOOZE_OPTIONS_SECONDS = [30, 60, 120, 300, 600, 900, 1800]  # ▾ menu presets
 DEFAULT_SNOOZE_SECONDS = 300                                  # default snooze (5 min)
@@ -488,7 +488,8 @@ class CountdownPopup:
             if self.auto_dismiss:
                 self.close()
                 return
-            self.countdown_label.configure(text=BREAK_OVER_TEXT)
+            self.countdown_label.configure(
+                text=BREAK_OVER_TEXT, text_color=COLORS['accent_warning'])
             self._bring_to_attention()
 
         # auto-dismiss off: count up the time spent over the break (#33).
@@ -720,7 +721,7 @@ class CountdownPopup:
             return
         try:
             current_color = self.ok_btn.cget('fg_color')
-            flash_color = "#FF6B6B"
+            flash_color = COLORS['accent_warning']
             new_color = flash_color if current_color != flash_color else None
             self.ok_btn.configure(fg_color=new_color)
             self.window.after(200, lambda: self._flash_button(count - 1))
