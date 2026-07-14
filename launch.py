@@ -2007,7 +2007,7 @@ class BreakApp:
                            fg_color=COLORS['bg_panel'])
         row.pack(fill="x", pady=(0, 6))
         ctk.CTkLabel(
-            row, text=f"💤 {entry['name']}",
+            row, text=entry['name'],
             font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
         ).pack(side="left", padx=(PADDING_PANEL_X, 0), pady=8)
         ctk.CTkButton(
