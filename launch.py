@@ -26,7 +26,9 @@ from dfyb.updater import (
     HOMEBREW_CASK_NAME,
 )
 from dfyb.animation import ease_out_quad, prefers_reduced_motion, lerp_color
-from dfyb.activity.event_log import EventLog, BREAK_TAKEN, BREAK_SNOOZED
+from dfyb.activity.event_log import (
+    EventLog, BREAK_TAKEN, BREAK_SNOOZED,
+    BREAK_SNOOZE_CANCELLED, BREAK_SNOOZE_RETURNED)
 from dfyb.activity.sensors import read_context, frontmost_window_rect, smooth_fullscreen
 from dfyb.popup_placement import screen_for_point, center_on_screen, clamp_onscreen
 from dfyb.scheduler.adapter import states_from_configs
@@ -38,7 +40,7 @@ from dfyb.insights.transparency import track_held, held_message, holding_cue
 from dfyb.insights.over_break import format_over_time
 from dfyb.snooze import (
     snooze_delay_ms, format_snooze_short, format_snooze_long, custom_snooze_seconds,
-    should_hold_snooze)
+    should_hold_snooze, snooze_remaining)
 from dfyb.insights.counts import (
     snooze_count_since_taken, first_snooze_seconds_ago, snooze_summary_label)
 
@@ -1045,6 +1047,8 @@ class BreakApp:
         self.paused = False
         self.stop_event = threading.Event()
         self.break_queue = []
+        self._pending_snoozes = []   # entries: {name, fire_time, after_id}
+        self._snooze_rows = {}       # id(entry) -> {"frame", "status"}
         self.active_popup = None
         self.break_start_time = None
         self.event_log = EventLog(EVENTS_FILE)
@@ -1900,8 +1904,12 @@ class BreakApp:
                 self.status.configure(text="Working", text_color=COLORS['accent_green'])
             # An explicit snooze always comes back after its delay, regardless of
             # Start/Stop; _requeue_break holds it while paused or context-deferred.
-            self.root.after(snooze_delay_ms(snooze_seconds),
-                            lambda: self._requeue_break(break_data))
+            entry = {"name": break_data['name'],
+                     "fire_time": time.time() + snooze_seconds, "after_id": None}
+            entry["after_id"] = self.root.after(
+                snooze_delay_ms(snooze_seconds),
+                lambda: self._requeue_break(break_data, entry))
+            self._pending_snoozes.append(entry)
 
         self.status.configure(text=break_data['name'], text_color=COLORS['accent_orange'])
         # How many times this break was snoozed / when it was first due (#37).
@@ -1931,7 +1939,7 @@ class BreakApp:
             first_snooze_ago=first_snooze_ago,
         )
 
-    def _requeue_break(self, break_data):
+    def _requeue_break(self, break_data, entry=None):
         """Re-show a snoozed break. An explicit snooze always returns regardless of
         Start/Stop; a Pause holds it, and context (meeting/fullscreen/away/
         mid-activity) defers it like a scheduled break (#42), re-checking later."""
@@ -1945,10 +1953,29 @@ class BreakApp:
             # Not a good moment (paused or context-deferred) — wait and re-check.
             logging.info("snoozed break held (paused=%s fullscreen=%s meeting=%s), re-checking",
                          self.paused, ctx.is_fullscreen, ctx.is_meeting)
-            self.root.after(SNOOZE_RECHECK_MS, lambda: self._requeue_break(break_data))
+            after_id = self.root.after(SNOOZE_RECHECK_MS,
+                                       lambda: self._requeue_break(break_data, entry))
+            if entry is not None:
+                entry["after_id"] = after_id
             return
+        if entry is not None and entry in self._pending_snoozes:
+            self._pending_snoozes.remove(entry)
+        self._record_event(BREAK_SNOOZE_RETURNED, name=break_data['name'])
         self.break_queue.append(break_data)
         self.root.after(0, self._process_break_queue)
+
+    def _cancel_snooze(self, entry):
+        """Cancel a pending snooze (✕ on its row): drop the scheduled re-fire."""
+        if entry.get("after_id") is not None:
+            try:
+                self.root.after_cancel(entry["after_id"])
+            except Exception:
+                pass
+        if entry in self._pending_snoozes:
+            self._pending_snoozes.remove(entry)
+        self._record_event(
+            BREAK_SNOOZE_CANCELLED, name=entry["name"],
+            remaining_seconds=snooze_remaining(entry["fire_time"], time.time()))
 
     def test_break(self, config):
         """Test a specific break configuration."""
