@@ -15,6 +15,7 @@ class Context:
     idle_seconds: float
     is_fullscreen: bool
     is_meeting: bool = False
+    active_idle_seconds: float | None = None  # typing/clicks idle; None -> use idle_seconds
 
 
 @dataclass(frozen=True)
@@ -46,9 +47,11 @@ def decide(ctx, away_threshold=AWAY_IDLE_THRESHOLD_SECONDS, pause_threshold=0):
     if ctx.is_meeting:
         return DEFER          # don't interrupt a call (mic in use)
     if ctx.idle_seconds >= away_threshold:
-        return DEFER          # briefly away — wait until back and active
-    if ctx.idle_seconds < pause_threshold:
-        return DEFER          # mid-activity — wait for a pause (0 disables)
+        return DEFER          # briefly away — any input counts as present
+    active_idle = (ctx.idle_seconds if ctx.active_idle_seconds is None
+                   else ctx.active_idle_seconds)
+    if active_idle < pause_threshold:
+        return DEFER          # mid-activity — typing/clicks (not bare mouse-move)
     return FIRE
 
 

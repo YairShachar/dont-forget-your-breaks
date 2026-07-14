@@ -196,3 +196,28 @@ def test_step_meeting_beats_active():
     r = step(states, Context(idle_seconds=1.0, is_fullscreen=False, is_meeting=True),
              pause_threshold=5)
     assert r.defer_reason == "meeting"
+
+
+# --- active_idle_seconds: keyboard-primary pause (#41) ---
+
+def test_decide_fire_when_mouse_moved_but_not_typing():
+    # moved mouse (idle low) but no typing (active_idle high) -> not "active" -> FIRE
+    ctx = Context(idle_seconds=1, is_fullscreen=False, active_idle_seconds=30)
+    assert decide(ctx, pause_threshold=2) == FIRE
+
+
+def test_decide_defer_active_when_typing():
+    ctx = Context(idle_seconds=1, is_fullscreen=False, active_idle_seconds=1)
+    assert decide(ctx, pause_threshold=2) == DEFER
+
+
+def test_decide_active_falls_back_to_idle_when_unset():
+    # active_idle_seconds=None -> uses idle_seconds for the pause check (old behavior)
+    ctx = Context(idle_seconds=1, is_fullscreen=False)
+    assert decide(ctx, pause_threshold=2) == DEFER
+
+
+def test_decide_away_ignores_active_idle():
+    # away keys off idle_seconds (any input) regardless of active_idle
+    ctx = Context(idle_seconds=100, is_fullscreen=False, active_idle_seconds=0)
+    assert decide(ctx, pause_threshold=2) == DEFER
