@@ -1273,6 +1273,15 @@ class BreakApp:
                 widget.bind("<Double-Button-1>",
                             lambda e, c=config: self._edit_break_config(c))
 
+        # Snoozed-break section (dynamic rows appear while a snooze is pending).
+        self._snoozed_container = ctk.CTkFrame(main_frame, fg_color="transparent")
+        self._snoozed_container.pack(fill="x")
+        self._snooze_header = ctk.CTkLabel(
+            self._snoozed_container, text="Snoozed",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper']),
+            text_color=COLORS['text_secondary'])
+        # header + rows packed/cleared by _render_snooze_rows
+
         # Bottom bar: feedback + update banner
         bottom_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
         bottom_frame.pack(fill="x", side="bottom")
@@ -1993,10 +2002,55 @@ class BreakApp:
 
     # ------------------ UI UPDATE ------------------
 
+    def _build_snooze_row(self, entry, status):
+        row = ctk.CTkFrame(self._snoozed_container, corner_radius=CORNER_RADIUS_PANEL,
+                           fg_color=COLORS['bg_panel'])
+        row.pack(fill="x", pady=(0, 6))
+        ctk.CTkLabel(
+            row, text=f"💤 {entry['name']}",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+        ).pack(side="left", padx=(PADDING_PANEL_X, 0), pady=8)
+        ctk.CTkButton(
+            row, text="✕", width=28, height=BUTTON_HEIGHT_SMALL,
+            corner_radius=CORNER_RADIUS_INPUT, fg_color="transparent",
+            border_width=1, border_color=COLORS['border'], hover_color=COLORS['bg_hover'],
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper']),
+            command=lambda: self._cancel_snooze(entry)
+        ).pack(side="right", padx=(0, PADDING_PANEL_X), pady=8)
+        status_label = ctk.CTkLabel(
+            row, text=status,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper']),
+            text_color=COLORS['text_secondary'])
+        status_label.pack(side="right", padx=(0, 8), pady=8)
+        return {"frame": row, "status": status_label}
+
+    def _render_snooze_rows(self, now):
+        entries = self._pending_snoozes
+        if entries and self._snooze_header.winfo_manager() != "pack":
+            self._snooze_header.pack(anchor="w", padx=PADDING_PANEL_X, pady=(4, 2))
+        elif not entries and self._snooze_header.winfo_manager() == "pack":
+            self._snooze_header.pack_forget()
+        current = set()
+        for entry in entries:
+            eid = id(entry)
+            current.add(eid)
+            remaining = snooze_remaining(entry["fire_time"], now)
+            status = (f"returns in {self._format_time(remaining)}"
+                      if remaining > 0 else "returning…")
+            if eid in self._snooze_rows:
+                self._snooze_rows[eid]["status"].configure(text=status)
+            else:
+                self._snooze_rows[eid] = self._build_snooze_row(entry, status)
+        for eid in list(self._snooze_rows):
+            if eid not in current:
+                self._snooze_rows[eid]["frame"].destroy()
+                del self._snooze_rows[eid]
+
     def update_ui(self):
         """Update timer displays for all breaks."""
         next_break = None
         min_remaining = float('inf')
+        now = time.time()
 
         for i, config in enumerate(self.breaks):
             time_text = self._format_time(config.remaining)
@@ -2033,6 +2087,7 @@ class BreakApp:
         elif not self.running:
             self.next_break_label.configure(text="")
 
+        self._render_snooze_rows(now)
         self.root.after(1000, self.update_ui)
 
     @staticmethod
