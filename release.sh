@@ -57,6 +57,9 @@ cleanup_on_error() {
     fi
 }
 trap cleanup_on_error ERR
+# Also restore VERSION on Ctrl-C / kill (the ERR trap doesn't fire on a signal),
+# so an aborted release never leaves the working tree dirty at the bumped version.
+trap 'cleanup_on_error; exit 130' INT TERM
 
 # `./release.sh --check` runs only the read-only pre-flight, then exits.
 if [ "${1:-}" = "--check" ]; then
