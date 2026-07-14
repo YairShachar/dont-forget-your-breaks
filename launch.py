@@ -17,7 +17,7 @@ from urllib.parse import quote as url_quote
 import logging
 from pathlib import Path
 from dfyb.version import parse_version, is_newer_version
-from dfyb.breaks.duration import to_seconds
+from dfyb.breaks.duration import to_seconds, humanize_seconds
 from dfyb.sound import play_sound, looping_sound, SOUNDS
 from dfyb.updater import (
     get_current_version,
@@ -196,6 +196,8 @@ STATUS_STATE_LABELS = {
     'idle': "Idle", 'paused': "Paused", 'holding': "Holding",
     'break': "Break", 'on_track': "On track",
 }
+# break-row icon by index; falls back to "break" for any extra breaks
+ROW_ICON_NAMES = ["eye", "mug"]
 BUTTON_MIN_WIDTH = 80      # Minimum touch target
 
 # Collapsible panel settings
@@ -1292,60 +1294,70 @@ class BreakApp:
             state="disabled")
         self.reset_btn.pack(side="left", padx=(SPACE_XXS, 0), expand=True, fill="x")
 
-        # Compact timer display cards
+        # ---- Break rows: icon · name/interval · countdown/Break now ----
         self._timer_labels = []
         self._cue_labels = []
-        for config in self.breaks:
-            card = ctk.CTkFrame(main_frame, corner_radius=CORNER_RADIUS_PANEL, fg_color=COLORS['surface_card'])
+        self._interval_labels = []
+        for i, config in enumerate(self.breaks):
+            card = ctk.CTkFrame(main_frame, corner_radius=CORNER_RADIUS_PANEL,
+                                fg_color=COLORS['surface_card'])
             card.pack(fill="x", pady=(0, SPACE_XS))
 
-            top_row = ctk.CTkFrame(card, fg_color="transparent")
-            top_row.pack(fill="x")
+            row = ctk.CTkFrame(card, fg_color="transparent")
+            row.pack(fill="x", padx=PADDING_PANEL_X, pady=SPACE_SM)
 
-            name_label = ctk.CTkLabel(
-                top_row, text=config.name.get(),
-                font=make_font('label')
-            )
-            name_label.pack(side="left", padx=(PADDING_PANEL_X, 0), pady=SPACE_SM)
+            # Icon chip (left)
+            icon_name = ROW_ICON_NAMES[i] if i < len(ROW_ICON_NAMES) else "break"
+            icon_chip = ctk.CTkLabel(
+                row, text="", image=load_icon(icon_name),
+                width=ICON_CHIP, height=ICON_CHIP,
+                fg_color=COLORS['surface_hover'], corner_radius=CORNER_RADIUS_INPUT)
+            icon_chip.pack(side="left")
 
+            # Value block (right): countdown + a readable Break now
+            value = ctk.CTkFrame(row, fg_color="transparent")
+            value.pack(side="right")
             timer_label = ctk.CTkLabel(
-                top_row, text="--:--",
-                font=make_font('body', weight="bold")
-            )
-            timer_label.pack(side="right", padx=(0, PADDING_PANEL_X), pady=SPACE_SM)
+                value, text="--:--", font=make_font('body', weight="bold"))
+            timer_label.pack(anchor="e")
+            break_now = ctk.CTkButton(
+                value, text="Break now", command=lambda c=config: self.break_now(c),
+                width=72, height=20, corner_radius=CORNER_RADIUS_INPUT,
+                fg_color="transparent", hover_color=COLORS['surface_hover'],
+                text_color=COLORS['accent_primary'],
+                font=make_font('caption', weight="bold"))
+            break_now.pack(anchor="e", pady=(SPACE_XXS, 0))
 
-            # Break now button (quick manual trigger, left of the timer)
-            ctk.CTkButton(
-                top_row, text="Break now",
-                command=lambda c=config: self.break_now(c),
-                width=90, height=BUTTON_HEIGHT_SMALL,
-                corner_radius=CORNER_RADIUS_INPUT,
-                fg_color="transparent",
-                border_width=1,
-                border_color=COLORS['border'],
-                hover_color=COLORS['surface_hover'],
-                font=make_font('caption')
-            ).pack(side="right", padx=(0, SPACE_SM), pady=SPACE_SM)
+            # Meta (middle): name + interval subtitle
+            meta = ctk.CTkFrame(row, fg_color="transparent")
+            meta.pack(side="left", fill="x", expand=True, padx=(SPACE_SM, SPACE_XS))
+            name_label = ctk.CTkLabel(
+                meta, text=config.name.get(), anchor="w",
+                font=make_font('body', weight="bold"))
+            name_label.pack(fill="x")
+            interval_label = ctk.CTkLabel(
+                meta, text=self._row_subtitle(config), anchor="w",
+                font=make_font('caption'), text_color=COLORS['text_secondary'])
+            interval_label.pack(fill="x")
 
             self._timer_labels.append(timer_label)
+            self._interval_labels.append(interval_label)
 
             # Gentle "holding" cue (#44): explains why a due break is waiting.
-            # Hidden until held; shown/hidden by update_ui.
             cue_label = ctk.CTkLabel(
                 card, text="", anchor="w",
-                text_color=COLORS['text_secondary'],
-                font=make_font('caption')
-            )
+                text_color=COLORS['text_secondary'], font=make_font('caption'))
             self._cue_labels.append(cue_label)
 
-            # Double-click the card (name or countdown) jumps into this break's
-            # configuration (#43). The "Break now" button keeps its own click.
-            for widget in (card, top_row, name_label, timer_label):
+            # Double-click a row → configure this break (#43)
+            for widget in (card, row, meta, name_label, timer_label, interval_label):
                 widget.bind("<Double-Button-1>",
                             lambda e, c=config: self._edit_break_config(c))
 
         # Snoozed-break section (dynamic rows appear while a snooze is pending).
-        self._snoozed_container = ctk.CTkFrame(main_frame, fg_color="transparent")
+        # height=0 so the empty container doesn't reserve CTkFrame's default 200px
+        # (the old main-window "void"); it grows to fit snooze rows when present.
+        self._snoozed_container = ctk.CTkFrame(main_frame, fg_color="transparent", height=0)
         self._snoozed_container.pack(fill="x")
         self._snooze_header = ctk.CTkLabel(
             self._snoozed_container, text="Snoozed",
@@ -2148,6 +2160,11 @@ class BreakApp:
                 self._snooze_rows[eid]["frame"].destroy()
                 del self._snooze_rows[eid]
 
+    def _row_subtitle(self, config):
+        """Interval · duration label for a break row, e.g. 'every 15 min · 20 sec'."""
+        return (f"every {humanize_seconds(config.get_interval_seconds())}"
+                f" · {humanize_seconds(config.get_duration_seconds())}")
+
     def _render_status(self):
         """Render the cockpit hero from current state — the single source of truth
         for the status area, called both on state changes and every tick."""
@@ -2182,6 +2199,8 @@ class BreakApp:
             time_text = self._format_time(config.remaining)
             if i < len(self._timer_labels):
                 self._timer_labels[i].configure(text=time_text)
+            if i < len(self._interval_labels):
+                self._interval_labels[i].configure(text=self._row_subtitle(config))
             # Update settings panel header timer if settings window is open
             if hasattr(self, '_settings_panels') and i < len(self._settings_panels):
                 try:
@@ -2204,7 +2223,19 @@ class BreakApp:
 
         self._render_status()
         self._render_snooze_rows(now)
+        self._maybe_refit()
         self.root.after(1000, self.update_ui)
+
+    def _maybe_refit(self):
+        """Re-fit the window height when content grows/shrinks (snooze row or
+        holding chip appearing), keeping its CURRENT position."""
+        self.root.update_idletasks()
+        h = self.root.winfo_reqheight()
+        if h == getattr(self, "_last_fit_height", None):
+            return
+        self._last_fit_height = h
+        w = self.root.winfo_reqwidth()
+        self.root.geometry(f"{w}x{h}+{self.root.winfo_x()}+{self.root.winfo_y()}")
 
     @staticmethod
     def _format_time(seconds):

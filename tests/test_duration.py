@@ -1,4 +1,4 @@
-from dfyb.breaks.duration import to_seconds
+from dfyb.breaks.duration import to_seconds, humanize_seconds
 
 
 def test_seconds_pass_through():
@@ -16,3 +16,13 @@ def test_hours_to_seconds():
 def test_unknown_unit_matches_legacy_hour_behavior():
     # Legacy code's final `else` branch multiplied by 3600 for any non-sec/min unit.
     assert to_seconds(1, "fortnight") == 3600
+
+
+def test_humanize_picks_largest_whole_unit():
+    assert humanize_seconds(20) == "20 sec"
+    assert humanize_seconds(90) == "90 sec"      # not a whole minute
+    assert humanize_seconds(900) == "15 min"
+    assert humanize_seconds(1500) == "25 min"
+    assert humanize_seconds(3600) == "1 hr"
+    assert humanize_seconds(7200) == "2 hr"
+    assert humanize_seconds(0) == "0 sec"
