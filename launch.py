@@ -34,6 +34,7 @@ from dfyb.popup_placement import screen_for_point, center_on_screen, clamp_onscr
 from dfyb.scheduler.adapter import states_from_configs
 from dfyb.scheduler.tick import advance
 from dfyb.scheduler.engine import decide, DEFER
+from dfyb.scheduler.dedup import break_in_play
 from dfyb.timer_lifecycle import timer_should_continue
 from dfyb.macos_window import pin_to_active_space
 from dfyb.insights.transparency import track_held, held_message, holding_cue
@@ -1050,6 +1051,7 @@ class BreakApp:
         self._pending_snoozes = []   # entries: {name, fire_time, after_id}
         self._snooze_rows = {}       # id(entry) -> {"frame", "status"}
         self.active_popup = None
+        self._active_break_name = None  # name of the break the popup is showing (dedup, #50)
         self.break_start_time = None
         self.event_log = EventLog(EVENTS_FILE)
         self._episode = None  # idle/deferred dedup marker for the smart-timing loop
@@ -1861,7 +1863,14 @@ class BreakApp:
         return screens[0]
 
     def trigger_break(self, config, held_reason=None):
-        """Queue a break with the given configuration."""
+        """Queue a break with the given configuration (skips a duplicate that's
+        already showing / queued / pending-snoozed) (#50)."""
+        name = config.name.get()
+        queued = [b['name'] for b in self.break_queue]
+        pending = [e['name'] for e in self._pending_snoozes]
+        if break_in_play(name, self._active_break_name, queued, pending):
+            logging.info("skip duplicate break '%s' (already in play)", name)
+            return
         break_data = {
             'name': config.name.get(),
             'duration': config.get_duration_seconds(),
@@ -1911,6 +1920,7 @@ class BreakApp:
                     break
 
             self.active_popup = None
+            self._active_break_name = None
             self.break_start_time = None
             if self.running and not self.paused:
                 self.status.configure(text="Working", text_color=COLORS['accent_green'])
@@ -1923,6 +1933,7 @@ class BreakApp:
             self.snooze_seconds.set(snooze_seconds)   # remember as the new default
             self._save_preferences()
             self.active_popup = None
+            self._active_break_name = None
             self.break_start_time = None
             if self.running and not self.paused:
                 self.status.configure(text="Working", text_color=COLORS['accent_green'])
@@ -1944,6 +1955,7 @@ class BreakApp:
         # Capture the active screen NOW, before the popup's window steals focus.
         target_screen = (self._capture_active_screen()
                          if self.popup_placement.get() == "active" else None)
+        self._active_break_name = break_data['name']   # for dedup while showing (#50)
         self.active_popup = CountdownPopup(
             self.root,
             break_data['name'],
@@ -1986,6 +1998,11 @@ class BreakApp:
         if entry is not None and entry in self._pending_snoozes:
             self._pending_snoozes.remove(entry)
         self._record_event(BREAK_SNOOZE_RETURNED, name=break_data['name'])
+        name = break_data['name']
+        queued = [b['name'] for b in self.break_queue]
+        if break_in_play(name, self._active_break_name, queued, []):
+            logging.info("snoozed break '%s' returned but already in play — coalescing", name)
+            return
         self.break_queue.append(break_data)
         self.root.after(0, self._process_break_queue)
 
@@ -2011,7 +2028,12 @@ class BreakApp:
 
         Manual/explicit action — bypasses the scheduler's fullscreen/away
         deferral (trigger_break shows the popup directly, not via the timer loop).
+        Cancels any pending snooze for this break first, so Break now overrides a
+        snooze and shows it right away instead of being coalesced away (#50).
         """
+        name = config.name.get()
+        for entry in [e for e in self._pending_snoozes if e['name'] == name]:
+            self._cancel_snooze(entry)
         config.reset_timer()
         self.trigger_break(config)
         self.update_ui()
