@@ -26,7 +26,9 @@ from dfyb.updater import (
     HOMEBREW_CASK_NAME,
 )
 from dfyb.animation import ease_out_quad, prefers_reduced_motion, lerp_color
-from dfyb.activity.event_log import EventLog, BREAK_TAKEN, BREAK_SNOOZED
+from dfyb.activity.event_log import (
+    EventLog, BREAK_TAKEN, BREAK_SNOOZED,
+    BREAK_SNOOZE_CANCELLED, BREAK_SNOOZE_RETURNED)
 from dfyb.activity.sensors import read_context, frontmost_window_rect, smooth_fullscreen
 from dfyb.popup_placement import screen_for_point, center_on_screen, clamp_onscreen
 from dfyb.scheduler.adapter import states_from_configs
@@ -36,7 +38,11 @@ from dfyb.timer_lifecycle import timer_should_continue
 from dfyb.macos_window import pin_to_active_space
 from dfyb.insights.transparency import track_held, held_message, holding_cue
 from dfyb.insights.over_break import format_over_time
-from dfyb.snooze import snooze_delay_ms
+from dfyb.snooze import (
+    snooze_delay_ms, format_snooze_short, format_snooze_long, custom_snooze_seconds,
+    should_hold_snooze, snooze_remaining)
+from dfyb.insights.counts import (
+    snooze_count_since_taken, first_snooze_seconds_ago, snooze_summary_label)
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -160,8 +166,11 @@ SNOOZE_RECHECK_MS = 5000     # while a snoozed break is context-deferred, re-che
 CONFIG_COMMIT_DEBOUNCE_MS = 800  # wait this long after the last keystroke before applying a typed interval/duration
 BREAK_OVER_TEXT = "Break over ✓"       # big popup label once a break's duration elapses
 OVER_BREAK_SUFFIX = "over your break"  # trails the +MM:SS over-breaking count-up
-SNOOZE_OPTIONS_MINUTES = [5, 10, 15, 30]  # snooze durations offered on the popup ▾ menu
-DEFAULT_SNOOZE_MINUTES = 5                 # default snooze length (persisted as snooze_minutes)
+SNOOZE_OPTIONS_SECONDS = [30, 60, 120, 300, 600, 900, 1800]  # ▾ menu presets
+DEFAULT_SNOOZE_SECONDS = 300                                  # default snooze (5 min)
+MAX_SNOOZE_SECONDS = 24 * 60 * 60                             # cap for a custom value
+CUSTOM_SNOOZE_UNITS = ["sec", "min"]                          # segmented-control options
+CUSTOM_SNOOZE_DEFAULT_UNIT = "sec"                            # unit selected first in the dialog
 POPUP_FADE_FRAMES = 16   # ~256ms entrance fade at ANIMATION_FRAME_INTERVAL
 # Settings dropdown label -> stored popup_placement value
 POPUP_PLACEMENT_LABELS = {
@@ -206,7 +215,7 @@ class BreakConfig:
 
     def __init__(self, name, interval_val, interval_unit,
                  duration_val, duration_unit, start_sound, end_sound,
-                 loop_end_sound=False, auto_dismiss=True):
+                 loop_end_sound=False, auto_dismiss=True, snoozable=True):
         self.name = ctk.StringVar(value=name)
         self.interval_value = ctk.StringVar(value=str(interval_val))
         self.interval_unit = ctk.StringVar(value=interval_unit)
@@ -216,6 +225,7 @@ class BreakConfig:
         self.end_sound = ctk.StringVar(value=end_sound)
         self.loop_end_sound = ctk.BooleanVar(value=loop_end_sound)
         self.auto_dismiss = ctk.BooleanVar(value=auto_dismiss)
+        self.snoozable = ctk.BooleanVar(value=snoozable)
         self.remaining = self.get_interval_seconds()
         self.timer_label = None  # Will be set by UI
 
@@ -246,18 +256,22 @@ class CountdownPopup:
     """A modern popup with countdown timer, progress bar, glassmorphism effect."""
 
     def __init__(self, parent, title, message, duration,
-                 auto_dismiss=True, on_close=None, on_snooze=None,
+                 auto_dismiss=True, snoozable=True, on_close=None, on_snooze=None,
                  end_sound=None, loop_end_sound=False, placement="active",
                  target_screen=None, held_reason=None,
-                 snooze_minutes=DEFAULT_SNOOZE_MINUTES):
+                 snooze_seconds=DEFAULT_SNOOZE_SECONDS,
+                 snooze_count=0, first_snooze_ago=None):
         self.parent = parent
         self.placement = placement
         self.target_screen = target_screen
         self.held_reason = held_reason
-        self.snooze_minutes = snooze_minutes
+        self.snooze_seconds = snooze_seconds
+        self.snooze_count = snooze_count
+        self.first_snooze_ago = first_snooze_ago
         self.duration = duration
         self.remaining = duration
         self.auto_dismiss = auto_dismiss
+        self.snoozable = snoozable
         self.on_close = on_close
         self.on_snooze = on_snooze
         self.end_sound = end_sound
@@ -320,6 +334,15 @@ class CountdownPopup:
                     text_color=COLORS['text_secondary']
                 ).pack(pady=(0, 6))
 
+        # Snooze insight line (#37): "Snoozed 2× already (originally due 15 min ago)".
+        summary = snooze_summary_label(self.snooze_count, self.first_snooze_ago)
+        if summary:
+            ctk.CTkLabel(
+                container, text=summary,
+                font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper']),
+                text_color=COLORS['text_secondary']
+            ).pack(pady=(0, 6))
+
         # Message
         msg_label = ctk.CTkLabel(
             container,
@@ -358,15 +381,15 @@ class CountdownPopup:
         btn_frame = ctk.CTkFrame(container, fg_color="transparent")
         btn_frame.pack(pady=ROW_SPACING)
 
-        # Snooze split control (only if not auto-dismiss): main = snooze for the
-        # current default, ▾ = pick another duration (which becomes the default).
-        if not auto_dismiss:
+        # Snooze split control (only if the break is snoozable): main = snooze for
+        # the current default, ▾ = pick another duration (which becomes the default).
+        if self.snoozable:
             snooze_group = ctk.CTkFrame(btn_frame, fg_color="transparent")
             snooze_group.pack(side="left", padx=8)
 
             self.snooze_btn = ctk.CTkButton(
                 snooze_group,
-                text=f"Snooze {self.snooze_minutes}m",
+                text=f"Snooze {format_snooze_short(self.snooze_seconds)}",
                 command=self.snooze,
                 width=104,
                 height=40,
@@ -478,11 +501,11 @@ class CountdownPopup:
         if self.remaining > 0:
             self.window.after(50, self._update_progress_smooth)
 
-    def snooze(self, minutes=None):
-        """Snooze the break; `minutes` defaults to the current default."""
+    def snooze(self, seconds=None):
+        """Snooze the break; `seconds` defaults to the current default."""
         if self.closed or self.snoozed:
             return
-        chosen = self.snooze_minutes if minutes is None else minutes
+        chosen = self.snooze_seconds if seconds is None else seconds
         self.snoozed = True
         self.sound_stop_event.set()
         if self.on_snooze:
@@ -491,16 +514,79 @@ class CountdownPopup:
         self._dismiss()
 
     def _open_snooze_menu(self):
-        """Pop a small menu of snooze durations under the ▾ button."""
+        """Pop a menu of snooze durations (+ Custom…) under the ▾ button."""
         menu = tk.Menu(self.window, tearoff=0)
-        selected = tk.IntVar(value=self.snooze_minutes)
-        for minutes in SNOOZE_OPTIONS_MINUTES:
+        selected = tk.IntVar(value=self.snooze_seconds)
+        for seconds in SNOOZE_OPTIONS_SECONDS:
             menu.add_radiobutton(
-                label=f"{minutes} min", value=minutes, variable=selected,
-                command=lambda m=minutes: self.snooze(m))
+                label=format_snooze_long(seconds), value=seconds, variable=selected,
+                command=lambda s=seconds: self.snooze(s))
+        menu.add_separator()
+        menu.add_command(label="Custom…", command=self._open_custom_snooze)
         menu.tk_popup(
             self.snooze_menu_btn.winfo_rootx(),
             self.snooze_menu_btn.winfo_rooty() + self.snooze_menu_btn.winfo_height())
+
+    def _open_custom_snooze(self):
+        """Small styled dialog to snooze for an arbitrary duration."""
+        dialog = ctk.CTkToplevel(self.window)
+        dialog.title("Custom snooze")
+        dialog.resizable(False, False)
+        dialog.attributes('-topmost', True)
+
+        frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        frame.pack(padx=PADDING_WINDOW, pady=PADDING_WINDOW)
+
+        ctk.CTkLabel(
+            frame, text="Snooze for",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+        ).pack(anchor="w", pady=(0, 6))
+
+        row = ctk.CTkFrame(frame, fg_color="transparent")
+        row.pack(fill="x")
+
+        entry = ctk.CTkEntry(
+            row, width=80, height=36, corner_radius=CORNER_RADIUS_INPUT,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input'])
+        )
+        entry.pack(side="left")
+        entry.focus_set()
+
+        unit = ctk.StringVar(value=CUSTOM_SNOOZE_DEFAULT_UNIT)
+        unit_btn = ctk.CTkSegmentedButton(
+            row, values=CUSTOM_SNOOZE_UNITS, variable=unit,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+        )
+        unit_btn.set(CUSTOM_SNOOZE_DEFAULT_UNIT)
+        unit_btn.pack(side="left", padx=(8, 0))
+
+        hint = ctk.CTkLabel(
+            frame, text="", text_color=COLORS['accent_orange'],
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper'])
+        )
+        hint.pack(anchor="w", pady=(6, 0))
+
+        def do_set(*_):
+            secs = custom_snooze_seconds(entry.get(), unit.get(), MAX_SNOOZE_SECONDS)
+            if secs is None:
+                hint.configure(text="Enter a positive number")
+                return
+            dialog.destroy()
+            self.snooze(secs)
+
+        ctk.CTkButton(
+            frame, text="Set", command=do_set, height=40,
+            corner_radius=CORNER_RADIUS_BUTTON,
+            fg_color=COLORS['accent_blue'], hover_color=COLORS['accent_hover'],
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['input'], weight="bold")
+        ).pack(fill="x", pady=(10, 0))
+
+        entry.bind("<Return>", do_set)
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
+        dialog.update_idletasks()
+        px = self.window.winfo_rootx() + (self.window.winfo_width() - dialog.winfo_reqwidth()) // 2
+        py = self.window.winfo_rooty() + (self.window.winfo_height() - dialog.winfo_reqheight()) // 2
+        dialog.geometry(f"+{px}+{py}")
 
     def close(self):
         if self.closed:
@@ -797,6 +883,12 @@ class BreakConfigPanel(ctk.CTkFrame):
             font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
         ).pack(side="left", padx=(16, 0))
 
+        ctk.CTkCheckBox(
+            row3, text="Snoozable",
+            variable=self.config.snoozable,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+        ).pack(side="left", padx=(16, 0))
+
         # Test button on right
         ctk.CTkButton(
             row3, text="Test",
@@ -955,6 +1047,8 @@ class BreakApp:
         self.paused = False
         self.stop_event = threading.Event()
         self.break_queue = []
+        self._pending_snoozes = []   # entries: {name, fire_time, after_id}
+        self._snooze_rows = {}       # id(entry) -> {"frame", "status"}
         self.active_popup = None
         self.break_start_time = None
         self.event_log = EventLog(EVENTS_FILE)
@@ -968,10 +1062,12 @@ class BreakApp:
         self.default_breaks = [
             {"name": "Micro Break", "interval_val": 25, "interval_unit": "min",
              "duration_val": 5, "duration_unit": "sec", "start_sound": "Ping",
-             "end_sound": "Glass", "loop_end_sound": False, "auto_dismiss": True},
+             "end_sound": "Glass", "loop_end_sound": False, "auto_dismiss": True,
+             "snoozable": False},
             {"name": "Normal Break", "interval_val": 50, "interval_unit": "min",
              "duration_val": 10, "duration_unit": "min", "start_sound": "Glass",
-             "end_sound": "Submarine", "loop_end_sound": True, "auto_dismiss": False}
+             "end_sound": "Submarine", "loop_end_sound": True, "auto_dismiss": False,
+             "snoozable": True}
         ]
 
         # Load saved preferences or use defaults
@@ -1010,9 +1106,12 @@ class BreakApp:
         )
         self.activity_pause_seconds.trace_add('write', self._save_preferences)
 
-        # Default snooze length, remembered from the popup's ▾ picker (#29)
-        self.snooze_minutes = ctk.IntVar(
-            value=self.saved_prefs.get("snooze_minutes", DEFAULT_SNOOZE_MINUTES)
+        # Default snooze length (seconds), remembered from the ▾ picker.
+        # Migrates an old minutes-based pref (×60) so existing configs still load.
+        self.snooze_seconds = ctk.IntVar(
+            value=self.saved_prefs.get(
+                "snooze_seconds",
+                self.saved_prefs.get("snooze_minutes", DEFAULT_SNOOZE_SECONDS // 60) * 60)
         )
 
         self.popup_placement = ctk.StringVar(
@@ -1040,7 +1139,8 @@ class BreakApp:
                 start_sound=break_prefs.get("start_sound", default["start_sound"]),
                 end_sound=break_prefs.get("end_sound", default["end_sound"]),
                 loop_end_sound=break_prefs.get("loop_end_sound", default["loop_end_sound"]),
-                auto_dismiss=break_prefs.get("auto_dismiss", default["auto_dismiss"])
+                auto_dismiss=break_prefs.get("auto_dismiss", default["auto_dismiss"]),
+                snoozable=break_prefs.get("snoozable", default["snoozable"])
             ))
 
         self._build_ui()
@@ -1173,6 +1273,15 @@ class BreakApp:
                 widget.bind("<Double-Button-1>",
                             lambda e, c=config: self._edit_break_config(c))
 
+        # Snoozed-break section (dynamic rows appear while a snooze is pending).
+        self._snoozed_container = ctk.CTkFrame(main_frame, fg_color="transparent")
+        self._snoozed_container.pack(fill="x")
+        self._snooze_header = ctk.CTkLabel(
+            self._snoozed_container, text="Snoozed",
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper']),
+            text_color=COLORS['text_secondary'])
+        # header + rows packed/cleared by _render_snooze_rows
+
         # Bottom bar: feedback + update banner
         bottom_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
         bottom_frame.pack(fill="x", side="bottom")
@@ -1253,7 +1362,7 @@ class BreakApp:
             "popup_placement": self.popup_placement.get(),
             "defer_while_active": self.defer_while_active.get(),
             "activity_pause_seconds": self.activity_pause_seconds.get(),
-            "snooze_minutes": self.snooze_minutes.get(),
+            "snooze_seconds": self.snooze_seconds.get(),
             "last_update_check": self.saved_prefs.get("last_update_check", 0),
         }
         for config in self.breaks:
@@ -1266,7 +1375,8 @@ class BreakApp:
                 "start_sound": config.start_sound.get(),
                 "end_sound": config.end_sound.get(),
                 "loop_end_sound": config.loop_end_sound.get(),
-                "auto_dismiss": config.auto_dismiss.get()
+                "auto_dismiss": config.auto_dismiss.get(),
+                "snoozable": config.snoozable.get()
             })
         if include_geometry:
             prefs["window_geometry"] = self.root.geometry()
@@ -1410,6 +1520,7 @@ class BreakApp:
             config.end_sound.trace_add('write', self._save_preferences)
             config.loop_end_sound.trace_add('write', self._save_preferences)
             config.auto_dismiss.trace_add('write', self._save_preferences)
+            config.snoozable.trace_add('write', self._save_preferences)
 
     def _debounce(self, key, callback):
         """Run `callback` once `CONFIG_COMMIT_DEBOUNCE_MS` passes with no newer
@@ -1740,6 +1851,7 @@ class BreakApp:
             'name': config.name.get(),
             'duration': config.get_duration_seconds(),
             'auto_dismiss': config.auto_dismiss.get(),
+            'snoozable': config.snoozable.get(),
             'start_sound': config.start_sound.get(),
             'end_sound': config.end_sound.get(),
             'loop_end_sound': config.loop_end_sound.get(),
@@ -1791,18 +1903,29 @@ class BreakApp:
                 self.status.configure(text="Idle", text_color=COLORS['text_secondary'])
             self.root.after(0, self._process_break_queue)
 
-        def on_snooze(snooze_minutes):
-            self._record_event(BREAK_SNOOZED, name=break_data['name'], minutes=snooze_minutes)
-            self.snooze_minutes.set(snooze_minutes)   # remember as the new default
+        def on_snooze(snooze_seconds):
+            self._record_event(BREAK_SNOOZED, name=break_data['name'], seconds=snooze_seconds)
+            self.snooze_seconds.set(snooze_seconds)   # remember as the new default
             self._save_preferences()
             self.active_popup = None
             self.break_start_time = None
             if self.running and not self.paused:
                 self.status.configure(text="Working", text_color=COLORS['accent_green'])
-                self.root.after(snooze_delay_ms(snooze_minutes),
-                                lambda: self._requeue_break(break_data))
+            # An explicit snooze always comes back after its delay, regardless of
+            # Start/Stop; _requeue_break holds it while paused or context-deferred.
+            entry = {"name": break_data['name'],
+                     "fire_time": time.time() + snooze_seconds, "after_id": None}
+            entry["after_id"] = self.root.after(
+                snooze_delay_ms(snooze_seconds),
+                lambda: self._requeue_break(break_data, entry))
+            self._pending_snoozes.append(entry)
 
         self.status.configure(text=break_data['name'], text_color=COLORS['accent_orange'])
+        # How many times this break was snoozed / when it was first due (#37).
+        events = self.event_log.read()
+        snooze_count = snooze_count_since_taken(events, break_data['name'])
+        first_snooze_ago = first_snooze_seconds_ago(
+            events, break_data['name'], time.time())
         # Capture the active screen NOW, before the popup's window steals focus.
         target_screen = (self._capture_active_screen()
                          if self.popup_placement.get() == "active" else None)
@@ -1812,6 +1935,7 @@ class BreakApp:
             random.choice(BREAK_MESSAGES),
             break_data['duration'],
             auto_dismiss=break_data['auto_dismiss'],
+            snoozable=break_data['snoozable'],
             on_close=on_popup_close,
             on_snooze=on_snooze,
             end_sound=break_data['end_sound'],
@@ -1819,29 +1943,48 @@ class BreakApp:
             placement=self.popup_placement.get(),
             target_screen=target_screen,
             held_reason=break_data.get('held_reason'),
-            snooze_minutes=self.snooze_minutes.get(),
+            snooze_seconds=self.snooze_seconds.get(),
+            snooze_count=snooze_count,
+            first_snooze_ago=first_snooze_ago,
         )
 
-    def _requeue_break(self, break_data):
-        """Re-show a snoozed break — but respect context (defer during a
-        meeting/fullscreen/away/mid-activity) like a scheduled break, instead of
-        barging in unconditionally (#42)."""
-        if not (self.running and not self.paused):
-            return
+    def _requeue_break(self, break_data, entry=None):
+        """Re-show a snoozed break. An explicit snooze always returns regardless of
+        Start/Stop; a Pause holds it, and context (meeting/fullscreen/away/
+        mid-activity) defers it like a scheduled break (#42), re-checking later."""
         ctx = read_context(
             check_meeting=self.defer_during_meetings.get(),
             check_fullscreen=self.defer_during_fullscreen.get(),
         )
         pause = (self.activity_pause_seconds.get()
                  if self.defer_while_active.get() else 0)
-        if decide(ctx, pause_threshold=pause) == DEFER:
-            # Not a good moment — wait and re-check, don't pop over the user.
-            logging.info("snoozed break held (context deferred, fullscreen=%s meeting=%s), re-checking",
-                         ctx.is_fullscreen, ctx.is_meeting)
-            self.root.after(SNOOZE_RECHECK_MS, lambda: self._requeue_break(break_data))
+        if should_hold_snooze(self.paused, decide(ctx, pause_threshold=pause) == DEFER):
+            # Not a good moment (paused or context-deferred) — wait and re-check.
+            logging.info("snoozed break held (paused=%s fullscreen=%s meeting=%s), re-checking",
+                         self.paused, ctx.is_fullscreen, ctx.is_meeting)
+            after_id = self.root.after(SNOOZE_RECHECK_MS,
+                                       lambda: self._requeue_break(break_data, entry))
+            if entry is not None:
+                entry["after_id"] = after_id
             return
+        if entry is not None and entry in self._pending_snoozes:
+            self._pending_snoozes.remove(entry)
+        self._record_event(BREAK_SNOOZE_RETURNED, name=break_data['name'])
         self.break_queue.append(break_data)
         self.root.after(0, self._process_break_queue)
+
+    def _cancel_snooze(self, entry):
+        """Cancel a pending snooze (✕ on its row): drop the scheduled re-fire."""
+        if entry.get("after_id") is not None:
+            try:
+                self.root.after_cancel(entry["after_id"])
+            except Exception:
+                pass
+        if entry in self._pending_snoozes:
+            self._pending_snoozes.remove(entry)
+        self._record_event(
+            BREAK_SNOOZE_CANCELLED, name=entry["name"],
+            remaining_seconds=snooze_remaining(entry["fire_time"], time.time()))
 
     def test_break(self, config):
         """Test a specific break configuration."""
@@ -1859,10 +2002,55 @@ class BreakApp:
 
     # ------------------ UI UPDATE ------------------
 
+    def _build_snooze_row(self, entry, status):
+        row = ctk.CTkFrame(self._snoozed_container, corner_radius=CORNER_RADIUS_PANEL,
+                           fg_color=COLORS['bg_panel'])
+        row.pack(fill="x", pady=(0, 6))
+        ctk.CTkLabel(
+            row, text=entry['name'],
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
+        ).pack(side="left", padx=(PADDING_PANEL_X, 0), pady=8)
+        ctk.CTkButton(
+            row, text="✕", width=28, height=BUTTON_HEIGHT_SMALL,
+            corner_radius=CORNER_RADIUS_INPUT, fg_color="transparent",
+            border_width=1, border_color=COLORS['border'], hover_color=COLORS['bg_hover'],
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper']),
+            command=lambda: self._cancel_snooze(entry)
+        ).pack(side="right", padx=(0, PADDING_PANEL_X), pady=8)
+        status_label = ctk.CTkLabel(
+            row, text=status,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['helper']),
+            text_color=COLORS['text_secondary'])
+        status_label.pack(side="right", padx=(0, 8), pady=8)
+        return {"frame": row, "status": status_label}
+
+    def _render_snooze_rows(self, now):
+        entries = self._pending_snoozes
+        if entries and self._snooze_header.winfo_manager() != "pack":
+            self._snooze_header.pack(anchor="w", padx=PADDING_PANEL_X, pady=(4, 2))
+        elif not entries and self._snooze_header.winfo_manager() == "pack":
+            self._snooze_header.pack_forget()
+        current = set()
+        for entry in entries:
+            eid = id(entry)
+            current.add(eid)
+            remaining = snooze_remaining(entry["fire_time"], now)
+            status = (f"returns in {self._format_time(remaining)}"
+                      if remaining > 0 else "returning…")
+            if eid in self._snooze_rows:
+                self._snooze_rows[eid]["status"].configure(text=status)
+            else:
+                self._snooze_rows[eid] = self._build_snooze_row(entry, status)
+        for eid in list(self._snooze_rows):
+            if eid not in current:
+                self._snooze_rows[eid]["frame"].destroy()
+                del self._snooze_rows[eid]
+
     def update_ui(self):
         """Update timer displays for all breaks."""
         next_break = None
         min_remaining = float('inf')
+        now = time.time()
 
         for i, config in enumerate(self.breaks):
             time_text = self._format_time(config.remaining)
@@ -1899,6 +2087,7 @@ class BreakApp:
         elif not self.running:
             self.next_break_label.configure(text="")
 
+        self._render_snooze_rows(now)
         self.root.after(1000, self.update_ui)
 
     @staticmethod
