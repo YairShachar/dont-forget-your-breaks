@@ -138,11 +138,19 @@ COLORS = {
     'accent_warning_hover': ("#E68600", "#E8900A"),
 }
 
-# Spacing
-PADDING_WINDOW = 16
-PADDING_PANEL_X = 16
-PADDING_PANEL_Y = 16
-ROW_SPACING = 10
+# Spacing scale (primitive)
+SPACE_XXS = 4
+SPACE_XS = 6
+SPACE_SM = 8
+SPACE_MD = 12
+SPACE_LG = 16
+SPACE_XL = 24
+SPACE_2XL = 32
+# Semantic aliases (purpose-named, layered over the scale)
+PADDING_WINDOW = SPACE_LG
+PADDING_PANEL_X = SPACE_LG
+PADDING_PANEL_Y = SPACE_LG
+ROW_SPACING = SPACE_SM   # 10 → 8 (tighter rhythm, per proposal)
 
 # Corner radii
 CORNER_RADIUS_PANEL = 10
@@ -329,7 +337,7 @@ class CountdownPopup:
             text=title,
             font=make_font('heading', weight="bold")
         )
-        title_label.pack(pady=(PADDING_PANEL_Y, 5))
+        title_label.pack(pady=(PADDING_PANEL_Y, SPACE_XXS))
 
         # "Waited while you were …" line when the break was held (transparency).
         if self.held_reason:
@@ -339,7 +347,7 @@ class CountdownPopup:
                     container, text=held_text,
                     font=make_font('caption'),
                     text_color=COLORS['text_secondary']
-                ).pack(pady=(0, 6))
+                ).pack(pady=(0, SPACE_XS))
 
         # Snooze insight line (#37): "Snoozed 2× already (originally due 15 min ago)".
         summary = snooze_summary_label(self.snooze_count, self.first_snooze_ago)
@@ -348,7 +356,7 @@ class CountdownPopup:
                 container, text=summary,
                 font=make_font('caption'),
                 text_color=COLORS['text_secondary']
-            ).pack(pady=(0, 6))
+            ).pack(pady=(0, SPACE_XS))
 
         # Message
         msg_label = ctk.CTkLabel(
@@ -364,7 +372,7 @@ class CountdownPopup:
             text=self._format_time(self.remaining),
             font=make_font('display', weight="bold")
         )
-        self.countdown_label.pack(pady=10)
+        self.countdown_label.pack(pady=SPACE_SM)
 
         # Amber count-up shown only when a break runs past its duration (#33).
         self.over_label = ctk.CTkLabel(
@@ -381,7 +389,7 @@ class CountdownPopup:
             corner_radius=4,
             progress_color=COLORS['accent_primary']
         )
-        self.progress.pack(fill="x", padx=30, pady=ROW_SPACING)
+        self.progress.pack(fill="x", padx=SPACE_2XL, pady=ROW_SPACING)
         self.progress.set(1.0)  # Start full
 
         # Button frame
@@ -392,7 +400,7 @@ class CountdownPopup:
         # the current default, ▾ = pick another duration (which becomes the default).
         if self.snoozable:
             snooze_group = ctk.CTkFrame(btn_frame, fg_color="transparent")
-            snooze_group.pack(side="left", padx=8)
+            snooze_group.pack(side="left", padx=SPACE_SM)
 
             self.snooze_btn = ctk.CTkButton(
                 snooze_group,
@@ -422,7 +430,7 @@ class CountdownPopup:
                 hover_color=COLORS['surface_hover'],
                 font=make_font('body')
             )
-            self.snooze_menu_btn.pack(side="left", padx=(4, 0))
+            self.snooze_menu_btn.pack(side="left", padx=(SPACE_XXS, 0))
 
         # Done button - primary style
         self.ok_btn = ctk.CTkButton(
@@ -436,7 +444,7 @@ class CountdownPopup:
             hover_color=COLORS['accent_primary_hover'],
             font=make_font('body', weight="bold")
         )
-        self.ok_btn.pack(side="left", padx=8)
+        self.ok_btn.pack(side="left", padx=SPACE_SM)
 
         # Handle window close
         self.window.protocol("WM_DELETE_WINDOW", self.close)
@@ -549,7 +557,7 @@ class CountdownPopup:
         ctk.CTkLabel(
             frame, text="Snooze for",
             font=make_font('label')
-        ).pack(anchor="w", pady=(0, 6))
+        ).pack(anchor="w", pady=(0, SPACE_XS))
 
         row = ctk.CTkFrame(frame, fg_color="transparent")
         row.pack(fill="x")
@@ -567,13 +575,13 @@ class CountdownPopup:
             font=make_font('label')
         )
         unit_btn.set(CUSTOM_SNOOZE_DEFAULT_UNIT)
-        unit_btn.pack(side="left", padx=(8, 0))
+        unit_btn.pack(side="left", padx=(SPACE_SM, 0))
 
         hint = ctk.CTkLabel(
             frame, text="", text_color=COLORS['accent_warning'],
             font=make_font('caption')
         )
-        hint.pack(anchor="w", pady=(6, 0))
+        hint.pack(anchor="w", pady=(SPACE_XS, 0))
 
         def do_set(*_):
             secs = custom_snooze_seconds(entry.get(), unit.get(), MAX_SNOOZE_SECONDS)
@@ -588,7 +596,7 @@ class CountdownPopup:
             corner_radius=CORNER_RADIUS_BUTTON,
             fg_color=COLORS['accent_primary'], hover_color=COLORS['accent_primary_hover'],
             font=make_font('body', weight="bold")
-        ).pack(fill="x", pady=(10, 0))
+        ).pack(fill="x", pady=(SPACE_SM, 0))
 
         entry.bind("<Return>", do_set)
         dialog.bind("<Escape>", lambda e: dialog.destroy())
@@ -765,7 +773,7 @@ class BreakConfigPanel(ctk.CTkFrame):
             header_right, text="--:--",
             font=make_font('body', weight="bold")
         )
-        self.header_timer.pack(side="left", padx=(0, 12))
+        self.header_timer.pack(side="left", padx=(0, SPACE_MD))
         self.header_timer.pack_forget()  # Hidden by default (shown when collapsed)
 
         # Chevron indicator (always on far right)
@@ -804,7 +812,7 @@ class BreakConfigPanel(ctk.CTkFrame):
             font=make_font('body'),
             corner_radius=CORNER_RADIUS_INPUT
         )
-        self.interval_entry.pack(side="left", padx=(8, 4))
+        self.interval_entry.pack(side="left", padx=(SPACE_SM, SPACE_XXS))
         interval_unit = ctk.CTkComboBox(
             row1, variable=self.config.interval_unit,
             values=TIME_UNITS, width=80, height=36, state="readonly",
@@ -816,14 +824,14 @@ class BreakConfigPanel(ctk.CTkFrame):
         ctk.CTkLabel(
             row1, text="Duration:",
             font=make_font('label')
-        ).pack(side="left", padx=(24, 0))
+        ).pack(side="left", padx=(SPACE_XL, 0))
         duration_entry = ctk.CTkEntry(
             row1, width=70, height=36,
             textvariable=self.config.duration_value,
             font=make_font('body'),
             corner_radius=CORNER_RADIUS_INPUT
         )
-        duration_entry.pack(side="left", padx=(8, 4))
+        duration_entry.pack(side="left", padx=(SPACE_SM, SPACE_XXS))
         duration_unit = ctk.CTkComboBox(
             row1, variable=self.config.duration_unit,
             values=TIME_UNITS, width=80, height=36, state="readonly",
@@ -846,7 +854,7 @@ class BreakConfigPanel(ctk.CTkFrame):
             font=make_font('body'),
             corner_radius=CORNER_RADIUS_INPUT
         )
-        start_sound.pack(side="left", padx=(8, 4))
+        start_sound.pack(side="left", padx=(SPACE_SM, SPACE_XXS))
         ctk.CTkButton(
             row2, text="Play", width=40, height=BUTTON_HEIGHT_SMALL,
             corner_radius=CORNER_RADIUS_INPUT,
@@ -854,7 +862,7 @@ class BreakConfigPanel(ctk.CTkFrame):
             hover_color=COLORS['border'],
             font=make_font('caption'),
             command=lambda: play_sound(self.config.start_sound.get())
-        ).pack(side="left", padx=(0, 16))
+        ).pack(side="left", padx=(0, SPACE_LG))
 
         ctk.CTkLabel(
             row2, text="End:",
@@ -866,7 +874,7 @@ class BreakConfigPanel(ctk.CTkFrame):
             font=make_font('body'),
             corner_radius=CORNER_RADIUS_INPUT
         )
-        end_sound.pack(side="left", padx=(8, 4))
+        end_sound.pack(side="left", padx=(SPACE_SM, SPACE_XXS))
         ctk.CTkButton(
             row2, text="Play", width=40, height=BUTTON_HEIGHT_SMALL,
             corner_radius=CORNER_RADIUS_INPUT,
@@ -890,13 +898,13 @@ class BreakConfigPanel(ctk.CTkFrame):
             row3, text="Auto-dismiss",
             variable=self.config.auto_dismiss,
             font=make_font('label')
-        ).pack(side="left", padx=(16, 0))
+        ).pack(side="left", padx=(SPACE_LG, 0))
 
         ctk.CTkCheckBox(
             row3, text="Snoozable",
             variable=self.config.snoozable,
             font=make_font('label')
-        ).pack(side="left", padx=(16, 0))
+        ).pack(side="left", padx=(SPACE_LG, 0))
 
         # Test button on right
         ctk.CTkButton(
@@ -916,7 +924,7 @@ class BreakConfigPanel(ctk.CTkFrame):
             row3, text="--:--",
             font=make_font('body', weight="bold")
         )
-        self.config.timer_label.pack(side="right", padx=(0, 16))
+        self.config.timer_label.pack(side="right", padx=(0, SPACE_LG))
 
         ctk.CTkLabel(
             row3, text="Next:",
@@ -996,7 +1004,7 @@ class BreakConfigPanel(ctk.CTkFrame):
         def on_complete():
             self._animating = False
             self.content_frame.pack_forget()
-            self.header_timer.pack(side="left", padx=(0, 12))
+            self.header_timer.pack(side="left", padx=(0, SPACE_MD))
             self.chevron.configure(text="\u25BC")  # Down arrow
             self.header_frame.pack_configure(pady=(PADDING_PANEL_Y // 2, PADDING_PANEL_Y // 2))
 
@@ -1198,7 +1206,7 @@ class BreakApp:
             text_color=COLORS['text_secondary'],
             font=make_font('subheading')
         )
-        self.settings_btn.pack(side="right", padx=(6, 0))
+        self.settings_btn.pack(side="right", padx=(SPACE_XS, 0))
 
         self.next_break_label = ctk.CTkLabel(
             status_frame, text="",
@@ -1220,7 +1228,7 @@ class BreakApp:
             hover_color=COLORS['accent_primary_hover'],
             font=make_font('subheading', weight="bold")
         )
-        self.toggle_btn.pack(side="left", padx=(0, 4), expand=True, fill="x")
+        self.toggle_btn.pack(side="left", padx=(0, SPACE_XXS), expand=True, fill="x")
 
         # Reset button (secondary - transparent with border)
         self.reset_btn = ctk.CTkButton(
@@ -1234,14 +1242,14 @@ class BreakApp:
             font=make_font('subheading'),
             state="disabled"
         )
-        self.reset_btn.pack(side="left", padx=(4, 0), expand=True, fill="x")
+        self.reset_btn.pack(side="left", padx=(SPACE_XXS, 0), expand=True, fill="x")
 
         # Compact timer display cards
         self._timer_labels = []
         self._cue_labels = []
         for config in self.breaks:
             card = ctk.CTkFrame(main_frame, corner_radius=CORNER_RADIUS_PANEL, fg_color=COLORS['surface_card'])
-            card.pack(fill="x", pady=(0, 6))
+            card.pack(fill="x", pady=(0, SPACE_XS))
 
             top_row = ctk.CTkFrame(card, fg_color="transparent")
             top_row.pack(fill="x")
@@ -1250,13 +1258,13 @@ class BreakApp:
                 top_row, text=config.name.get(),
                 font=make_font('label')
             )
-            name_label.pack(side="left", padx=(PADDING_PANEL_X, 0), pady=8)
+            name_label.pack(side="left", padx=(PADDING_PANEL_X, 0), pady=SPACE_SM)
 
             timer_label = ctk.CTkLabel(
                 top_row, text="--:--",
                 font=make_font('body', weight="bold")
             )
-            timer_label.pack(side="right", padx=(0, PADDING_PANEL_X), pady=8)
+            timer_label.pack(side="right", padx=(0, PADDING_PANEL_X), pady=SPACE_SM)
 
             # Break now button (quick manual trigger, left of the timer)
             ctk.CTkButton(
@@ -1269,7 +1277,7 @@ class BreakApp:
                 border_color=COLORS['border'],
                 hover_color=COLORS['surface_hover'],
                 font=make_font('caption')
-            ).pack(side="right", padx=(0, 8), pady=8)
+            ).pack(side="right", padx=(0, SPACE_SM), pady=SPACE_SM)
 
             self._timer_labels.append(timer_label)
 
@@ -1334,7 +1342,7 @@ class BreakApp:
             text=f"v{get_current_version()}",
             font=make_font('caption'),
             text_color=COLORS['text_tertiary']
-        ).pack(side="right", padx=(0, 4))
+        ).pack(side="right", padx=(0, SPACE_XXS))
 
         # Bind keyboard shortcuts
         self.root.bind('<Command-s>', lambda e: self._handle_toggle())
@@ -1691,31 +1699,31 @@ class BreakApp:
             general_frame, text="Always on top",
             variable=self.always_on_top,
             font=make_font('label')
-        ).pack(padx=PADDING_PANEL_X, pady=(PADDING_PANEL_Y, 4), anchor="w")
+        ).pack(padx=PADDING_PANEL_X, pady=(PADDING_PANEL_Y, SPACE_XXS), anchor="w")
 
         ctk.CTkCheckBox(
             general_frame, text="Check for updates automatically",
             variable=self.check_for_updates,
             font=make_font('label')
-        ).pack(padx=PADDING_PANEL_X, pady=(4, 4), anchor="w")
+        ).pack(padx=PADDING_PANEL_X, pady=(SPACE_XXS, SPACE_XXS), anchor="w")
 
         ctk.CTkCheckBox(
             general_frame, text="Pause breaks while microphone is in use",
             variable=self.defer_during_meetings,
             font=make_font('label')
-        ).pack(padx=PADDING_PANEL_X, pady=(4, 4), anchor="w")
+        ).pack(padx=PADDING_PANEL_X, pady=(SPACE_XXS, SPACE_XXS), anchor="w")
 
         ctk.CTkCheckBox(
             general_frame, text="Pause breaks during fullscreen",
             variable=self.defer_during_fullscreen,
             font=make_font('label')
-        ).pack(padx=PADDING_PANEL_X, pady=(4, 4), anchor="w")
+        ).pack(padx=PADDING_PANEL_X, pady=(SPACE_XXS, SPACE_XXS), anchor="w")
 
         ctk.CTkCheckBox(
             general_frame, text="Wait until you pause (typing or clicking)",
             variable=self.defer_while_active,
             font=make_font('label')
-        ).pack(padx=PADDING_PANEL_X, pady=(4, 4), anchor="w")
+        ).pack(padx=PADDING_PANEL_X, pady=(SPACE_XXS, SPACE_XXS), anchor="w")
 
         ctk.CTkCheckBox(
             general_frame, text="↳ also count mouse movement",
@@ -1723,11 +1731,11 @@ class BreakApp:
             font=make_font('label'),
             text_color=COLORS['text_secondary']
         ).pack(padx=(PADDING_PANEL_X + ROW_SPACING, PADDING_PANEL_X),
-               pady=(0, 4), anchor="w")
+               pady=(0, SPACE_XXS), anchor="w")
 
         pause_row = ctk.CTkFrame(general_frame, fg_color="transparent")
         pause_row.pack(padx=(PADDING_PANEL_X + ROW_SPACING, PADDING_PANEL_X),
-                       pady=(0, 4), anchor="w", fill="x")
+                       pady=(0, SPACE_XXS), anchor="w", fill="x")
         pause_value_label = ctk.CTkLabel(
             pause_row, text=f"↳ Pause length: {self.activity_pause_seconds.get()} sec",
             font=make_font('label'),
@@ -1748,7 +1756,7 @@ class BreakApp:
         pause_slider.pack(side="right")
 
         placement_row = ctk.CTkFrame(general_frame, fg_color="transparent")
-        placement_row.pack(padx=PADDING_PANEL_X, pady=(4, PADDING_PANEL_Y),
+        placement_row.pack(padx=PADDING_PANEL_X, pady=(SPACE_XXS, PADDING_PANEL_Y),
                            anchor="w", fill="x")
         ctk.CTkLabel(
             placement_row, text="Break popup appears on",
@@ -2051,29 +2059,29 @@ class BreakApp:
     def _build_snooze_row(self, entry, status):
         row = ctk.CTkFrame(self._snoozed_container, corner_radius=CORNER_RADIUS_PANEL,
                            fg_color=COLORS['surface_card'])
-        row.pack(fill="x", pady=(0, 6))
+        row.pack(fill="x", pady=(0, SPACE_XS))
         ctk.CTkLabel(
             row, text=entry['name'],
             font=make_font('label')
-        ).pack(side="left", padx=(PADDING_PANEL_X, 0), pady=8)
+        ).pack(side="left", padx=(PADDING_PANEL_X, 0), pady=SPACE_SM)
         ctk.CTkButton(
             row, text="✕", width=28, height=BUTTON_HEIGHT_SMALL,
             corner_radius=CORNER_RADIUS_INPUT, fg_color="transparent",
             border_width=1, border_color=COLORS['border'], hover_color=COLORS['surface_hover'],
             font=make_font('caption'),
             command=lambda: self._cancel_snooze(entry)
-        ).pack(side="right", padx=(0, PADDING_PANEL_X), pady=8)
+        ).pack(side="right", padx=(0, PADDING_PANEL_X), pady=SPACE_SM)
         status_label = ctk.CTkLabel(
             row, text=status,
             font=make_font('caption'),
             text_color=COLORS['text_secondary'])
-        status_label.pack(side="right", padx=(0, 8), pady=8)
+        status_label.pack(side="right", padx=(0, SPACE_SM), pady=SPACE_SM)
         return {"frame": row, "status": status_label}
 
     def _render_snooze_rows(self, now):
         entries = self._pending_snoozes
         if entries and self._snooze_header.winfo_manager() != "pack":
-            self._snooze_header.pack(anchor="w", padx=PADDING_PANEL_X, pady=(4, 2))
+            self._snooze_header.pack(anchor="w", padx=PADDING_PANEL_X, pady=(SPACE_XXS, SPACE_XXS))
         elif not entries and self._snooze_header.winfo_manager() == "pack":
             self._snooze_header.pack_forget()
         current = set()
@@ -2118,7 +2126,7 @@ class BreakApp:
                     label.configure(text=f"↳ {cue}")
                     if label.winfo_manager() != "pack":   # not already packed
                         label.pack(side="top", anchor="w",
-                                   padx=(PADDING_PANEL_X, 0), pady=(0, 8))
+                                   padx=(PADDING_PANEL_X, 0), pady=(0, SPACE_SM))
                 elif label.winfo_manager() == "pack":     # currently packed → hide
                     label.pack_forget()
 
