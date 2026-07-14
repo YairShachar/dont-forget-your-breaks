@@ -190,6 +190,48 @@ def test_fullscreen_logic_is_resolution_independent():
     assert sensors.covers_any_display([(0, 200, 2880, 1600)], displays) is False
 
 
+# --- active_idle_seconds: keyboard-primary pause (#41) ---
+
+def _fake_quartz_per_type(values):
+    fake = types.ModuleType("Quartz")
+    fake.kCGEventSourceStateHIDSystemState = 1
+    fake.kCGEventKeyDown = 10
+    fake.kCGEventFlagsChanged = 12
+    fake.kCGEventLeftMouseDown = 1
+    fake.kCGEventRightMouseDown = 3
+    fake.kCGEventScrollWheel = 22
+    fake.kCGEventMouseMoved = 5
+    fake.CGEventSourceSecondsSinceLastEventType = (
+        lambda state, evtype: values.get(evtype, 999.0))
+    return fake
+
+
+def test_active_idle_excludes_mouse_move_by_default(monkeypatch):
+    values = {10: 30, 12: 30, 1: 30, 3: 30, 22: 30, 5: 0.5}
+    monkeypatch.setitem(sys.modules, "Quartz", _fake_quartz_per_type(values))
+    monkeypatch.setattr(sensors.sys, "platform", "darwin")
+    assert sensors.active_idle_seconds() == 30
+
+
+def test_active_idle_includes_mouse_move_when_asked(monkeypatch):
+    values = {10: 30, 12: 30, 1: 30, 3: 30, 22: 30, 5: 0.5}
+    monkeypatch.setitem(sys.modules, "Quartz", _fake_quartz_per_type(values))
+    monkeypatch.setattr(sensors.sys, "platform", "darwin")
+    assert sensors.active_idle_seconds(include_mouse_move=True) == 0.5
+
+
+def test_active_idle_is_min_over_meaningful_types(monkeypatch):
+    values = {10: 30, 12: 40, 1: 5, 3: 50, 22: 20, 5: 1}
+    monkeypatch.setitem(sys.modules, "Quartz", _fake_quartz_per_type(values))
+    monkeypatch.setattr(sensors.sys, "platform", "darwin")
+    assert sensors.active_idle_seconds() == 5  # the click
+
+
+def test_active_idle_non_darwin_falls_back(monkeypatch):
+    monkeypatch.setattr(sensors.sys, "platform", "linux")
+    assert sensors.active_idle_seconds() == 0.0  # idle_seconds() on non-darwin
+
+
 # --- smooth_fullscreen: hysteresis over transient detection gaps (#46) ---
 
 def test_smooth_fullscreen_true_arms_full_grace():

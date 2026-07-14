@@ -1105,6 +1105,11 @@ class BreakApp:
             value=self.saved_prefs.get("activity_pause_seconds", ACTIVITY_PAUSE_DEFAULT)
         )
         self.activity_pause_seconds.trace_add('write', self._save_preferences)
+        # Whether bare mouse movement counts as activity for wait-until-you-pause
+        # (default off — typing/clicks/scroll count, cursor nudges don't) (#41).
+        self.count_mouse_move = ctk.BooleanVar(
+            value=self.saved_prefs.get("count_mouse_move", False))
+        self.count_mouse_move.trace_add('write', self._save_preferences)
 
         # Default snooze length (seconds), remembered from the ▾ picker.
         # Migrates an old minutes-based pref (×60) so existing configs still load.
@@ -1362,6 +1367,7 @@ class BreakApp:
             "popup_placement": self.popup_placement.get(),
             "defer_while_active": self.defer_while_active.get(),
             "activity_pause_seconds": self.activity_pause_seconds.get(),
+            "count_mouse_move": self.count_mouse_move.get(),
             "snooze_seconds": self.snooze_seconds.get(),
             "last_update_check": self.saved_prefs.get("last_update_check", 0),
         }
@@ -1696,10 +1702,18 @@ class BreakApp:
         ).pack(padx=PADDING_PANEL_X, pady=(4, 4), anchor="w")
 
         ctk.CTkCheckBox(
-            general_frame, text="Wait until you pause (keyboard or mouse)",
+            general_frame, text="Wait until you pause (typing or clicking)",
             variable=self.defer_while_active,
             font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label'])
         ).pack(padx=PADDING_PANEL_X, pady=(4, 4), anchor="w")
+
+        ctk.CTkCheckBox(
+            general_frame, text="↳ also count mouse movement",
+            variable=self.count_mouse_move,
+            font=ctk.CTkFont(family=FONT_FAMILY, size=FONT_SIZES['label']),
+            text_color=COLORS['text_secondary']
+        ).pack(padx=(PADDING_PANEL_X + ROW_SPACING, PADDING_PANEL_X),
+               pady=(0, 4), anchor="w")
 
         pause_row = ctk.CTkFrame(general_frame, fg_color="transparent")
         pause_row.pack(padx=(PADDING_PANEL_X + ROW_SPACING, PADDING_PANEL_X),
@@ -1794,6 +1808,7 @@ class BreakApp:
                 ctx = read_context(
                     check_meeting=self.defer_during_meetings.get(),
                     check_fullscreen=self.defer_during_fullscreen.get(),
+                    count_mouse_move=self.count_mouse_move.get(),
                 )
                 # Bridge transient fullscreen dropouts (e.g. Space-to-Space
                 # swipes) so a due break doesn't fire behind a fullscreen app (#46).
@@ -1955,6 +1970,7 @@ class BreakApp:
         ctx = read_context(
             check_meeting=self.defer_during_meetings.get(),
             check_fullscreen=self.defer_during_fullscreen.get(),
+            count_mouse_move=self.count_mouse_move.get(),
         )
         pause = (self.activity_pause_seconds.get()
                  if self.defer_while_active.get() else 0)
