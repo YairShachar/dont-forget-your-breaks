@@ -1,5 +1,7 @@
 # Runtime dependencies
 customtkinter==5.2.2
+# Required by CTkImage for the bundled line icons.
+pillow>=10
 # macOS-only: idle/fullscreen sensors. The env marker keeps Linux CI from trying
 # to install it (pyobjc wheels are macOS-only).
 pyobjc-framework-Quartz>=12,<13; sys_platform == "darwin"

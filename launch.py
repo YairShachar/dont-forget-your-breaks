@@ -1,5 +1,6 @@
 import customtkinter as ctk
 import tkinter as tk
+from PIL import Image
 from tkinter import messagebox
 import threading
 import time
@@ -24,6 +25,7 @@ from dfyb.updater import (
     is_installed_via_homebrew,
     VERSION_FILE,
     HOMEBREW_CASK_NAME,
+    BASE_DIR,
 )
 from dfyb.animation import ease_out_quad, prefers_reduced_motion, lerp_color
 from dfyb.theme import resolve_font_family, resolve_color
@@ -51,6 +53,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[logging.StreamHandler()]
 )
+logging.getLogger("PIL").setLevel(logging.WARNING)  # silence PNG-decode debug spam
 
 # ------------------ CUSTOMTKINTER SETUP ------------------
 
@@ -122,6 +125,19 @@ def make_font(role, weight=None):
     size = FONT_SIZES[role]
     family = resolve_font_family(size)
     return ctk.CTkFont(family=family, size=size, **({"weight": weight} if weight else {}))
+
+
+# Bundled line icons (light/dark), loaded via CTkImage.
+ICON_SIZE = 20
+ICON_DIR = BASE_DIR / "assets" / "icons"
+
+
+def load_icon(name, size=ICON_SIZE):
+    """CTkImage for a bundled line icon; adapts to appearance mode."""
+    return ctk.CTkImage(
+        light_image=Image.open(ICON_DIR / f"{name}-light.png"),
+        dark_image=Image.open(ICON_DIR / f"{name}-dark.png"),
+        size=(size, size))
 
 # Semantic colors as (light, dark) tuples — CTk picks by appearance mode.
 # Dark halves are the prior known-good values; light halves are starting points.

@@ -5,7 +5,7 @@ a = Analysis(
     ['launch.py'],
     pathex=[],
     binaries=[],
-    datas=[('VERSION', '.')],
+    datas=[('VERSION', '.'), ('assets/icons', 'assets/icons')],
     # pyobjc frameworks are imported lazily inside functions (macOS sensors +
     # window helper), so declare them explicitly to guarantee they're bundled.
     hiddenimports=['Quartz', 'AppKit', 'CoreAudio', 'objc'],
