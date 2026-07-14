@@ -123,17 +123,19 @@ def make_font(role, weight=None):
     family = resolve_font_family(size)
     return ctk.CTkFont(family=family, size=size, **({"weight": weight} if weight else {}))
 
-# Colors (dark mode)
+# Semantic colors as (light, dark) tuples — CTk picks by appearance mode.
+# Dark halves are the prior known-good values; light halves are starting points.
 COLORS = {
-    'bg_panel': "#2C2C2E",
-    'bg_hover': "#3A3A3C",
-    'border': "#3A3A3C",
-    'accent_blue': "#0A84FF",
-    'accent_hover': "#0077ED",
-    'accent_green': "#30D158",
-    'accent_orange': "#FF9F0A",
-    'accent_orange_hover': "#E8900A",
-    'text_secondary': "gray60",
+    'surface_card':         ("#FFFFFF", "#2C2C2E"),
+    'surface_hover':        ("#ECECEE", "#3A3A3C"),
+    'border':               ("#D1D1D6", "#3A3A3C"),
+    'text_secondary':       ("#8E8E93", "#999999"),   # dark ≡ old gray60
+    'text_tertiary':        ("#AEAEB2", "#808080"),   # dark ≡ old gray50
+    'accent_primary':       ("#007AFF", "#0A84FF"),   # systemBlue
+    'accent_primary_hover': ("#0068D6", "#0077ED"),
+    'accent_success':       ("#34C759", "#30D158"),   # systemGreen
+    'accent_warning':       ("#FF9500", "#FF9F0A"),   # systemOrange
+    'accent_warning_hover': ("#E68600", "#E8900A"),
 }
 
 # Spacing
@@ -317,7 +319,7 @@ class CountdownPopup:
         container = ctk.CTkFrame(
             self.window,
             corner_radius=CORNER_RADIUS_PANEL,
-            fg_color=COLORS['bg_panel']
+            fg_color=COLORS['surface_card']
         )
         container.pack(fill="both", expand=True, padx=0, pady=0)
 
@@ -368,7 +370,7 @@ class CountdownPopup:
         self.over_label = ctk.CTkLabel(
             container, text="",
             font=make_font('caption'),
-            text_color=COLORS['accent_orange']
+            text_color=COLORS['accent_warning']
         )
         # not packed yet — revealed by update_countdown once over the duration
 
@@ -377,7 +379,7 @@ class CountdownPopup:
             container,
             height=8,
             corner_radius=4,
-            progress_color=COLORS['accent_blue']
+            progress_color=COLORS['accent_primary']
         )
         self.progress.pack(fill="x", padx=30, pady=ROW_SPACING)
         self.progress.set(1.0)  # Start full
@@ -402,7 +404,7 @@ class CountdownPopup:
                 fg_color="transparent",
                 border_width=1,
                 border_color=COLORS['border'],
-                hover_color=COLORS['bg_hover'],
+                hover_color=COLORS['surface_hover'],
                 font=make_font('body')
             )
             self.snooze_btn.pack(side="left")
@@ -417,7 +419,7 @@ class CountdownPopup:
                 fg_color="transparent",
                 border_width=1,
                 border_color=COLORS['border'],
-                hover_color=COLORS['bg_hover'],
+                hover_color=COLORS['surface_hover'],
                 font=make_font('body')
             )
             self.snooze_menu_btn.pack(side="left", padx=(4, 0))
@@ -430,8 +432,8 @@ class CountdownPopup:
             width=130,
             height=40,
             corner_radius=CORNER_RADIUS_BUTTON,
-            fg_color=COLORS['accent_blue'],
-            hover_color=COLORS['accent_hover'],
+            fg_color=COLORS['accent_primary'],
+            hover_color=COLORS['accent_primary_hover'],
             font=make_font('body', weight="bold")
         )
         self.ok_btn.pack(side="left", padx=8)
@@ -498,8 +500,10 @@ class CountdownPopup:
             elapsed = time.time() - self._start_time
             progress_value = max(0, 1 - (elapsed / self.duration)) if self.duration > 0 else 0
             self.progress.set(progress_value)
+            mode = ctk.get_appearance_mode()
             self.progress.configure(progress_color=lerp_color(
-                COLORS['accent_blue'], COLORS['accent_green'], 1 - progress_value))
+                resolve_color(COLORS['accent_primary'], mode),
+                resolve_color(COLORS['accent_success'], mode), 1 - progress_value))
         except Exception:
             pass
 
@@ -566,7 +570,7 @@ class CountdownPopup:
         unit_btn.pack(side="left", padx=(8, 0))
 
         hint = ctk.CTkLabel(
-            frame, text="", text_color=COLORS['accent_orange'],
+            frame, text="", text_color=COLORS['accent_warning'],
             font=make_font('caption')
         )
         hint.pack(anchor="w", pady=(6, 0))
@@ -582,7 +586,7 @@ class CountdownPopup:
         ctk.CTkButton(
             frame, text="Set", command=do_set, height=40,
             corner_radius=CORNER_RADIUS_BUTTON,
-            fg_color=COLORS['accent_blue'], hover_color=COLORS['accent_hover'],
+            fg_color=COLORS['accent_primary'], hover_color=COLORS['accent_primary_hover'],
             font=make_font('body', weight="bold")
         ).pack(fill="x", pady=(10, 0))
 
@@ -724,7 +728,7 @@ class BreakConfigPanel(ctk.CTkFrame):
         super().__init__(
             parent,
             corner_radius=CORNER_RADIUS_PANEL,
-            fg_color=COLORS['bg_panel']
+            fg_color=COLORS['surface_card']
         )
         self.config = config
         self.on_test = on_test
@@ -846,7 +850,7 @@ class BreakConfigPanel(ctk.CTkFrame):
         ctk.CTkButton(
             row2, text="Play", width=40, height=BUTTON_HEIGHT_SMALL,
             corner_radius=CORNER_RADIUS_INPUT,
-            fg_color=COLORS['bg_hover'],
+            fg_color=COLORS['surface_hover'],
             hover_color=COLORS['border'],
             font=make_font('caption'),
             command=lambda: play_sound(self.config.start_sound.get())
@@ -866,7 +870,7 @@ class BreakConfigPanel(ctk.CTkFrame):
         ctk.CTkButton(
             row2, text="Play", width=40, height=BUTTON_HEIGHT_SMALL,
             corner_radius=CORNER_RADIUS_INPUT,
-            fg_color=COLORS['bg_hover'],
+            fg_color=COLORS['surface_hover'],
             hover_color=COLORS['border'],
             font=make_font('caption'),
             command=lambda: play_sound(self.config.end_sound.get())
@@ -903,7 +907,7 @@ class BreakConfigPanel(ctk.CTkFrame):
             fg_color="transparent",
             border_width=1,
             border_color=COLORS['border'],
-            hover_color=COLORS['bg_hover'],
+            hover_color=COLORS['surface_hover'],
             text_color=COLORS['text_secondary'],
             font=make_font('label')
         ).pack(side="right")
@@ -1190,7 +1194,7 @@ class BreakApp:
             width=28, height=28,
             corner_radius=CORNER_RADIUS_INPUT,
             fg_color="transparent",
-            hover_color=COLORS['bg_hover'],
+            hover_color=COLORS['surface_hover'],
             text_color=COLORS['text_secondary'],
             font=make_font('subheading')
         )
@@ -1212,8 +1216,8 @@ class BreakApp:
             control_frame, text="Start",
             command=self._handle_toggle, height=BUTTON_HEIGHT_LARGE,
             corner_radius=CORNER_RADIUS_BUTTON,
-            fg_color=COLORS['accent_blue'],
-            hover_color=COLORS['accent_hover'],
+            fg_color=COLORS['accent_primary'],
+            hover_color=COLORS['accent_primary_hover'],
             font=make_font('subheading', weight="bold")
         )
         self.toggle_btn.pack(side="left", padx=(0, 4), expand=True, fill="x")
@@ -1226,7 +1230,7 @@ class BreakApp:
             fg_color="transparent",
             border_width=1,
             border_color=COLORS['border'],
-            hover_color=COLORS['bg_panel'],
+            hover_color=COLORS['surface_card'],
             font=make_font('subheading'),
             state="disabled"
         )
@@ -1236,7 +1240,7 @@ class BreakApp:
         self._timer_labels = []
         self._cue_labels = []
         for config in self.breaks:
-            card = ctk.CTkFrame(main_frame, corner_radius=CORNER_RADIUS_PANEL, fg_color=COLORS['bg_panel'])
+            card = ctk.CTkFrame(main_frame, corner_radius=CORNER_RADIUS_PANEL, fg_color=COLORS['surface_card'])
             card.pack(fill="x", pady=(0, 6))
 
             top_row = ctk.CTkFrame(card, fg_color="transparent")
@@ -1263,7 +1267,7 @@ class BreakApp:
                 fg_color="transparent",
                 border_width=1,
                 border_color=COLORS['border'],
-                hover_color=COLORS['bg_hover'],
+                hover_color=COLORS['surface_hover'],
                 font=make_font('caption')
             ).pack(side="right", padx=(0, 8), pady=8)
 
@@ -1305,8 +1309,8 @@ class BreakApp:
             height=22,
             corner_radius=6,
             fg_color="transparent",
-            hover_color=COLORS['bg_hover'],
-            text_color=COLORS['accent_green'],
+            hover_color=COLORS['surface_hover'],
+            text_color=COLORS['accent_success'],
             font=make_font('caption')
         )
         # Hidden by default, shown when update is available
@@ -1319,8 +1323,8 @@ class BreakApp:
             height=22,
             corner_radius=6,
             fg_color="transparent",
-            hover_color=COLORS['bg_hover'],
-            text_color="gray50",
+            hover_color=COLORS['surface_hover'],
+            text_color=COLORS['text_tertiary'],
             font=make_font('caption')
         ).pack(side="right")
 
@@ -1329,7 +1333,7 @@ class BreakApp:
             bottom_frame,
             text=f"v{get_current_version()}",
             font=make_font('caption'),
-            text_color="gray40"
+            text_color=COLORS['text_tertiary']
         ).pack(side="right", padx=(0, 4))
 
         # Bind keyboard shortcuts
@@ -1567,11 +1571,11 @@ class BreakApp:
         for config in self.breaks:
             config.reset_timer()
 
-        self.status.configure(text="Working", text_color=COLORS['accent_green'])
+        self.status.configure(text="Working", text_color=COLORS['accent_success'])
         self.toggle_btn.configure(
             text="Pause",
-            fg_color=COLORS['accent_orange'],
-            hover_color=COLORS['accent_orange_hover']
+            fg_color=COLORS['accent_warning'],
+            hover_color=COLORS['accent_warning_hover']
         )
         self.reset_btn.configure(state="normal")
 
@@ -1588,18 +1592,18 @@ class BreakApp:
             self.paused = False
             self.toggle_btn.configure(
                 text="Pause",
-                fg_color=COLORS['accent_orange'],
-                hover_color=COLORS['accent_orange_hover']
+                fg_color=COLORS['accent_warning'],
+                hover_color=COLORS['accent_warning_hover']
             )
-            self.status.configure(text="Working", text_color=COLORS['accent_green'])
+            self.status.configure(text="Working", text_color=COLORS['accent_success'])
         else:
             self.paused = True
             self.toggle_btn.configure(
                 text="Resume",
-                fg_color=COLORS['accent_blue'],
-                hover_color=COLORS['accent_hover']
+                fg_color=COLORS['accent_primary'],
+                hover_color=COLORS['accent_primary_hover']
             )
-            self.status.configure(text="Paused", text_color=COLORS['accent_orange'])
+            self.status.configure(text="Paused", text_color=COLORS['accent_warning'])
 
     def reset(self):
         self.running = False
@@ -1620,8 +1624,8 @@ class BreakApp:
         self.status.configure(text="Idle", text_color=COLORS['text_secondary'])
         self.toggle_btn.configure(
             text="Start",
-            fg_color=COLORS['accent_blue'],
-            hover_color=COLORS['accent_hover']
+            fg_color=COLORS['accent_primary'],
+            hover_color=COLORS['accent_primary_hover']
         )
         self.reset_btn.configure(state="disabled")
 
@@ -1680,7 +1684,7 @@ class BreakApp:
             self._settings_panels.append(panel)
 
         # General settings
-        general_frame = ctk.CTkFrame(container, corner_radius=CORNER_RADIUS_PANEL, fg_color=COLORS['bg_panel'])
+        general_frame = ctk.CTkFrame(container, corner_radius=CORNER_RADIUS_PANEL, fg_color=COLORS['surface_card'])
         general_frame.pack(fill="x", pady=(ROW_SPACING, 0))
 
         ctk.CTkCheckBox(
@@ -1927,7 +1931,7 @@ class BreakApp:
             self._active_break_name = None
             self.break_start_time = None
             if self.running and not self.paused:
-                self.status.configure(text="Working", text_color=COLORS['accent_green'])
+                self.status.configure(text="Working", text_color=COLORS['accent_success'])
             elif not self.running:
                 self.status.configure(text="Idle", text_color=COLORS['text_secondary'])
             self.root.after(0, self._process_break_queue)
@@ -1940,7 +1944,7 @@ class BreakApp:
             self._active_break_name = None
             self.break_start_time = None
             if self.running and not self.paused:
-                self.status.configure(text="Working", text_color=COLORS['accent_green'])
+                self.status.configure(text="Working", text_color=COLORS['accent_success'])
             # An explicit snooze always comes back after its delay, regardless of
             # Start/Stop; _requeue_break holds it while paused or context-deferred.
             entry = {"name": break_data['name'],
@@ -1950,7 +1954,7 @@ class BreakApp:
                 lambda: self._requeue_break(break_data, entry))
             self._pending_snoozes.append(entry)
 
-        self.status.configure(text=break_data['name'], text_color=COLORS['accent_orange'])
+        self.status.configure(text=break_data['name'], text_color=COLORS['accent_warning'])
         # How many times this break was snoozed / when it was first due (#37).
         events = self.event_log.read()
         snooze_count = snooze_count_since_taken(events, break_data['name'])
@@ -2046,7 +2050,7 @@ class BreakApp:
 
     def _build_snooze_row(self, entry, status):
         row = ctk.CTkFrame(self._snoozed_container, corner_radius=CORNER_RADIUS_PANEL,
-                           fg_color=COLORS['bg_panel'])
+                           fg_color=COLORS['surface_card'])
         row.pack(fill="x", pady=(0, 6))
         ctk.CTkLabel(
             row, text=entry['name'],
@@ -2055,7 +2059,7 @@ class BreakApp:
         ctk.CTkButton(
             row, text="✕", width=28, height=BUTTON_HEIGHT_SMALL,
             corner_radius=CORNER_RADIUS_INPUT, fg_color="transparent",
-            border_width=1, border_color=COLORS['border'], hover_color=COLORS['bg_hover'],
+            border_width=1, border_color=COLORS['border'], hover_color=COLORS['surface_hover'],
             font=make_font('caption'),
             command=lambda: self._cancel_snooze(entry)
         ).pack(side="right", padx=(0, PADDING_PANEL_X), pady=8)
