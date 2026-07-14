@@ -158,8 +158,9 @@ CORNER_RADIUS_BUTTON = 8
 CORNER_RADIUS_INPUT = 6
 
 # Button dimensions
-BUTTON_HEIGHT_LARGE = 38   # Control buttons (Start/Reset/Pause)
-BUTTON_HEIGHT_SMALL = 28   # Test, play buttons
+BUTTON_HEIGHT_LARGE = 38    # Control buttons (Start/Reset/Pause)
+BUTTON_HEIGHT_SMALL = 28    # Test, play buttons
+BUTTON_HEIGHT_XLARGE = 40   # Popup actions (Snooze / ▾ / Done / Set)
 BUTTON_MIN_WIDTH = 80      # Minimum touch target
 
 # Collapsible panel settings
@@ -407,7 +408,7 @@ class CountdownPopup:
                 text=f"Snooze {format_snooze_short(self.snooze_seconds)}",
                 command=self.snooze,
                 width=104,
-                height=40,
+                height=BUTTON_HEIGHT_XLARGE,
                 corner_radius=CORNER_RADIUS_BUTTON,
                 fg_color="transparent",
                 border_width=1,
@@ -422,7 +423,7 @@ class CountdownPopup:
                 text="▾",
                 command=self._open_snooze_menu,
                 width=28,
-                height=40,
+                height=BUTTON_HEIGHT_XLARGE,
                 corner_radius=CORNER_RADIUS_BUTTON,
                 fg_color="transparent",
                 border_width=1,
@@ -438,7 +439,7 @@ class CountdownPopup:
             text="Done",
             command=self.close,
             width=130,
-            height=40,
+            height=BUTTON_HEIGHT_XLARGE,
             corner_radius=CORNER_RADIUS_BUTTON,
             fg_color=COLORS['accent_primary'],
             hover_color=COLORS['accent_primary_hover'],
@@ -592,7 +593,7 @@ class CountdownPopup:
             self.snooze(secs)
 
         ctk.CTkButton(
-            frame, text="Set", command=do_set, height=40,
+            frame, text="Set", command=do_set, height=BUTTON_HEIGHT_XLARGE,
             corner_radius=CORNER_RADIUS_BUTTON,
             fg_color=COLORS['accent_primary'], hover_color=COLORS['accent_primary_hover'],
             font=make_font('body', weight="bold")
