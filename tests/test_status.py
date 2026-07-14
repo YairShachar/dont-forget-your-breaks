@@ -44,7 +44,18 @@ class TestCompute:
         assert v.headline == "Next break in 4:32" and v.subtext == "Micro Break"
         assert abs(v.progress - (1 - 272 / 900)) < 1e-9 and v.chip is None
 
-    def test_holding(self):
-        v = compute_status(**self.base(held_reason="a call"))
+    def test_holding_meeting(self):
+        v = compute_status(**self.base(held_reason="meeting"))
         assert v.state == "holding" and v.dot == "warning"
-        assert v.headline == "Waiting — a call" and v.chip == "Breaks pause during a call"
+        assert v.headline == "Waiting — you're in a call"
+        assert v.chip == "Breaks pause during meetings"
+        assert v.subtext == "Micro Break is due; it'll wait"
+
+    def test_holding_fullscreen(self):
+        v = compute_status(**self.base(held_reason="fullscreen"))
+        assert v.headline == "Waiting — you're in full screen"
+        assert v.chip == "Breaks pause in full screen"
+
+    def test_holding_unknown_reason_falls_back(self):
+        v = compute_status(**self.base(held_reason="thing"))
+        assert v.headline == "Waiting — thing" and v.chip == "Breaks pause during thing"

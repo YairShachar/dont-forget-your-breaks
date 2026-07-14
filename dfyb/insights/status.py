@@ -24,6 +24,15 @@ def progress_fraction(remaining, interval):
     return max(0.0, min(1.0, 1 - remaining / interval))
 
 
+# held-reason key -> (friendly phrase for the headline, tail for the chip)
+HELD_LABELS = {
+    "meeting": ("you're in a call", "during meetings"),
+    "fullscreen": ("you're in full screen", "in full screen"),
+    "away": ("you're away", "while you're away"),
+    "active": ("you're busy", "during activity"),
+}
+
+
 @dataclass
 class StatusView:
     state: str
@@ -43,11 +52,12 @@ def compute_status(*, running, paused, held_reason, next_name,
     if paused:
         return StatusView("paused", "warning", "Paused", "Breaks are on hold", 0.0)
     if held_reason:
+        label, tail = HELD_LABELS.get(held_reason, (held_reason, f"during {held_reason}"))
         return StatusView(
-            "holding", "warning", f"Waiting — {held_reason}",
+            "holding", "warning", f"Waiting — {label}",
             f"{next_name} is due; it'll wait",
             progress_fraction(next_remaining, next_interval),
-            chip=f"Breaks pause during {held_reason}")
+            chip=f"Breaks pause {tail}")
     if break_active:
         return StatusView("break", "warning", "Break time", next_name, 1.0)
     return StatusView(

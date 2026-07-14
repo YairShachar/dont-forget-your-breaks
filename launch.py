@@ -41,6 +41,7 @@ from dfyb.scheduler.dedup import break_in_play
 from dfyb.timer_lifecycle import timer_should_continue
 from dfyb.macos_window import pin_to_active_space
 from dfyb.insights.transparency import track_held, held_message, holding_cue
+from dfyb.insights.status import compute_status
 from dfyb.insights.over_break import format_over_time
 from dfyb.snooze import (
     snooze_delay_ms, format_snooze_short, format_snooze_long, custom_snooze_seconds,
@@ -111,6 +112,7 @@ UPDATE_CHECK_INTERVAL_HOURS = 24
 # Typography sizes (role-based; family auto-picked by the 20pt optical split)
 FONT_SIZES = {
     'display': 48,        # popup countdown
+    'status_hero': 28,    # main-window cockpit headline
     'heading': 17,        # panel header, window title
     'body_emphasis': 16,  # popup primary message
     'subheading': 14,     # main control buttons, gear icon
@@ -177,6 +179,23 @@ CORNER_RADIUS_INPUT = 6
 BUTTON_HEIGHT_LARGE = 38    # Control buttons (Start/Reset/Pause)
 BUTTON_HEIGHT_SMALL = 28    # Test, play buttons
 BUTTON_HEIGHT_XLARGE = 40   # Popup actions (Snooze / ▾ / Done / Set)
+
+# Cockpit status hero
+DOT_SIZE = 10            # status dot diameter
+ICON_CHIP = 34          # break-row icon chip (rounded square)
+PROGRESS_HEIGHT = 6     # slim progress-to-next-break bar
+HERO_PAD = SPACE_LG     # inner padding of the hero card
+DOT_PULSE_MS = 3200     # full breathe cycle of the on-track status dot
+STATUS_DOT_COLORS = {
+    'good': COLORS['accent_success'],
+    'warning': COLORS['accent_warning'],
+    'idle': COLORS['text_tertiary'],
+}
+# state key -> the short word next to the status dot
+STATUS_STATE_LABELS = {
+    'idle': "Idle", 'paused': "Paused", 'holding': "Holding",
+    'break': "Break", 'on_track': "On track",
+}
 BUTTON_MIN_WIDTH = 80      # Minimum touch target
 
 # Collapsible panel settings
@@ -1200,66 +1219,77 @@ class BreakApp:
         main_frame = ctk.CTkFrame(self.root, fg_color="transparent")
         main_frame.pack(fill="both", expand=True, padx=PADDING_WINDOW, pady=PADDING_WINDOW)
 
-        # Status section
-        status_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        status_frame.pack(fill="x", pady=(0, ROW_SPACING))
+        # ---- Status hero (the cockpit) ----
+        hero = ctk.CTkFrame(main_frame, fg_color=COLORS['surface_card'],
+                            corner_radius=CORNER_RADIUS_PANEL)
+        hero.pack(fill="x", pady=(0, SPACE_XS))
+
+        hero_top = ctk.CTkFrame(hero, fg_color="transparent")
+        hero_top.pack(fill="x", padx=HERO_PAD, pady=(HERO_PAD, SPACE_XS))
+
+        # Breathing status dot (centered in a fixed-size wrap for baseline align)
+        dot_wrap = ctk.CTkFrame(hero_top, fg_color="transparent",
+                                width=DOT_SIZE, height=DOT_SIZE)
+        dot_wrap.pack(side="left", pady=(SPACE_XXS, 0))
+        dot_wrap.pack_propagate(False)
+        self.status_dot = ctk.CTkFrame(
+            dot_wrap, width=DOT_SIZE, height=DOT_SIZE,
+            corner_radius=DOT_SIZE // 2, fg_color=STATUS_DOT_COLORS['idle'])
+        self.status_dot.pack(expand=True)
 
         self.status = ctk.CTkLabel(
-            status_frame,
-            text="Idle",
-            font=make_font('heading', weight="bold"),
-            text_color=COLORS['text_secondary']
-        )
-        self.status.pack(side="left")
+            hero_top, text="Idle", font=make_font('label', weight="bold"),
+            text_color=COLORS['text_secondary'])
+        self.status.pack(side="left", padx=(SPACE_XS, 0))
 
-        # Settings button (gear icon, top-right)
+        # Settings gear (top-right of the hero)
         self.settings_btn = ctk.CTkButton(
-            status_frame,
-            text="\u2699",
-            command=self._open_settings,
-            width=28, height=28,
-            corner_radius=CORNER_RADIUS_INPUT,
-            fg_color="transparent",
-            hover_color=COLORS['surface_hover'],
-            text_color=COLORS['text_secondary'],
-            font=make_font('subheading')
-        )
-        self.settings_btn.pack(side="right", padx=(SPACE_XS, 0))
+            hero_top, text="\u2699", command=self._open_settings,
+            width=28, height=28, corner_radius=CORNER_RADIUS_INPUT,
+            fg_color="transparent", hover_color=COLORS['surface_hover'],
+            text_color=COLORS['text_secondary'], font=make_font('subheading'))
+        self.settings_btn.pack(side="right")
 
-        self.next_break_label = ctk.CTkLabel(
-            status_frame, text="",
-            font=make_font('body', weight="bold"),
-            text_color=COLORS['text_secondary']
-        )
-        self.next_break_label.pack(side="right")
+        # Headline (the one number that matters) + subtext
+        self.hero_headline = ctk.CTkLabel(
+            hero, text="Idle", anchor="w",
+            font=make_font('status_hero', weight="bold"))
+        self.hero_headline.pack(fill="x", padx=HERO_PAD)
 
-        # Control buttons
-        control_frame = ctk.CTkFrame(main_frame, fg_color="transparent")
-        control_frame.pack(fill="x", pady=ROW_SPACING)
+        self.hero_sub = ctk.CTkLabel(
+            hero, text="Start when you're ready", anchor="w",
+            font=make_font('caption'), text_color=COLORS['text_secondary'])
+        self.hero_sub.pack(fill="x", padx=HERO_PAD, pady=(SPACE_XXS, SPACE_SM))
 
-        # Toggle button (Start / Pause / Resume - primary action)
+        # Progress toward the next break
+        self.hero_progress = ctk.CTkProgressBar(
+            hero, height=PROGRESS_HEIGHT, corner_radius=PROGRESS_HEIGHT // 2,
+            progress_color=COLORS['accent_primary'], fg_color=COLORS['surface_hover'])
+        self.hero_progress.set(0)
+        self.hero_progress.pack(fill="x", padx=HERO_PAD)
+
+        # Holding chip \u2014 revealed by _render_status only while a break is deferred
+        self.hero_chip = ctk.CTkLabel(
+            hero, text="", anchor="w", font=make_font('caption', weight="bold"),
+            text_color=COLORS['accent_warning'])
+
+        # Global controls
+        controls = ctk.CTkFrame(hero, fg_color="transparent")
+        controls.pack(fill="x", padx=HERO_PAD, pady=(SPACE_SM, HERO_PAD))
+
         self.toggle_btn = ctk.CTkButton(
-            control_frame, text="Start",
-            command=self._handle_toggle, height=BUTTON_HEIGHT_LARGE,
-            corner_radius=CORNER_RADIUS_BUTTON,
-            fg_color=COLORS['accent_primary'],
-            hover_color=COLORS['accent_primary_hover'],
-            font=make_font('subheading', weight="bold")
-        )
+            controls, text="Start", command=self._handle_toggle,
+            height=BUTTON_HEIGHT_LARGE, corner_radius=CORNER_RADIUS_BUTTON,
+            fg_color=COLORS['accent_primary'], hover_color=COLORS['accent_primary_hover'],
+            font=make_font('subheading', weight="bold"))
         self.toggle_btn.pack(side="left", padx=(0, SPACE_XXS), expand=True, fill="x")
 
-        # Reset button (secondary - transparent with border)
         self.reset_btn = ctk.CTkButton(
-            control_frame, text="Reset",
-            command=self.reset, height=BUTTON_HEIGHT_LARGE,
-            corner_radius=CORNER_RADIUS_BUTTON,
-            fg_color="transparent",
-            border_width=1,
-            border_color=COLORS['border'],
-            hover_color=COLORS['surface_card'],
-            font=make_font('subheading'),
-            state="disabled"
-        )
+            controls, text="Reset", command=self.reset,
+            height=BUTTON_HEIGHT_LARGE, corner_radius=CORNER_RADIUS_BUTTON,
+            fg_color="transparent", border_width=1, border_color=COLORS['border'],
+            hover_color=COLORS['surface_hover'], font=make_font('subheading'),
+            state="disabled")
         self.reset_btn.pack(side="left", padx=(SPACE_XXS, 0), expand=True, fill="x")
 
         # Compact timer display cards
@@ -1597,7 +1627,7 @@ class BreakApp:
         for config in self.breaks:
             config.reset_timer()
 
-        self.status.configure(text="Working", text_color=COLORS['accent_success'])
+        self._render_status()
         self.toggle_btn.configure(
             text="Pause",
             fg_color=COLORS['accent_warning'],
@@ -1621,7 +1651,7 @@ class BreakApp:
                 fg_color=COLORS['accent_warning'],
                 hover_color=COLORS['accent_warning_hover']
             )
-            self.status.configure(text="Working", text_color=COLORS['accent_success'])
+            self._render_status()
         else:
             self.paused = True
             self.toggle_btn.configure(
@@ -1629,7 +1659,7 @@ class BreakApp:
                 fg_color=COLORS['accent_primary'],
                 hover_color=COLORS['accent_primary_hover']
             )
-            self.status.configure(text="Paused", text_color=COLORS['accent_warning'])
+            self._render_status()
 
     def reset(self):
         self.running = False
@@ -1647,7 +1677,7 @@ class BreakApp:
         for config in self.breaks:
             config.reset_timer()
 
-        self.status.configure(text="Idle", text_color=COLORS['text_secondary'])
+        self._render_status()
         self.toggle_btn.configure(
             text="Start",
             fg_color=COLORS['accent_primary'],
@@ -1957,9 +1987,9 @@ class BreakApp:
             self._active_break_name = None
             self.break_start_time = None
             if self.running and not self.paused:
-                self.status.configure(text="Working", text_color=COLORS['accent_success'])
+                self._render_status()
             elif not self.running:
-                self.status.configure(text="Idle", text_color=COLORS['text_secondary'])
+                self._render_status()
             self.root.after(0, self._process_break_queue)
 
         def on_snooze(snooze_seconds):
@@ -1970,7 +2000,7 @@ class BreakApp:
             self._active_break_name = None
             self.break_start_time = None
             if self.running and not self.paused:
-                self.status.configure(text="Working", text_color=COLORS['accent_success'])
+                self._render_status()
             # An explicit snooze always comes back after its delay, regardless of
             # Start/Stop; _requeue_break holds it while paused or context-deferred.
             entry = {"name": break_data['name'],
@@ -1980,7 +2010,6 @@ class BreakApp:
                 lambda: self._requeue_break(break_data, entry))
             self._pending_snoozes.append(entry)
 
-        self.status.configure(text=break_data['name'], text_color=COLORS['accent_warning'])
         # How many times this break was snoozed / when it was first due (#37).
         events = self.event_log.read()
         snooze_count = snooze_count_since_taken(events, break_data['name'])
@@ -2008,6 +2037,7 @@ class BreakApp:
             snooze_count=snooze_count,
             first_snooze_ago=first_snooze_ago,
         )
+        self._render_status()
 
     def _requeue_break(self, break_data, entry=None):
         """Re-show a snoozed break. An explicit snooze always returns regardless of
@@ -2118,12 +2148,36 @@ class BreakApp:
                 self._snooze_rows[eid]["frame"].destroy()
                 del self._snooze_rows[eid]
 
-    def update_ui(self):
-        """Update timer displays for all breaks."""
-        next_break = None
-        min_remaining = float('inf')
-        now = time.time()
+    def _render_status(self):
+        """Render the cockpit hero from current state — the single source of truth
+        for the status area, called both on state changes and every tick."""
+        next_name, next_remaining, next_interval = "", 0, 0
+        if self.running and not self.paused and self.breaks:
+            nxt = min(self.breaks, key=lambda c: c.remaining)
+            next_name = nxt.name.get()
+            next_remaining = max(0, nxt.remaining)
+            next_interval = nxt.get_interval_seconds()
+        view = compute_status(
+            running=self.running, paused=self.paused, held_reason=self._held,
+            next_name=next_name, next_remaining=next_remaining,
+            next_interval=next_interval, break_active=self.active_popup is not None)
+        self.status_dot.configure(fg_color=STATUS_DOT_COLORS[view.dot])
+        self.status.configure(text=STATUS_STATE_LABELS[view.state],
+                              text_color=COLORS['text_secondary'])
+        self.hero_headline.configure(text=view.headline)
+        self.hero_sub.configure(text=view.subtext)
+        self.hero_progress.set(view.progress)
+        if view.chip:
+            self.hero_chip.configure(text=f"⏸ {view.chip}")
+            if self.hero_chip.winfo_manager() != "pack":
+                self.hero_chip.pack(fill="x", padx=HERO_PAD, pady=(0, SPACE_SM),
+                                    after=self.hero_progress)
+        elif self.hero_chip.winfo_manager() == "pack":
+            self.hero_chip.pack_forget()
 
+    def update_ui(self):
+        """Refresh the cockpit hero, per-break timers, holding cues, and snooze rows."""
+        now = time.time()
         for i, config in enumerate(self.breaks):
             time_text = self._format_time(config.remaining)
             if i < len(self._timer_labels):
@@ -2148,17 +2202,7 @@ class BreakApp:
                 elif label.winfo_manager() == "pack":     # currently packed → hide
                     label.pack_forget()
 
-            if self.running and not self.paused and config.remaining < min_remaining:
-                min_remaining = config.remaining
-                next_break = config
-
-        if next_break and self.running and not self.active_popup:
-            self.next_break_label.configure(
-                text=f"Next: {next_break.name.get()} in {self._format_time(min_remaining)}"
-            )
-        elif not self.running:
-            self.next_break_label.configure(text="")
-
+        self._render_status()
         self._render_snooze_rows(now)
         self.root.after(1000, self.update_ui)
 
