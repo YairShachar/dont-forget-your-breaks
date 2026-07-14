@@ -1,7 +1,27 @@
 from dfyb.snooze import (
-    snooze_delay_ms, format_snooze_short, format_snooze_long, custom_snooze_seconds)
+    snooze_delay_ms, format_snooze_short, format_snooze_long, custom_snooze_seconds,
+    should_hold_snooze)
 
 MAX = 24 * 60 * 60
+
+
+# --- should_hold_snooze: running/stopped is deliberately NOT a factor ---
+
+def test_hold_when_paused():
+    assert should_hold_snooze(True, False) is True
+
+
+def test_hold_when_context_defers():
+    assert should_hold_snooze(False, True) is True
+
+
+def test_fire_when_active_and_clear():
+    # not paused, not deferred -> fire (regardless of Start/Stop, which isn't an input)
+    assert should_hold_snooze(False, False) is False
+
+
+def test_hold_when_both():
+    assert should_hold_snooze(True, True) is True
 
 
 def test_delay_ms_five_minutes():

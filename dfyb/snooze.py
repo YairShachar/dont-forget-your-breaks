@@ -25,6 +25,17 @@ def format_snooze_long(seconds):
     return f"{minutes} min" if rem == 0 else f"{minutes} min {rem} sec"
 
 
+def should_hold_snooze(paused, context_defers):
+    """Whether a snoozed break's re-fire should be held (re-checked later) instead
+    of fired now.
+
+    The app's running/stopped state is deliberately NOT a factor: an explicit
+    snooze is a user commitment that returns regardless of Start/Stop. Only a
+    Pause, or a context deferral (meeting/fullscreen/away/mid-activity), holds it.
+    """
+    return bool(paused or context_defers)
+
+
 def custom_snooze_seconds(raw_text, unit, max_seconds):
     """Parse the custom dialog (a number + 'sec'/'min') to seconds, or None if
     not a positive integer within `max_seconds`."""

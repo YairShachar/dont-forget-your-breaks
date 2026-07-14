@@ -37,7 +37,8 @@ from dfyb.macos_window import pin_to_active_space
 from dfyb.insights.transparency import track_held, held_message, holding_cue
 from dfyb.insights.over_break import format_over_time
 from dfyb.snooze import (
-    snooze_delay_ms, format_snooze_short, format_snooze_long, custom_snooze_seconds)
+    snooze_delay_ms, format_snooze_short, format_snooze_long, custom_snooze_seconds,
+    should_hold_snooze)
 from dfyb.insights.counts import (
     snooze_count_since_taken, first_snooze_seconds_ago, snooze_summary_label)
 
@@ -1897,8 +1898,10 @@ class BreakApp:
             self.break_start_time = None
             if self.running and not self.paused:
                 self.status.configure(text="Working", text_color=COLORS['accent_green'])
-                self.root.after(snooze_delay_ms(snooze_seconds),
-                                lambda: self._requeue_break(break_data))
+            # An explicit snooze always comes back after its delay, regardless of
+            # Start/Stop; _requeue_break holds it while paused or context-deferred.
+            self.root.after(snooze_delay_ms(snooze_seconds),
+                            lambda: self._requeue_break(break_data))
 
         self.status.configure(text=break_data['name'], text_color=COLORS['accent_orange'])
         # How many times this break was snoozed / when it was first due (#37).
@@ -1929,21 +1932,19 @@ class BreakApp:
         )
 
     def _requeue_break(self, break_data):
-        """Re-show a snoozed break — but respect context (defer during a
-        meeting/fullscreen/away/mid-activity) like a scheduled break, instead of
-        barging in unconditionally (#42)."""
-        if not (self.running and not self.paused):
-            return
+        """Re-show a snoozed break. An explicit snooze always returns regardless of
+        Start/Stop; a Pause holds it, and context (meeting/fullscreen/away/
+        mid-activity) defers it like a scheduled break (#42), re-checking later."""
         ctx = read_context(
             check_meeting=self.defer_during_meetings.get(),
             check_fullscreen=self.defer_during_fullscreen.get(),
         )
         pause = (self.activity_pause_seconds.get()
                  if self.defer_while_active.get() else 0)
-        if decide(ctx, pause_threshold=pause) == DEFER:
-            # Not a good moment — wait and re-check, don't pop over the user.
-            logging.info("snoozed break held (context deferred, fullscreen=%s meeting=%s), re-checking",
-                         ctx.is_fullscreen, ctx.is_meeting)
+        if should_hold_snooze(self.paused, decide(ctx, pause_threshold=pause) == DEFER):
+            # Not a good moment (paused or context-deferred) — wait and re-check.
+            logging.info("snoozed break held (paused=%s fullscreen=%s meeting=%s), re-checking",
+                         self.paused, ctx.is_fullscreen, ctx.is_meeting)
             self.root.after(SNOOZE_RECHECK_MS, lambda: self._requeue_break(break_data))
             return
         self.break_queue.append(break_data)
