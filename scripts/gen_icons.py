@@ -15,7 +15,8 @@ from PIL import Image, ImageDraw
 
 # file stem -> SF Symbol name
 SYMBOLS = {"eye": "eye", "cup": "cup.and.saucer", "timer": "timer",
-           "chevron": "chevron.down"}
+           "chevron": "chevron.down",
+           "gear": "gearshape"}
 LIGHT_INK = "#3A3A3C"   # dark ink for light mode
 DARK_INK = "#C7C7CC"    # light ink for dark mode
 CHIP_LIGHT = (236, 236, 238, 255)

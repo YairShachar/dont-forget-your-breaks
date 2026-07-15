@@ -1265,10 +1265,10 @@ class BreakApp:
 
         # Settings gear (top-right of the hero)
         self.settings_btn = ctk.CTkButton(
-            hero_top, text="\u2699", command=self._open_settings,
-            width=28, height=28, corner_radius=CORNER_RADIUS_INPUT,
-            fg_color="transparent", hover_color=COLORS['surface_hover'],
-            text_color=COLORS['text_secondary'], font=make_font('subheading'))
+            hero_top, text="", image=load_icon('gear', size=20),
+            command=self._open_settings,
+            width=32, height=32, corner_radius=CORNER_RADIUS_INPUT,
+            fg_color="transparent", hover_color=COLORS['surface_hover'])
         self.settings_btn.pack(side="right")
 
         # Headline (the one number that matters) + subtext
