@@ -1223,8 +1223,10 @@ class BreakApp:
         main_frame.pack(fill="both", expand=True, padx=PADDING_WINDOW, pady=PADDING_WINDOW)
 
         # ---- Status hero (the cockpit) ----
+        # A subtle border marks the hero as the primary instrument (rows are borderless).
         hero = ctk.CTkFrame(main_frame, fg_color=COLORS['surface_card'],
-                            corner_radius=CORNER_RADIUS_PANEL)
+                            corner_radius=CORNER_RADIUS_PANEL,
+                            border_width=1, border_color=COLORS['border'])
         hero.pack(fill="x", pady=(0, SPACE_XS))
 
         hero_top = ctk.CTkFrame(hero, fg_color="transparent")
@@ -1291,11 +1293,13 @@ class BreakApp:
             font=make_font('subheading', weight="bold"))
         self.toggle_btn.pack(side="left", padx=(0, SPACE_XXS), expand=True, fill="x")
 
+        # Filled-grey secondary (not a bordered ghost) so enabled/disabled reads
+        # consistently in both themes — the dark border was near-invisible.
         self.reset_btn = ctk.CTkButton(
             controls, text="Reset", command=self.reset,
             height=BUTTON_HEIGHT_LARGE, corner_radius=CORNER_RADIUS_BUTTON,
-            fg_color="transparent", border_width=1, border_color=COLORS['border'],
-            hover_color=COLORS['surface_hover'], font=make_font('subheading'),
+            fg_color=COLORS['surface_hover'], hover_color=COLORS['border'],
+            text_color=COLORS['text_secondary'], font=make_font('subheading'),
             state="disabled")
         self.reset_btn.pack(side="left", padx=(SPACE_XXS, 0), expand=True, fill="x")
 
@@ -1323,7 +1327,7 @@ class BreakApp:
             value = ctk.CTkFrame(row, fg_color="transparent")
             value.pack(side="right")
             timer_label = ctk.CTkLabel(
-                value, text="--:--", font=make_font('body', weight="bold"))
+                value, text="--:--", font=make_font('body'))  # regular: the live hero countdown is the one bold number
             timer_label.pack(anchor="e")
             break_now = ctk.CTkButton(
                 value, text="Break now", command=lambda c=config: self.break_now(c),
