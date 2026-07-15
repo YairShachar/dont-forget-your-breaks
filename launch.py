@@ -212,8 +212,14 @@ STATUS_STATE_LABELS = {
     'idle': "Idle", 'paused': "Paused", 'holding': "Holding",
     'break': "Break", 'on_track': "On track",
 }
-# break-row icon by index; falls back to "break" for any extra breaks
+# break-row icon by index; falls back to "timer" for any extra breaks
 ROW_ICON_NAMES = ["eye", "cup"]
+# Colored-tile chip tint (light, dark) per icon — matches the icon's accent
+TILE_CHIP_COLORS = {
+    "eye": ("#DEECFF", "#24405C"),    # blue
+    "cup": ("#E0F6E6", "#2D5037"),    # green
+    "timer": ("#FFF0DC", "#4A3A1C"),  # orange
+}
 BUTTON_MIN_WIDTH = 80      # Minimum touch target
 
 # Collapsible panel settings
@@ -1334,8 +1340,8 @@ class BreakApp:
             icon_name = ROW_ICON_NAMES[i] if i < len(ROW_ICON_NAMES) else "timer"
             icon_chip = ctk.CTkLabel(
                 row, text="", image=load_icon(icon_name),
-                width=ICON_CHIP, height=ICON_CHIP,
-                fg_color=COLORS['surface_hover'], corner_radius=CORNER_RADIUS_INPUT)
+                width=ICON_CHIP, height=ICON_CHIP, corner_radius=CORNER_RADIUS_INPUT,
+                fg_color=TILE_CHIP_COLORS.get(icon_name, COLORS['surface_hover']))
             icon_chip.pack(side="left")
 
             # Value block (right): countdown + a readable Break now

@@ -13,12 +13,17 @@ from AppKit import (NSImage, NSColor, NSImageSymbolConfiguration, NSBitmapImageR
                     NSMakeRect, NSZeroRect, NSRectFillUsingOperation, NSFontWeightMedium)
 from PIL import Image, ImageDraw
 
-# file stem -> SF Symbol name
-SYMBOLS = {"eye": "eye", "cup": "cup.and.saucer", "timer": "timer",
-           "chevron": "chevron.down",
-           "gear": "gearshape"}
-LIGHT_INK = "#3A3A3C"   # dark ink for light mode
-DARK_INK = "#C7C7CC"    # light ink for dark mode
+LIGHT_INK = "#3A3A3C"   # neutral dark ink for light mode
+DARK_INK = "#C7C7CC"    # neutral light ink for dark mode
+# stem -> (SF Symbol, light color, dark color). Break tiles use FILLED symbols in
+# their accent color (blue/green/orange); UI glyphs (chevron/gear) stay neutral.
+ICON_SPECS = {
+    "eye":     ("eye.fill",            "#007AFF", "#0A84FF"),  # Micro tile — blue
+    "cup":     ("cup.and.saucer.fill", "#34C759", "#30D158"),  # Normal tile — green
+    "timer":   ("timer",               "#FF9500", "#FF9F0A"),  # fallback tile — orange
+    "chevron": ("chevron.down",        LIGHT_INK, DARK_INK),   # UI glyph
+    "gear":    ("gearshape.fill",      LIGHT_INK, DARK_INK),   # UI glyph
+}
 CHIP_LIGHT = (236, 236, 238, 255)
 CHIP_DARK = (58, 58, 60, 255)
 OUT = 72                # 3x of the 24px display icon
@@ -70,30 +75,26 @@ def rounded_chip(size, bg):
 
 def main():
     os.makedirs(ICON_DIR, exist_ok=True)
-    for stem, symbol in SYMBOLS.items():
-        for mode, ink in (("light", LIGHT_INK), ("dark", DARK_INK)):
+    for stem, (symbol, light, dark) in ICON_SPECS.items():
+        for mode, color in (("light", light), ("dark", dark)):
             path = os.path.join(ICON_DIR, f"{stem}-{mode}.png")
-            render_symbol(symbol, ink).writeToFile_atomically_(path, True)
+            render_symbol(symbol, color).writeToFile_atomically_(path, True)
 
-    # Legibility preview: TRUE size (24px glyph on a 40px chip) + zoom, per theme band.
-    chip_px, glyph_px, cell = 40, 24, 150
-    band_w, band_h = cell * len(SYMBOLS), 130
+    # Preview: each icon at ~44px on a light + dark band so colors read honestly.
+    stems = list(ICON_SPECS)
+    cell, band_h = 96, 110
+    band_w = cell * len(stems)
     prev = Image.new("RGBA", (band_w, band_h * 2), (0, 0, 0, 0))
-    for row, (mode, chip_bg, band_bg) in enumerate((
-            ("light", CHIP_LIGHT, (245, 245, 247, 255)),
-            ("dark", CHIP_DARK, (28, 28, 30, 255)))):
+    for row, (mode, band_bg) in enumerate((("light", (245, 245, 247, 255)),
+                                           ("dark", (28, 28, 30, 255)))):
         prev.paste(Image.new("RGBA", (band_w, band_h), band_bg), (0, row * band_h))
-        for col, stem in enumerate(SYMBOLS):
+        for col, stem in enumerate(stems):
             glyph = Image.open(os.path.join(ICON_DIR, f"{stem}-{mode}.png")).convert("RGBA")
-            chip = rounded_chip(chip_px, chip_bg)
-            chip.alpha_composite(glyph.resize((glyph_px, glyph_px), Image.LANCZOS),
-                                 ((chip_px - glyph_px) // 2, (chip_px - glyph_px) // 2))
-            x0, y0 = col * cell + 28, row * band_h + (band_h - chip_px) // 2
-            prev.alpha_composite(chip, (x0, y0))
-            prev.alpha_composite(glyph.resize((72, 72), Image.LANCZOS), (x0 + 52, y0 - 16))
+            prev.alpha_composite(glyph.resize((44, 44), Image.LANCZOS),
+                                 (col * cell + 26, row * band_h + (band_h - 44) // 2))
     preview = os.path.join(os.path.dirname(__file__), "_icon_preview.png")
     prev.convert("RGB").save(preview)
-    print("wrote", len(SYMBOLS) * 2, "SF-Symbol icons to", os.path.abspath(ICON_DIR))
+    print("wrote", len(ICON_SPECS) * 2, "SF-Symbol icons to", os.path.abspath(ICON_DIR))
     print("preview:", os.path.abspath(preview))
 
 
