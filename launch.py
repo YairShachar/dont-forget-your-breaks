@@ -112,7 +112,8 @@ UPDATE_CHECK_INTERVAL_HOURS = 24
 
 # Typography sizes (role-based; family auto-picked by the 20pt optical split)
 FONT_SIZES = {
-    'display': 48,        # popup countdown
+    'display': 48,        # (reserved) large numerals
+    'ring_countdown': 52, # popup countdown inside the progress ring
     'status_hero': 28,    # main-window cockpit headline
     'heading': 17,        # panel header, window title
     'body_emphasis': 16,  # popup primary message
@@ -422,7 +423,7 @@ class CountdownPopup:
         self.ring_label.place(relx=0.5, rely=0.5, anchor="center")
         self.countdown_label = ctk.CTkLabel(
             self._ring_wrap, text=self._format_time(self.remaining),
-            font=make_font('display', weight="bold"))
+            font=make_font('ring_countdown', weight="bold"))
         self.countdown_label.place(relx=0.5, rely=0.5, anchor="center")
         self._last_ring_deg = -1
         self._render_ring(1.0)
