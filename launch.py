@@ -27,7 +27,7 @@ from dfyb.updater import (
     HOMEBREW_CASK_NAME,
     BASE_DIR,
 )
-from dfyb.animation import ease_out_quad, prefers_reduced_motion, lerp_color
+from dfyb.animation import ease_out_quad, prefers_reduced_motion
 from dfyb.theme import resolve_font_family, resolve_color
 from dfyb.ring import ring_image
 from dfyb.activity.event_log import (
@@ -145,7 +145,7 @@ def load_icon(name, size=ICON_SIZE):
 
 # Break-popup progress ring
 RING_SIZE = 170
-RING_WIDTH = 12
+RING_WIDTH = 9
 
 
 def _hex_to_rgba(hexstr):
@@ -454,10 +454,9 @@ class CountdownPopup:
                 width=104,
                 height=BUTTON_HEIGHT_XLARGE,
                 corner_radius=CORNER_RADIUS_BUTTON,
-                fg_color="transparent",
-                border_width=1,
-                border_color=COLORS['border'],
-                hover_color=COLORS['surface_hover'],
+                fg_color=COLORS['surface_hover'],
+                hover_color=COLORS['border'],
+                text_color=COLORS['text_secondary'],
                 font=make_font('body')
             )
             self.snooze_btn.pack(side="left")
@@ -469,10 +468,9 @@ class CountdownPopup:
                 width=28,
                 height=BUTTON_HEIGHT_XLARGE,
                 corner_radius=CORNER_RADIUS_BUTTON,
-                fg_color="transparent",
-                border_width=1,
-                border_color=COLORS['border'],
-                hover_color=COLORS['surface_hover'],
+                fg_color=COLORS['surface_hover'],
+                hover_color=COLORS['border'],
+                text_color=COLORS['text_secondary'],
                 font=make_font('body')
             )
             self.snooze_menu_btn.pack(side="left", padx=(SPACE_XXS, 0))
@@ -503,11 +501,9 @@ class CountdownPopup:
         self._keep_on_top()
 
     def _format_time(self, seconds):
-        """Format seconds as MM:SS or just Xs for short durations."""
-        if seconds < 60:
-            return f"{seconds}s"
-        m, s = divmod(seconds, 60)
-        return f"{m:02}:{s:02}"
+        """Format seconds as M:SS (e.g. 0:05, 10:00)."""
+        m, s = divmod(max(0, seconds), 60)
+        return f"{m}:{s:02}"
 
     def update_countdown(self):
         if self.closed:
@@ -554,10 +550,8 @@ class CountdownPopup:
         if self.remaining <= 0:                       # over: a full amber ring
             prog = _hex_to_rgba(resolve_color(COLORS['accent_warning'], mode))
             frac = 1.0
-        else:                                         # blue → green as it completes
-            prog = _hex_to_rgba(lerp_color(
-                resolve_color(COLORS['accent_primary'], mode),
-                resolve_color(COLORS['accent_success'], mode), 1 - frac))
+        else:                                         # one calm accent throughout
+            prog = _hex_to_rgba(resolve_color(COLORS['accent_primary'], mode))
         img = ring_image(frac, RING_SIZE, RING_WIDTH, track, prog)
         self._ring_img = ctk.CTkImage(light_image=img, dark_image=img,
                                       size=(RING_SIZE, RING_SIZE))
