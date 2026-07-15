@@ -6,7 +6,7 @@ ICON_DIR = Path(__file__).resolve().parent.parent / "assets" / "icons"
 
 
 def test_all_icon_variants_exist_and_open_rgba():
-    for name in ("eye", "cup", "timer"):
+    for name in ("eye", "cup", "timer", "chevron"):
         for mode in ("light", "dark"):
             path = ICON_DIR / f"{name}-{mode}.png"
             assert path.exists(), f"missing icon {path}"

@@ -444,36 +444,32 @@ class CountdownPopup:
         # Snooze split control (only if the break is snoozable): main = snooze for
         # the current default, ▾ = pick another duration (which becomes the default).
         if self.snoozable:
-            snooze_group = ctk.CTkFrame(btn_frame, fg_color="transparent")
+            # Unified split button: one rounded grey enclosure with two flat
+            # clickable zones (Snooze | chevron) divided by a 1px seam.
+            snooze_group = ctk.CTkFrame(
+                btn_frame, fg_color=COLORS['surface_hover'],
+                corner_radius=CORNER_RADIUS_BUTTON,
+                width=104 + 1 + 32, height=BUTTON_HEIGHT_XLARGE)  # snooze | seam | chevron
             snooze_group.pack(side="left", padx=SPACE_SM)
+            snooze_group.pack_propagate(False)
 
             self.snooze_btn = ctk.CTkButton(
                 snooze_group,
                 text=f"Snooze {format_snooze_short(self.snooze_seconds)}",
-                command=self.snooze,
-                width=104,
-                height=BUTTON_HEIGHT_XLARGE,
-                corner_radius=CORNER_RADIUS_BUTTON,
-                fg_color=COLORS['surface_hover'],
-                hover_color=COLORS['border'],
-                text_color=COLORS['text_secondary'],
-                font=make_font('body')
-            )
-            self.snooze_btn.pack(side="left")
+                command=self.snooze, width=104, height=BUTTON_HEIGHT_XLARGE,
+                corner_radius=0, fg_color="transparent",
+                hover_color=COLORS['border'], text_color=COLORS['text_secondary'],
+                font=make_font('body'))
+            self.snooze_btn.pack(side="left", fill="y")
+
+            seam = ctk.CTkFrame(snooze_group, width=1, fg_color=COLORS['border'])
+            seam.pack(side="left", fill="y", pady=SPACE_XS)
 
             self.snooze_menu_btn = ctk.CTkButton(
-                snooze_group,
-                text="▾",
-                command=self._open_snooze_menu,
-                width=28,
-                height=BUTTON_HEIGHT_XLARGE,
-                corner_radius=CORNER_RADIUS_BUTTON,
-                fg_color=COLORS['surface_hover'],
-                hover_color=COLORS['border'],
-                text_color=COLORS['text_secondary'],
-                font=make_font('body')
-            )
-            self.snooze_menu_btn.pack(side="left", padx=(SPACE_XXS, 0))
+                snooze_group, text="", image=load_icon('chevron', size=12),
+                command=self._open_snooze_menu, width=32, height=BUTTON_HEIGHT_XLARGE,
+                corner_radius=0, fg_color="transparent", hover_color=COLORS['border'])
+            self.snooze_menu_btn.pack(side="left", fill="y")
 
         # Done button - primary style
         self.ok_btn = ctk.CTkButton(
