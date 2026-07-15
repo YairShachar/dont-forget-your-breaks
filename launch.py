@@ -1272,12 +1272,11 @@ class BreakApp:
         self.settings_btn.pack(side="right")
 
         # Headline (the one number that matters) + subtext
-        # Big font only for the live countdown (on-track); medium otherwise, so
-        # idle/paused don't spend the boldest slot on a non-number.
-        self._font_hero_big = make_font('status_hero', weight="bold")
-        self._font_hero_med = make_font('heading', weight="bold")
+        # One consistent headline size across states (no resizing between
+        # on-track/paused/idle); fixed-height slot keeps the window stable.
         self.hero_headline = ctk.CTkLabel(
-            hero, text="Idle", anchor="w", font=self._font_hero_med,
+            hero, text="Idle", anchor="w",
+            font=make_font('status_hero', weight="bold"),
             height=HERO_HEADLINE_HEIGHT)
         self.hero_headline.pack(fill="x", padx=HERO_PAD)
 
@@ -2206,9 +2205,7 @@ class BreakApp:
         self.status_dot.configure(fg_color=STATUS_DOT_COLORS[view.dot])
         self.status.configure(text=STATUS_STATE_LABELS[view.state],
                               text_color=COLORS['text_secondary'])
-        self.hero_headline.configure(
-            text=view.headline,
-            font=self._font_hero_big if view.emphatic else self._font_hero_med)
+        self.hero_headline.configure(text=view.headline)
         self.hero_sub.configure(text=view.subtext)
         if view.progress_style == "live":       # blue, moving
             self.hero_progress.configure(progress_color=COLORS['accent_primary'])

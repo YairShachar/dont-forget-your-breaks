@@ -41,21 +41,22 @@ class StatusView:
     subtext: str
     progress: float
     chip: str | None = None
-    emphatic: bool = False       # headline earns the big status_hero type slot
     progress_style: str = "none"  # 'none' (flat rail) | 'live' (blue) | 'frozen' (grey)
 
 
 def compute_status(*, running, paused, held_reason, next_name,
                    next_remaining, next_interval, break_active):
     """Derive the hero view from app state. Order matters: idle → paused →
-    holding → break → on-track. Only the live countdown (on-track) is emphatic.
-    Paused freezes the bar in grey at where it was; on-track/holding show it live."""
+    holding → break → on-track. Paused keeps the countdown visible (the pill
+    carries the 'Paused' state) and freezes the bar in grey; on-track/holding
+    show it live."""
     if not running:
         return StatusView("idle", "idle", "Ready when you are",
                           "Start whenever you like", 0.0)
     if paused:
-        return StatusView("paused", "warning", "Paused", "Breaks are on hold",
-                          progress_fraction(next_remaining, next_interval),
+        return StatusView("paused", "warning",
+                          f"Next break in {format_countdown(next_remaining)}",
+                          next_name, progress_fraction(next_remaining, next_interval),
                           progress_style="frozen")
     if held_reason:
         label, tail = HELD_LABELS.get(held_reason, (held_reason, f"during {held_reason}"))
@@ -69,4 +70,4 @@ def compute_status(*, running, paused, held_reason, next_name,
     return StatusView(
         "on_track", "good", f"Next break in {format_countdown(next_remaining)}",
         next_name, progress_fraction(next_remaining, next_interval),
-        emphatic=True, progress_style="live")
+        progress_style="live")
