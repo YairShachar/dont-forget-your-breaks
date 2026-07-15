@@ -186,6 +186,7 @@ ICON_CHIP = 40          # break-row icon chip (rounded square)
 PROGRESS_HEIGHT = 6     # slim progress-to-next-break bar
 HERO_PAD = SPACE_LG     # inner padding of the hero card
 DOT_PULSE_MS = 3200     # full breathe cycle of the on-track status dot
+HERO_HEADLINE_HEIGHT = 38  # fixed slot so the big<->medium font swap doesn't resize the window
 STATUS_DOT_COLORS = {
     'good': COLORS['accent_success'],
     'warning': COLORS['accent_warning'],
@@ -1258,7 +1259,8 @@ class BreakApp:
         self._font_hero_big = make_font('status_hero', weight="bold")
         self._font_hero_med = make_font('heading', weight="bold")
         self.hero_headline = ctk.CTkLabel(
-            hero, text="Idle", anchor="w", font=self._font_hero_med)
+            hero, text="Idle", anchor="w", font=self._font_hero_med,
+            height=HERO_HEADLINE_HEIGHT)
         self.hero_headline.pack(fill="x", padx=HERO_PAD)
 
         self.hero_sub = ctk.CTkLabel(
