@@ -1,3 +1,5 @@
 -r requirements.txt
 pytest>=8,<9
 pyinstaller
+# scripts/gen_icons.py renders SF Symbols to the bundled PNGs at build time (macOS).
+pyobjc-framework-Cocoa>=12,<13; sys_platform == "darwin"

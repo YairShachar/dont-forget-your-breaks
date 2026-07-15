@@ -130,7 +130,7 @@ def make_font(role, weight=None):
 
 
 # Bundled line icons (light/dark), loaded via CTkImage.
-ICON_SIZE = 20
+ICON_SIZE = 24
 ICON_DIR = BASE_DIR / "assets" / "icons"
 
 
@@ -182,7 +182,7 @@ BUTTON_HEIGHT_XLARGE = 40   # Popup actions (Snooze / ▾ / Done / Set)
 
 # Cockpit status hero
 DOT_SIZE = 10            # status dot diameter
-ICON_CHIP = 34          # break-row icon chip (rounded square)
+ICON_CHIP = 40          # break-row icon chip (rounded square)
 PROGRESS_HEIGHT = 6     # slim progress-to-next-break bar
 HERO_PAD = SPACE_LG     # inner padding of the hero card
 DOT_PULSE_MS = 3200     # full breathe cycle of the on-track status dot
@@ -197,7 +197,7 @@ STATUS_STATE_LABELS = {
     'break': "Break", 'on_track': "On track",
 }
 # break-row icon by index; falls back to "break" for any extra breaks
-ROW_ICON_NAMES = ["eye", "mug"]
+ROW_ICON_NAMES = ["eye", "cup"]
 BUTTON_MIN_WIDTH = 80      # Minimum touch target
 
 # Collapsible panel settings
@@ -1310,7 +1310,7 @@ class BreakApp:
             row.pack(fill="x", padx=PADDING_PANEL_X, pady=SPACE_SM)
 
             # Icon chip (left)
-            icon_name = ROW_ICON_NAMES[i] if i < len(ROW_ICON_NAMES) else "break"
+            icon_name = ROW_ICON_NAMES[i] if i < len(ROW_ICON_NAMES) else "timer"
             icon_chip = ctk.CTkLabel(
                 row, text="", image=load_icon(icon_name),
                 width=ICON_CHIP, height=ICON_CHIP,
