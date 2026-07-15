@@ -29,6 +29,7 @@ from dfyb.updater import (
 )
 from dfyb.animation import ease_out_quad, prefers_reduced_motion, lerp_color
 from dfyb.theme import resolve_font_family, resolve_color
+from dfyb.ring import ring_image
 from dfyb.activity.event_log import (
     EventLog, BREAK_TAKEN, BREAK_SNOOZED,
     BREAK_SNOOZE_CANCELLED, BREAK_SNOOZE_RETURNED)
@@ -141,6 +142,19 @@ def load_icon(name, size=ICON_SIZE):
         dark_image=Image.open(ICON_DIR / f"{name}-dark.png"),
         size=(size, size))
 
+
+# Break-popup progress ring
+RING_SIZE = 170
+RING_WIDTH = 12
+
+
+def _hex_to_rgba(hexstr):
+    """'#rrggbb' -> (r, g, b, 255) for PIL ring drawing."""
+    h = hexstr.lstrip("#")
+    if len(h) == 3:
+        h = "".join(c * 2 for c in h)
+    return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), 255)
+
 # Semantic colors as (light, dark) tuples — CTk picks by appearance mode.
 # Dark halves are the prior known-good values; light halves are starting points.
 COLORS = {
@@ -210,15 +224,13 @@ SETTINGS_WINDOW_MAX_HEIGHT_RATIO = 0.9  # cap auto-height at 90% of screen heigh
 SETTINGS_WINDOW_Y_OFFSET = 80           # px the window sits above the main window
 
 # Break popup
-POPUP_WIDTH = 380
-POPUP_HEIGHT = 300
+POPUP_WIDTH = 380  # height fits content (see CountdownPopup._position_popup)
 # Activity-pause deferral (#34) slider bounds
 ACTIVITY_PAUSE_MIN = 2
 ACTIVITY_PAUSE_MAX = 15
 ACTIVITY_PAUSE_DEFAULT = 2   # seconds of stillness before a due break fires
 SNOOZE_RECHECK_MS = 5000     # while a snoozed break is context-deferred, re-check this often
 CONFIG_COMMIT_DEBOUNCE_MS = 800  # wait this long after the last keystroke before applying a typed interval/duration
-BREAK_OVER_TEXT = "Break over"       # big popup label once a break's duration elapses
 OVER_BREAK_SUFFIX = "over your break"  # trails the +MM:SS over-breaking count-up
 SNOOZE_OPTIONS_SECONDS = [30, 60, 120, 300, 600, 900, 1800]  # ▾ menu presets
 DEFAULT_SNOOZE_SECONDS = 300                                  # default snooze (5 min)
@@ -345,11 +357,7 @@ class CountdownPopup:
         # Make window always on top
         self.window.attributes('-topmost', True)
 
-        # Position the popup on the chosen screen (per the placement pref).
-        self.window.update_idletasks()
-        self._position_popup()
-
-        # Glassmorphism + a gentle entrance fade on macOS (respects reduced-motion).
+        # A gentle entrance fade on macOS (respects reduced-motion).
         if sys.platform == "darwin":
             if prefers_reduced_motion():
                 self.window.attributes('-alpha', 0.95)
@@ -405,31 +413,29 @@ class CountdownPopup:
         )
         msg_label.pack(pady=(0, ROW_SPACING))
 
-        # Countdown label - large and prominent
+        # Circular progress ring with the countdown centered inside it.
+        self._ring_wrap = ctk.CTkFrame(
+            container, fg_color="transparent", width=RING_SIZE, height=RING_SIZE)
+        self._ring_wrap.pack(pady=ROW_SPACING)
+        self._ring_wrap.pack_propagate(False)
+        self.ring_label = ctk.CTkLabel(self._ring_wrap, text="")
+        self.ring_label.place(relx=0.5, rely=0.5, anchor="center")
         self.countdown_label = ctk.CTkLabel(
-            container,
-            text=self._format_time(self.remaining),
-            font=make_font('display', weight="bold")
-        )
-        self.countdown_label.pack(pady=SPACE_SM)
+            self._ring_wrap, text=self._format_time(self.remaining),
+            font=make_font('display', weight="bold"))
+        self.countdown_label.place(relx=0.5, rely=0.5, anchor="center")
+        self._last_ring_deg = -1
+        self._render_ring(1.0)
 
-        # Amber count-up shown only when a break runs past its duration (#33).
+        # Amber count-up shown once a break runs past its duration (#33). Packed
+        # empty at build so its line is reserved — the window won't resize when it
+        # fills in; update_countdown just sets the text.
         self.over_label = ctk.CTkLabel(
             container, text="",
             font=make_font('caption'),
             text_color=COLORS['accent_warning']
         )
-        # not packed yet — revealed by update_countdown once over the duration
-
-        # Progress bar
-        self.progress = ctk.CTkProgressBar(
-            container,
-            height=8,
-            corner_radius=4,
-            progress_color=COLORS['accent_primary']
-        )
-        self.progress.pack(fill="x", padx=SPACE_2XL, pady=ROW_SPACING)
-        self.progress.set(1.0)  # Start full
+        self.over_label.pack(pady=(0, SPACE_XS))
 
         # Button frame
         btn_frame = ctk.CTkFrame(container, fg_color="transparent")
@@ -485,6 +491,9 @@ class CountdownPopup:
         )
         self.ok_btn.pack(side="left", padx=SPACE_SM)
 
+        # Size the window to its content, then place it on the chosen screen.
+        self._position_popup()
+
         # Handle window close
         self.window.protocol("WM_DELETE_WINDOW", self.close)
 
@@ -527,7 +536,8 @@ class CountdownPopup:
                 self.close()
                 return
             self.countdown_label.configure(
-                text=BREAK_OVER_TEXT, text_color=COLORS['accent_warning'])
+                text=self._format_time(0), text_color=COLORS['accent_warning'])
+            self._render_ring(0.0)   # full amber ring conveys the over-state
             self._bring_to_attention()
 
         # auto-dismiss off: count up the time spent over the break (#33).
@@ -535,23 +545,36 @@ class CountdownPopup:
         if over_seconds >= 1:
             self.over_label.configure(
                 text=f"{format_over_time(over_seconds)} {OVER_BREAK_SUFFIX}")
-            if self.over_label.winfo_manager() != "pack":
-                self.over_label.pack(after=self.countdown_label, pady=(0, ROW_SPACING))
         self.window.after(1000, self.update_countdown)
 
+    def _render_ring(self, frac):
+        """Redraw the progress ring for `frac` and the current appearance mode."""
+        mode = ctk.get_appearance_mode()
+        track = _hex_to_rgba(resolve_color(COLORS['border'], mode))
+        if self.remaining <= 0:                       # over: a full amber ring
+            prog = _hex_to_rgba(resolve_color(COLORS['accent_warning'], mode))
+            frac = 1.0
+        else:                                         # blue → green as it completes
+            prog = _hex_to_rgba(lerp_color(
+                resolve_color(COLORS['accent_primary'], mode),
+                resolve_color(COLORS['accent_success'], mode), 1 - frac))
+        img = ring_image(frac, RING_SIZE, RING_WIDTH, track, prog)
+        self._ring_img = ctk.CTkImage(light_image=img, dark_image=img,
+                                      size=(RING_SIZE, RING_SIZE))
+        self.ring_label.configure(image=self._ring_img)
+
     def _update_progress_smooth(self):
-        """Smooth progress bar update (runs every 50ms for fluid animation)."""
+        """Advance the ring smoothly (every 50ms), re-rendering only when the
+        visible arc moves by >=1 degree so PIL isn't redrawn needlessly."""
         if self.closed:
             return
-
         try:
             elapsed = time.time() - self._start_time
-            progress_value = max(0, 1 - (elapsed / self.duration)) if self.duration > 0 else 0
-            self.progress.set(progress_value)
-            mode = ctk.get_appearance_mode()
-            self.progress.configure(progress_color=lerp_color(
-                resolve_color(COLORS['accent_primary'], mode),
-                resolve_color(COLORS['accent_success'], mode), 1 - progress_value))
+            frac = max(0, 1 - (elapsed / self.duration)) if self.duration > 0 else 0
+            deg = round(frac * 360)
+            if deg != self._last_ring_deg:
+                self._last_ring_deg = deg
+                self._render_ring(frac)
         except Exception:
             pass
 
@@ -724,14 +747,16 @@ class CountdownPopup:
         if screen is None:  # non-macOS / no Quartz: use the Tk screen
             screen = (0, 0, self.window.winfo_screenwidth(),
                       self.window.winfo_screenheight())
-        x, y = center_on_screen(screen, POPUP_WIDTH, POPUP_HEIGHT)
-        x, y = clamp_onscreen(x, y, POPUP_WIDTH, POPUP_HEIGHT, screen)
+        self.window.update_idletasks()
+        w, h = POPUP_WIDTH, self.window.winfo_reqheight()   # fixed width, fit height
+        x, y = center_on_screen(screen, w, h)
+        x, y = clamp_onscreen(x, y, w, h, screen)
         # CustomTkinter's .geometry() override mislocates cross-monitor +x+y
         # (it recomputes the position for the window's current monitor). Set the
         # raw Tk geometry with integer coords so the popup lands on the target
         # screen we chose.
         self.window.tk.call("wm", "geometry", self.window,
-                            f"{POPUP_WIDTH}x{POPUP_HEIGHT}+{int(x)}+{int(y)}")
+                            f"{w}x{h}+{int(x)}+{int(y)}")
 
     def bring_to_user(self):
         """Bring popup to user's current location."""
