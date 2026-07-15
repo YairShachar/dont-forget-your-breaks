@@ -2172,7 +2172,7 @@ class BreakApp:
         """Render the cockpit hero from current state — the single source of truth
         for the status area, called both on state changes and every tick."""
         next_name, next_remaining, next_interval = "", 0, 0
-        if self.running and not self.paused and self.breaks:
+        if self.running and self.breaks:   # gather even when paused (frozen progress)
             nxt = min(self.breaks, key=lambda c: c.remaining)
             next_name = nxt.name.get()
             next_remaining = max(0, nxt.remaining)
@@ -2188,10 +2188,13 @@ class BreakApp:
             text=view.headline,
             font=self._font_hero_big if view.emphatic else self._font_hero_med)
         self.hero_sub.configure(text=view.subtext)
-        if view.show_progress:  # live blue value
+        if view.progress_style == "live":       # blue, moving
             self.hero_progress.configure(progress_color=COLORS['accent_primary'])
             self.hero_progress.set(view.progress)
-        else:                   # inactive: a flat neutral rail, no blue nub
+        elif view.progress_style == "frozen":   # paused: grey, held where it was
+            self.hero_progress.configure(progress_color=COLORS['text_secondary'])
+            self.hero_progress.set(view.progress)
+        else:                                   # idle: flat neutral rail, no nub
             self.hero_progress.configure(progress_color=COLORS['surface_hover'])
             self.hero_progress.set(0)
         if view.chip:

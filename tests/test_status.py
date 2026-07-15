@@ -34,23 +34,24 @@ class TestCompute:
         v = compute_status(**self.base(running=False))
         assert v.state == "idle" and v.dot == "idle" and v.progress == 0
         assert v.headline == "Ready when you are"       # no redundant big "Idle"
-        assert v.emphatic is False and v.show_progress is False
+        assert v.emphatic is False and v.progress_style == "none"
 
-    def test_paused(self):
+    def test_paused_freezes_progress_in_grey(self):
         v = compute_status(**self.base(paused=True))
         assert v.state == "paused" and v.dot == "warning"
-        assert v.emphatic is False and v.show_progress is False
+        assert v.emphatic is False and v.progress_style == "frozen"
+        assert abs(v.progress - (1 - 272 / 900)) < 1e-9   # frozen at where it was
 
     def test_on_track(self):
         v = compute_status(**self.base())
         assert v.state == "on_track" and v.dot == "good"
         assert v.headline == "Next break in 4:32" and v.subtext == "Micro Break"
         assert abs(v.progress - (1 - 272 / 900)) < 1e-9 and v.chip is None
-        assert v.emphatic is True and v.show_progress is True   # the live countdown earns the big slot
+        assert v.emphatic is True and v.progress_style == "live"  # the live countdown earns the big slot
 
-    def test_holding_shows_progress_but_not_emphatic(self):
+    def test_holding_progress_is_live_not_emphatic(self):
         v = compute_status(**self.base(held_reason="meeting"))
-        assert v.emphatic is False and v.show_progress is True
+        assert v.emphatic is False and v.progress_style == "live"
 
     def test_holding_meeting(self):
         v = compute_status(**self.base(held_reason="meeting"))
