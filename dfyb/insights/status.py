@@ -41,14 +41,18 @@ class StatusView:
     subtext: str
     progress: float
     chip: str | None = None
+    emphatic: bool = False      # headline earns the big status_hero type slot
+    show_progress: bool = False  # the progress bar carries a live blue value
 
 
 def compute_status(*, running, paused, held_reason, next_name,
                    next_remaining, next_interval, break_active):
     """Derive the hero view from app state. Order matters: idle → paused →
-    holding → break → on-track."""
+    holding → break → on-track. Only the live countdown (on-track) is emphatic;
+    only time-relative states show a live progress bar."""
     if not running:
-        return StatusView("idle", "idle", "Idle", "Start when you're ready", 0.0)
+        return StatusView("idle", "idle", "Ready when you are",
+                          "Start whenever you like", 0.0)
     if paused:
         return StatusView("paused", "warning", "Paused", "Breaks are on hold", 0.0)
     if held_reason:
@@ -57,9 +61,10 @@ def compute_status(*, running, paused, held_reason, next_name,
             "holding", "warning", f"Waiting — {label}",
             f"{next_name} is due; it'll wait",
             progress_fraction(next_remaining, next_interval),
-            chip=f"Breaks pause {tail}")
+            chip=f"Breaks pause {tail}", show_progress=True)
     if break_active:
         return StatusView("break", "warning", "Break time", next_name, 1.0)
     return StatusView(
         "on_track", "good", f"Next break in {format_countdown(next_remaining)}",
-        next_name, progress_fraction(next_remaining, next_interval))
+        next_name, progress_fraction(next_remaining, next_interval),
+        emphatic=True, show_progress=True)

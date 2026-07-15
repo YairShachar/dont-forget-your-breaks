@@ -1253,9 +1253,12 @@ class BreakApp:
         self.settings_btn.pack(side="right")
 
         # Headline (the one number that matters) + subtext
+        # Big font only for the live countdown (on-track); medium otherwise, so
+        # idle/paused don't spend the boldest slot on a non-number.
+        self._font_hero_big = make_font('status_hero', weight="bold")
+        self._font_hero_med = make_font('heading', weight="bold")
         self.hero_headline = ctk.CTkLabel(
-            hero, text="Idle", anchor="w",
-            font=make_font('status_hero', weight="bold"))
+            hero, text="Idle", anchor="w", font=self._font_hero_med)
         self.hero_headline.pack(fill="x", padx=HERO_PAD)
 
         self.hero_sub = ctk.CTkLabel(
@@ -2181,9 +2184,16 @@ class BreakApp:
         self.status_dot.configure(fg_color=STATUS_DOT_COLORS[view.dot])
         self.status.configure(text=STATUS_STATE_LABELS[view.state],
                               text_color=COLORS['text_secondary'])
-        self.hero_headline.configure(text=view.headline)
+        self.hero_headline.configure(
+            text=view.headline,
+            font=self._font_hero_big if view.emphatic else self._font_hero_med)
         self.hero_sub.configure(text=view.subtext)
-        self.hero_progress.set(view.progress)
+        if view.show_progress:  # live blue value
+            self.hero_progress.configure(progress_color=COLORS['accent_primary'])
+            self.hero_progress.set(view.progress)
+        else:                   # inactive: a flat neutral rail, no blue nub
+            self.hero_progress.configure(progress_color=COLORS['surface_hover'])
+            self.hero_progress.set(0)
         if view.chip:
             self.hero_chip.configure(text=f"⏸ {view.chip}")
             if self.hero_chip.winfo_manager() != "pack":
