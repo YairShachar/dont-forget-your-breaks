@@ -198,6 +198,7 @@ BUTTON_HEIGHT_XLARGE = 40   # Popup actions (Snooze / ▾ / Done / Set)
 # Cockpit status hero
 DOT_SIZE = 10            # status dot diameter
 ICON_CHIP = 40          # break-row icon chip (rounded square)
+ROW_VALUE_WIDTH = 96    # right slot: countdown, swapped to Break now on hover
 PROGRESS_HEIGHT = 6     # slim progress-to-next-break bar
 HERO_PAD = SPACE_LG     # inner padding of the hero card
 DOT_PULSE_MS = 3200     # full breathe cycle of the on-track status dot
@@ -1344,19 +1345,20 @@ class BreakApp:
                 fg_color=TILE_CHIP_COLORS.get(icon_name, COLORS['surface_hover']))
             icon_chip.pack(side="left")
 
-            # Value block (right): countdown + a readable Break now
-            value = ctk.CTkFrame(row, fg_color="transparent")
+            # Value slot (right, fixed width): the countdown, which swaps to a
+            # "Break now" button while the row is hovered (reveal-on-hover).
+            value = ctk.CTkFrame(row, fg_color="transparent",
+                                 width=ROW_VALUE_WIDTH, height=ICON_CHIP)
             value.pack(side="right")
-            timer_label = ctk.CTkLabel(
-                value, text="--:--", font=make_font('body'))  # regular: the live hero countdown is the one bold number
-            timer_label.pack(anchor="e")
+            value.pack_propagate(False)
+            timer_label = ctk.CTkLabel(value, text="--:--", font=make_font('body'))
+            timer_label.place(relx=1.0, rely=0.5, anchor="e")
             break_now = ctk.CTkButton(
                 value, text="Break now", command=lambda c=config: self.break_now(c),
-                width=72, height=20, corner_radius=CORNER_RADIUS_INPUT,
-                fg_color="transparent", hover_color=COLORS['surface_hover'],
-                text_color=COLORS['accent_primary'],
-                font=make_font('caption', weight="bold"))
-            break_now.pack(anchor="e", pady=(SPACE_XXS, 0))
+                width=ROW_VALUE_WIDTH, height=28, corner_radius=CORNER_RADIUS_INPUT,
+                fg_color=COLORS['accent_primary'],
+                hover_color=COLORS['accent_primary_hover'],
+                font=make_font('caption', weight="bold"))  # placed on hover
 
             # Meta (middle): name + interval subtitle
             meta = ctk.CTkFrame(row, fg_color="transparent")
@@ -1383,6 +1385,12 @@ class BreakApp:
             for widget in (card, row, meta, name_label, timer_label, interval_label):
                 widget.bind("<Double-Button-1>",
                             lambda e, c=config: self._edit_break_config(c))
+
+            # Reveal "Break now" over the countdown while the row is hovered (#5)
+            self._bind_row_hover(
+                (card, row, icon_chip, meta, name_label, interval_label,
+                 value, timer_label, break_now),
+                timer_label, break_now)
 
         # Snoozed-break section (dynamic rows appear while a snooze is pending).
         # height=0 so the empty container doesn't reserve CTkFrame's default 200px
@@ -2189,6 +2197,28 @@ class BreakApp:
             if eid not in current:
                 self._snooze_rows[eid]["frame"].destroy()
                 del self._snooze_rows[eid]
+
+    def _bind_row_hover(self, widgets, timer_label, action_btn):
+        """Reveal `action_btn` (Break now) over the countdown while the pointer is
+        anywhere on the row; restore the countdown on leave. A deferred pointer
+        check (by Tk path prefix) keeps it steady while crossing child widgets."""
+        card_path = str(widgets[0])
+
+        def show(_=None):
+            timer_label.place_forget()
+            action_btn.place(relx=1.0, rely=0.5, anchor="e")
+
+        def hide_if_outside():
+            node = self.root.winfo_containing(*self.root.winfo_pointerxy())
+            path = str(node) if node is not None else ""
+            if path == card_path or path.startswith(card_path + "."):
+                return                     # still within the row → keep revealed
+            action_btn.place_forget()
+            timer_label.place(relx=1.0, rely=0.5, anchor="e")
+
+        for w in widgets:
+            w.bind("<Enter>", show, add="+")
+            w.bind("<Leave>", lambda _e: self.root.after(60, hide_if_outside), add="+")
 
     def _row_subtitle(self, config):
         """Interval · duration label for a break row, e.g. 'every 15 min · 20 sec'."""
