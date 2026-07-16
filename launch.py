@@ -803,77 +803,170 @@ class CountdownPopup:
 
 # ------------------ BREAK CONFIG PANEL ------------------
 
-class BreakConfigPanel(ctk.CTkFrame):
-    """Modern UI panel for configuring a single break with collapsible support."""
+class CollapsibleSection(ctk.CTkFrame):
+    """A card with a clickable header (title + chevron) that expands/collapses a
+    body frame with a height animation. Callers/subclasses fill ``self.body`` and
+    then call ``finalize()``. Shared by the break-config panels and the settings
+    sections so both use one animation and one visual grammar."""
 
-    def __init__(self, parent, config, on_test):
-        super().__init__(
-            parent,
-            corner_radius=CORNER_RADIUS_PANEL,
-            fg_color=COLORS['surface_card']
-        )
-        self.config = config
-        self.on_test = on_test
-        self._expanded = True
-
-        # Animation state
+    def __init__(self, parent, title, *, expanded=True, on_toggle=None,
+                 title_font=None):
+        super().__init__(parent, corner_radius=CORNER_RADIUS_PANEL,
+                         fg_color=COLORS['surface_card'])
+        self._initial_expanded = expanded
+        self._expanded = True            # built expanded; finalize() collapses if asked
+        self._on_toggle = on_toggle
         self._animating = False
         self._animation_id = None
-        self._expanded_height = None  # Set after UI is built
+        self._expanded_height = None
         self._collapsed_height = PANEL_COLLAPSED_HEIGHT
+        self._build_header(title, title_font or make_font('body', weight="bold"))
+        self.body = ctk.CTkFrame(self, fg_color="transparent")
 
-        self._build_ui()
-
-    def _build_ui(self):
-        # Header (always visible) - clickable to toggle expand/collapse
+    def _build_header(self, title, font):
         self.header_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.header_frame.pack(fill="x", padx=PADDING_PANEL_X, pady=(PADDING_PANEL_Y // 2, 0))
-
-        # Left side: break name
-        self.header_label = ctk.CTkLabel(
-            self.header_frame,
-            text=self.config.name.get(),
-            font=make_font('body', weight="bold"),
-            cursor="hand2"
-        )
+        self.header_frame.pack(fill="x", padx=PADDING_PANEL_X,
+                               pady=(PADDING_PANEL_Y // 2, 0))
+        self.header_label = ctk.CTkLabel(self.header_frame, text=title,
+                                         font=font, cursor="hand2")
         self.header_label.pack(side="left")
-
-        # Right side: timer + chevron (for collapsed view quick info)
-        header_right = ctk.CTkFrame(self.header_frame, fg_color="transparent")
-        header_right.pack(side="right")
-
-        # Timer in header (visible when collapsed)
-        self.header_timer = ctk.CTkLabel(
-            header_right, text="--:--",
-            font=make_font('body', weight="bold")
-        )
-        self.header_timer.pack(side="left", padx=(0, SPACE_MD))
-        self.header_timer.pack_forget()  # Hidden by default (shown when collapsed)
-
-        # Chevron indicator (always on far right)
+        self.header_right = ctk.CTkFrame(self.header_frame, fg_color="transparent")
+        self.header_right.pack(side="right")
         self.chevron = ctk.CTkLabel(
-            header_right,
-            text="\u25B2",  # Up arrow when expanded
-            font=make_font('label'),
-            text_color=COLORS['text_secondary'],
-            cursor="hand2"
-        )
+            self.header_right, text="\u25B2", font=make_font('label'),
+            text_color=COLORS['text_secondary'], cursor="hand2")
         self.chevron.pack(side="right")
-
-        # Make header clickable (mouse)
-        for widget in [self.header_frame, self.header_label, self.chevron]:
+        for widget in (self.header_frame, self.header_label, self.chevron):
             widget.bind("<Button-1>", lambda e: self.toggle_expand())
-
-        # Keyboard accessibility: Space/Enter to toggle
         self.header_frame.bind("<Return>", lambda e: self.toggle_expand())
         self.header_frame.bind("<space>", lambda e: self.toggle_expand())
 
-        # Content frame (hidden when collapsed)
-        self.content_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.content_frame.pack(fill="x", padx=0, pady=0)
+    def finalize(self):
+        """Call after filling ``self.body``: measure the expanded height, then
+        apply the requested initial expand/collapse state (no animation)."""
+        self.body.pack(fill="x", padx=0, pady=0)
+        self.update_idletasks()
+        self._expanded_height = self.winfo_reqheight()
+        if not self._initial_expanded:
+            self.collapse(animate=False)
 
+    def is_expanded(self):
+        return self._expanded
+
+    def _on_expand_visual(self):
+        """Hook: subclass header tweak when expanding (e.g. hide a summary)."""
+
+    def _on_collapse_visual(self):
+        """Hook: subclass header tweak when collapsing (e.g. show a summary)."""
+
+    def toggle_expand(self):
+        if self._expanded:
+            self.collapse()
+        else:
+            self.expand()
+        if self._on_toggle is not None:
+            self._on_toggle(self._expanded)
+
+    def expand(self, animate=True):
+        if self._expanded:
+            return
+        if self._animation_id:
+            self.after_cancel(self._animation_id)
+            self._animation_id = None
+        self._expanded = True
+        self.body.pack(fill="x", padx=0, pady=0)
+        self._on_expand_visual()
+        self.chevron.configure(text="\u25B2")
+        self.header_frame.pack_configure(pady=(PADDING_PANEL_Y // 2, 0))
+        target = self._expanded_height or self.winfo_reqheight()
+
+        def on_complete():
+            self._animating = False
+            self.pack_propagate(True)
+
+        if not animate:
+            on_complete()
+            return
+        self._animating = True
+        self._animate_height(self._collapsed_height, target,
+                             ANIMATION_EXPAND_DURATION, on_complete)
+
+    def collapse(self, animate=True):
+        if not self._expanded:
+            return
+        if self._animation_id:
+            self.after_cancel(self._animation_id)
+            self._animation_id = None
+        self._expanded = False
+        current = self.winfo_height()
+        if current <= 1:
+            current = self._expanded_height or self._collapsed_height
+
+        def on_complete():
+            self._animating = False
+            self.body.pack_forget()
+            self._on_collapse_visual()
+            self.chevron.configure(text="\u25BC")
+            self.header_frame.pack_configure(
+                pady=(PADDING_PANEL_Y // 2, PADDING_PANEL_Y // 2))
+
+        if not animate:
+            self.pack_propagate(False)
+            self.configure(height=self._collapsed_height)
+            on_complete()
+            return
+        self._animating = True
+        self._animate_height(current, self._collapsed_height,
+                             ANIMATION_COLLAPSE_DURATION, on_complete)
+
+    def _animate_height(self, start_height, end_height, duration, on_complete):
+        """Frame-by-frame height animation with easing."""
+        if prefers_reduced_motion():
+            self.configure(height=end_height)
+            self.pack_propagate(False)
+            on_complete()
+            return
+        total_frames = max(1, duration // ANIMATION_FRAME_INTERVAL)
+        frame = [0]
+
+        def step():
+            if frame[0] >= total_frames:
+                self.configure(height=end_height)
+                self._animation_id = None
+                on_complete()
+                return
+            eased = ease_out_quad(frame[0] / total_frames)
+            height = int(start_height + (end_height - start_height) * eased)
+            self.configure(height=height)
+            frame[0] += 1
+            self._animation_id = self.after(ANIMATION_FRAME_INTERVAL, step)
+
+        self.pack_propagate(False)
+        step()
+
+
+class BreakConfigPanel(CollapsibleSection):
+    """Collapsible panel for configuring a single break."""
+
+    def __init__(self, parent, config, on_test):
+        super().__init__(parent, title=config.name.get())
+        self.config = config
+        self.on_test = on_test
+        # Break-specific header summary: the timer, shown only when collapsed.
+        self.header_timer = ctk.CTkLabel(
+            self.header_right, text="--:--", font=make_font('body', weight="bold"))
+        self._build_body()
+        self.finalize()
+
+    def _on_expand_visual(self):
+        self.header_timer.pack_forget()
+
+    def _on_collapse_visual(self):
+        self.header_timer.pack(side="left", padx=(0, SPACE_MD))
+
+    def _build_body(self):
         # Row 1: Interval and Duration
-        row1 = ctk.CTkFrame(self.content_frame, fg_color="transparent")
+        row1 = ctk.CTkFrame(self.body, fg_color="transparent")
         row1.pack(fill="x", padx=PADDING_PANEL_X, pady=(ROW_SPACING // 2, ROW_SPACING))
 
         ctk.CTkLabel(
@@ -915,7 +1008,7 @@ class BreakConfigPanel(ctk.CTkFrame):
         duration_unit.pack(side="left")
 
         # Row 2: Sounds
-        row2 = ctk.CTkFrame(self.content_frame, fg_color="transparent")
+        row2 = ctk.CTkFrame(self.body, fg_color="transparent")
         row2.pack(fill="x", padx=PADDING_PANEL_X, pady=(0, ROW_SPACING))
 
         ctk.CTkLabel(
@@ -959,7 +1052,7 @@ class BreakConfigPanel(ctk.CTkFrame):
         ).pack(side="left")
 
         # Row 3: Options and Timer
-        row3 = ctk.CTkFrame(self.content_frame, fg_color="transparent")
+        row3 = ctk.CTkFrame(self.body, fg_color="transparent")
         row3.pack(fill="x", padx=PADDING_PANEL_X, pady=(0, PADDING_PANEL_Y))
 
         ctk.CTkCheckBox(
@@ -1006,124 +1099,15 @@ class BreakConfigPanel(ctk.CTkFrame):
             text_color=COLORS['text_secondary']
         ).pack(side="right")
 
-        # Measure and store expanded height after UI is built
-        self.update_idletasks()
-        self._expanded_height = self.winfo_reqheight()
-
-    def toggle_expand(self):
-        """Toggle between expanded and collapsed states."""
-        if self._expanded:
-            self.collapse()
-        else:
-            self.expand()
-
-    def expand(self):
-        """Expand the panel to show full configuration."""
-        if self._expanded:
-            return
-
-        # Cancel any running animation
-        if self._animation_id:
-            self.after_cancel(self._animation_id)
-            self._animation_id = None
-
-        self._expanded = True
-        self._animating = True
-
-        # Show content first (needed for height calculation and animation)
-        self.content_frame.pack(fill="x", padx=0, pady=0)
-        self.header_timer.pack_forget()
-        self.chevron.configure(text="\u25B2")  # Up arrow
-        self.header_frame.pack_configure(pady=(PADDING_PANEL_Y // 2, 0))
-
-        # Get target height
-        target_height = self._expanded_height or self.winfo_reqheight()
-
-        def on_complete():
-            self._animating = False
-            # Re-enable pack propagation for natural sizing
-            self.pack_propagate(True)
-
-        self._animate_height(
-            self._collapsed_height,
-            target_height,
-            ANIMATION_EXPAND_DURATION,
-            on_complete
-        )
-
     def focus_config(self):
         """Expand (if collapsed) and put keyboard focus in the interval field."""
         if not self._expanded:
             self.expand()
         self.interval_entry.focus_set()
 
-    def collapse(self):
-        """Collapse the panel to show only header with timer and test button."""
-        if not self._expanded:
-            return
-
-        # Cancel any running animation
-        if self._animation_id:
-            self.after_cancel(self._animation_id)
-            self._animation_id = None
-
-        self._expanded = False
-        self._animating = True
-
-        # Get current height for smooth animation
-        current_height = self.winfo_height()
-        if current_height <= 1:
-            current_height = self._expanded_height or 200
-
-        def on_complete():
-            self._animating = False
-            self.content_frame.pack_forget()
-            self.header_timer.pack(side="left", padx=(0, SPACE_MD))
-            self.chevron.configure(text="\u25BC")  # Down arrow
-            self.header_frame.pack_configure(pady=(PADDING_PANEL_Y // 2, PADDING_PANEL_Y // 2))
-
-        self._animate_height(
-            current_height,
-            self._collapsed_height,
-            ANIMATION_COLLAPSE_DURATION,
-            on_complete
-        )
-
-    def is_expanded(self):
-        """Return whether the panel is currently expanded."""
-        return self._expanded
-
     def update_header_timer(self, time_text):
-        """Update the header timer display (for collapsed state)."""
+        """Update the header timer display (shown when collapsed)."""
         self.header_timer.configure(text=time_text)
-
-    def _animate_height(self, start_height, end_height, duration, on_complete):
-        """Frame-by-frame height animation with easing."""
-        if prefers_reduced_motion():
-            self.configure(height=end_height)
-            self.pack_propagate(False)
-            on_complete()
-            return
-
-        total_frames = max(1, duration // ANIMATION_FRAME_INTERVAL)
-        frame = [0]  # Use list to allow modification in nested function
-
-        def step():
-            if frame[0] >= total_frames:
-                self.configure(height=end_height)
-                self._animation_id = None
-                on_complete()
-                return
-
-            progress = frame[0] / total_frames
-            eased = ease_out_quad(progress)
-            height = int(start_height + (end_height - start_height) * eased)
-            self.configure(height=height)
-            frame[0] += 1
-            self._animation_id = self.after(ANIMATION_FRAME_INTERVAL, step)
-
-        self.pack_propagate(False)  # Enable explicit height control
-        step()
 
 
 # ------------------ MAIN APP ------------------
