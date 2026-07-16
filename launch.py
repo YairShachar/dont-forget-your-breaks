@@ -1331,7 +1331,9 @@ class BreakApp:
         self._timer_labels = []
         self._cue_labels = []
         self._interval_labels = []
-        self._tooltip_targets = []   # (widget, hint text)
+        self._tip_lbl = None    # shared hover-hint label
+        self._tip_after = None  # pending show timer
+        self._tip_fade = None   # pending fade frame
         for i, config in enumerate(self.breaks):
             card = ctk.CTkFrame(main_frame, corner_radius=CORNER_RADIUS_PANEL,
                                 fg_color=COLORS['surface_card'])
@@ -1360,7 +1362,7 @@ class BreakApp:
                 width=22, height=26, corner_radius=CORNER_RADIUS_INPUT,
                 fg_color="transparent", hover_color=COLORS['surface_hover'])
             play_btn.pack(side="right", padx=(0, SPACE_XXS))
-            self._tooltip_targets.append((play_btn, "Break now"))
+            self._register_tooltip(play_btn, "Break now")
 
             # Meta (middle): name + interval subtitle
             meta = ctk.CTkFrame(row, fg_color="transparent")
@@ -1442,8 +1444,6 @@ class BreakApp:
         self.root.bind('<Command-s>', lambda e: self._handle_toggle())
         self.root.bind('<Command-comma>', lambda e: self._open_settings())
         self.root.bind('<Command-period>', lambda e: self.reset() if self.running else None)
-
-        self._setup_tooltips()
 
         # Start UI update loop
         self.update_ui()
@@ -2201,87 +2201,32 @@ class BreakApp:
                 self._snooze_rows[eid]["frame"].destroy()
                 del self._snooze_rows[eid]
 
-    def _setup_tooltips(self):
-        """Gentle hover hints as an in-window label (CTk widgets don't fire
-        <Enter>/<Leave> reliably, so hover is derived from root <Motion>; a
-        pointer-bounds <Leave> check catches the pointer leaving the window)."""
-        self._tip_lbl = None
-        self._tip_widget = None    # target currently under the pointer, or None
-        self._tip_after = None     # pending show timer
-        self._tip_fade = None      # pending fade frame
-        self._tip_hide_job = None  # guaranteed-hide backstop (no ghost box)
-        self._tip_poll_job = None  # while shown, poll the pointer (catches window-exit)
-        self.root.bind("<Motion>", self._on_tooltip_motion, add="+")
-        self.root.bind("<Leave>", self._on_root_leave, add="+")
+    def _register_tooltip(self, widget, text):
+        """Bind a gentle hover hint. CTk widgets don't fire <Enter>/<Leave> on the
+        wrapper, but their internal canvas does — so bind there (reliable)."""
+        canvas = getattr(widget, "_canvas", widget)
+        canvas.bind("<Enter>", lambda _e: self._tip_schedule(widget, text), add="+")
+        canvas.bind("<Leave>", lambda _e: self._tip_hide(), add="+")
 
-    def _tip_poll(self):
-        """While a hint is shown, keep checking the pointer is still on its target
-        — root <Motion>/<Leave> stop firing once the pointer leaves the window."""
-        self._tip_poll_job = None
-        if self._tip_lbl is None or not self._tip_lbl.winfo_ismapped():
-            return
-        widget = self._tip_widget
-        over = False
-        if widget is not None:
-            node = self.root.winfo_containing(*self.root.winfo_pointerxy())
-            path = str(node) if node is not None else ""
-            wp = str(widget)
-            over = path == wp or path.startswith(wp + ".")
-        if not over:
-            self._tip_widget = None
-            self._tip_hide()
-            return
-        self._tip_poll_job = self.root.after(120, self._tip_poll)
-
-    def _on_tooltip_motion(self, _event=None):
-        node = self.root.winfo_containing(*self.root.winfo_pointerxy())
-        path = str(node) if node is not None else ""
-        widget = text = None
-        for wdg, txt in self._tooltip_targets:
-            wp = str(wdg)
-            if path == wp or path.startswith(wp + "."):
-                widget, text = wdg, txt
-                break
-        if widget is self._tip_widget:
-            return                              # nothing changed
-        self._tip_widget = widget
+    def _tip_schedule(self, widget, text):
         if self._tip_after is not None:
             self.root.after_cancel(self._tip_after)
-            self._tip_after = None
-        self._tip_hide()                        # hide any current hint on change
-        if widget is not None:
-            self._tip_after = self.root.after(
-                TOOLTIP_DELAY_MS, lambda w=widget, t=text: self._tip_show(w, t))
-
-    def _on_root_leave(self, _event=None):
-        # Real window-exit only (crossing onto a child also fires <Leave>).
-        px, py = self.root.winfo_pointerxy()
-        rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
-        if (rx <= px < rx + self.root.winfo_width()
-                and ry <= py < ry + self.root.winfo_height()):
-            return
-        self._tip_widget = None
-        if self._tip_after is not None:
-            self.root.after_cancel(self._tip_after)
-            self._tip_after = None
-        self._tip_hide()
+        self._tip_after = self.root.after(
+            TOOLTIP_DELAY_MS, lambda: self._tip_show(widget, text))
 
     def _tip_hide(self):
-        # Instant + cancels every pending timer, so a stranded chip is impossible
-        # (an interrupted async fade-out was the ghost). Fade-IN stays.
-        for attr in ("_tip_poll_job", "_tip_fade", "_tip_hide_job"):
-            job = getattr(self, attr, None)
-            if job is not None:
-                self.root.after_cancel(job)
-                setattr(self, attr, None)
+        # Reliable + instant: the canvas <Leave> always fires when the pointer exits.
+        if self._tip_after is not None:
+            self.root.after_cancel(self._tip_after)
+            self._tip_after = None
+        if self._tip_fade is not None:
+            self.root.after_cancel(self._tip_fade)
+            self._tip_fade = None
         if self._tip_lbl is not None:
             self._tip_lbl.place_forget()
 
     def _tip_show(self, widget, text):
         self._tip_after = None
-        if self._tip_hide_job is not None:      # a re-show cancels the pending hide
-            self.root.after_cancel(self._tip_hide_job)
-            self._tip_hide_job = None
         if self._tip_lbl is None:
             self._tip_lbl = ctk.CTkLabel(
                 self.root, text="", font=make_font('caption'), height=22,
@@ -2294,9 +2239,6 @@ class BreakApp:
         self._tip_lbl.place(x=max(SPACE_XXS, bx - w // 2), y=by - h - SPACE_XXS)
         self._tip_lbl.lift()
         self._tip_fade_start(fading_in=True)
-        if self._tip_poll_job is not None:
-            self.root.after_cancel(self._tip_poll_job)
-        self._tip_poll_job = self.root.after(120, self._tip_poll)
 
     def _tip_fade_start(self, fading_in):
         if self._tip_fade is not None:
