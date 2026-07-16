@@ -199,6 +199,8 @@ BUTTON_HEIGHT_XLARGE = 40   # Popup actions (Snooze / ▾ / Done / Set)
 # Cockpit status hero
 DOT_SIZE = 10            # status dot diameter
 ICON_CHIP = 40          # break-row icon chip (rounded square)
+PLAY_GLYPH_SIZE = 18    # "break now" ▶ glyph — sized to match the countdown's weight
+PLAY_BTN_WIDTH = 26     # tight footprint so the ▶ hugs the countdown, not adrift
 TOOLTIP_DELAY_MS = 450   # gentle delay before a hover hint appears
 TOOLTIP_FADE_FRAMES = 8  # ~128ms fade in/out at ANIMATION_FRAME_INTERVAL
 TOOLTIP_POLL_MS = 120    # watchdog: re-check the pointer is still over the button
@@ -1360,9 +1362,9 @@ class BreakApp:
             timer_label = ctk.CTkLabel(row, text="--:--", font=make_font('body'), anchor="e")
             timer_label.pack(side="right")
             play_btn = ctk.CTkButton(
-                row, text="", image=load_icon('play', size=14),
-                command=lambda c=config: self.break_now(c),
-                width=22, height=26, corner_radius=CORNER_RADIUS_INPUT,
+                row, text="", image=load_icon('play', size=PLAY_GLYPH_SIZE),
+                command=lambda c=config: self.break_now(c), anchor="e",
+                width=PLAY_BTN_WIDTH, height=26, corner_radius=CORNER_RADIUS_INPUT,
                 fg_color="transparent", hover_color=COLORS['surface_hover'])
             play_btn.pack(side="right", padx=(0, SPACE_XXS))
             self._register_tooltip(play_btn, "Break now")
