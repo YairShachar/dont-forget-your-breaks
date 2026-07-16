@@ -1254,8 +1254,8 @@ class BreakApp:
         hero.pack(fill="x", pady=(0, SPACE_XS))
 
         hero_top = ctk.CTkFrame(hero, fg_color="transparent")
-        # No right padding so the gear sits flush in the corner (not "too centered").
-        hero_top.pack(fill="x", padx=(HERO_PAD, 0), pady=(HERO_PAD, SPACE_XS))
+        # Small right padding: far right, but clear of the hero card's 1px border.
+        hero_top.pack(fill="x", padx=(HERO_PAD, SPACE_XXS), pady=(HERO_PAD, SPACE_XS))
 
         # Breathing status dot (centered in a fixed-size wrap for baseline align)
         dot_wrap = ctk.CTkFrame(hero_top, fg_color="transparent",
@@ -2206,47 +2206,66 @@ class BreakApp:
         <Enter>/<Leave> reliably, so hover is derived from root <Motion>; a
         pointer-bounds <Leave> check catches the pointer leaving the window)."""
         self._tip_lbl = None
-        self._tip_widget = None   # target currently hovered, or None
-        self._tip_after = None    # pending show timer
-        self._tip_fade = None     # pending fade frame
+        self._tip_widget = None    # target currently under the pointer, or None
+        self._tip_after = None     # pending show timer
+        self._tip_fade = None      # pending fade frame
+        self._tip_hide_job = None  # guaranteed-hide backstop (no ghost box)
         self.root.bind("<Motion>", self._on_tooltip_motion, add="+")
         self.root.bind("<Leave>", self._on_root_leave, add="+")
 
     def _on_tooltip_motion(self, _event=None):
         node = self.root.winfo_containing(*self.root.winfo_pointerxy())
         path = str(node) if node is not None else ""
-        for widget, text in self._tooltip_targets:
-            wp = str(widget)
+        widget = text = None
+        for wdg, txt in self._tooltip_targets:
+            wp = str(wdg)
             if path == wp or path.startswith(wp + "."):
-                if widget is not self._tip_widget:   # entered a new target
-                    self._tip_widget = widget
-                    if self._tip_after is not None:
-                        self.root.after_cancel(self._tip_after)
-                    self._tip_after = self.root.after(
-                        TOOLTIP_DELAY_MS, lambda w=widget, t=text: self._tip_show(w, t))
-                return
-        self._tip_leave()
+                widget, text = wdg, txt
+                break
+        if widget is self._tip_widget:
+            return                              # nothing changed
+        self._tip_widget = widget
+        if self._tip_after is not None:
+            self.root.after_cancel(self._tip_after)
+            self._tip_after = None
+        self._tip_hide()                        # hide any current hint on change
+        if widget is not None:
+            self._tip_after = self.root.after(
+                TOOLTIP_DELAY_MS, lambda w=widget, t=text: self._tip_show(w, t))
 
     def _on_root_leave(self, _event=None):
         # Real window-exit only (crossing onto a child also fires <Leave>).
         px, py = self.root.winfo_pointerxy()
         rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
-        if not (rx <= px < rx + self.root.winfo_width()
+        if (rx <= px < rx + self.root.winfo_width()
                 and ry <= py < ry + self.root.winfo_height()):
-            self._tip_leave()
-
-    def _tip_leave(self):
-        if self._tip_widget is None and self._tip_after is None:
             return
         self._tip_widget = None
         if self._tip_after is not None:
             self.root.after_cancel(self._tip_after)
             self._tip_after = None
-        if self._tip_lbl is not None and self._tip_lbl.winfo_ismapped():
-            self._tip_fade_start(fading_in=False)
+        self._tip_hide()
+
+    def _tip_hide(self):
+        if self._tip_lbl is None or not self._tip_lbl.winfo_ismapped():
+            return
+        self._tip_fade_start(fading_in=False)
+        # Guaranteed removal after the fade, whatever happens to the frame chain.
+        if self._tip_hide_job is not None:
+            self.root.after_cancel(self._tip_hide_job)
+        self._tip_hide_job = self.root.after(
+            TOOLTIP_FADE_FRAMES * ANIMATION_FRAME_INTERVAL + 40, self._tip_forget)
+
+    def _tip_forget(self):
+        self._tip_hide_job = None
+        if self._tip_lbl is not None:
+            self._tip_lbl.place_forget()
 
     def _tip_show(self, widget, text):
         self._tip_after = None
+        if self._tip_hide_job is not None:      # a re-show cancels the pending hide
+            self.root.after_cancel(self._tip_hide_job)
+            self._tip_hide_job = None
         if self._tip_lbl is None:
             self._tip_lbl = ctk.CTkLabel(
                 self.root, text="", font=make_font('caption'), height=22,
