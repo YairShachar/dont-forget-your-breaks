@@ -2267,20 +2267,13 @@ class BreakApp:
         self._tip_hide()
 
     def _tip_hide(self):
-        if self._tip_poll_job is not None:
-            self.root.after_cancel(self._tip_poll_job)
-            self._tip_poll_job = None
-        if self._tip_lbl is None or not self._tip_lbl.winfo_ismapped():
-            return
-        self._tip_fade_start(fading_in=False)
-        # Guaranteed removal after the fade, whatever happens to the frame chain.
-        if self._tip_hide_job is not None:
-            self.root.after_cancel(self._tip_hide_job)
-        self._tip_hide_job = self.root.after(
-            TOOLTIP_FADE_FRAMES * ANIMATION_FRAME_INTERVAL + 40, self._tip_forget)
-
-    def _tip_forget(self):
-        self._tip_hide_job = None
+        # Instant + cancels every pending timer, so a stranded chip is impossible
+        # (an interrupted async fade-out was the ghost). Fade-IN stays.
+        for attr in ("_tip_poll_job", "_tip_fade", "_tip_hide_job"):
+            job = getattr(self, attr, None)
+            if job is not None:
+                self.root.after_cancel(job)
+                setattr(self, attr, None)
         if self._tip_lbl is not None:
             self._tip_lbl.place_forget()
 
