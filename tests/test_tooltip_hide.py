@@ -40,6 +40,21 @@ def test_hide_destroys_the_chip_not_just_forgets_it():
         root.destroy()
 
 
+def test_dismiss_still_ends_in_destroy(monkeypatch):
+    """Fade-out must destroy the chip, not place_forget() it (which ghosts on Aqua).
+    Forcing reduced motion makes the fade-out instant and deterministic."""
+    import launch
+    monkeypatch.setattr(launch, "prefers_reduced_motion", lambda: True)
+    ctk, root, app = _make_app()
+    try:
+        play = _play_button(ctk, app._timer_labels[0].master)
+        app._tip_show(play, "Break now")
+        app._tip_dismiss()                 # pointer-left path
+        assert app._tip_lbl is None        # faded out and destroyed
+    finally:
+        root.destroy()
+
+
 def test_reshow_after_destroy_recreates_the_chip():
     ctk, root, app = _make_app()
     try:

@@ -186,6 +186,8 @@ PADDING_WINDOW = SPACE_LG
 PADDING_PANEL_X = SPACE_LG
 PADDING_PANEL_Y = SPACE_LG
 ROW_SPACING = SPACE_SM   # 10 → 8 (tighter rhythm, per proposal)
+ROW_META_LINE_PAD = 2    # breathing inside each meta line box (added to font linespace)
+ROW_META_LINE_GAP = 1    # gap between a break's title and its subtitle (group them tightly)
 
 # Corner radii
 CORNER_RADIUS_PANEL = 10
@@ -1376,14 +1378,19 @@ class BreakApp:
             # Meta (middle): name + interval subtitle
             meta = ctk.CTkFrame(row, fg_color="transparent")
             meta.pack(side="left", fill="x", expand=True, padx=(SPACE_SM, SPACE_XS))
+            # Tight title+subtitle pair: size each line to its font (not CTk's
+            # default 28px box, which left a big gap and inflated the whole row).
+            title_font = make_font('body', weight="bold")
             name_label = ctk.CTkLabel(
-                meta, text=config.name.get(), anchor="w",
-                font=make_font('body', weight="bold"))
+                meta, text=config.name.get(), anchor="w", font=title_font,
+                height=title_font.metrics('linespace') + ROW_META_LINE_PAD)
             name_label.pack(fill="x")
+            sub_font = make_font('caption')
             interval_label = ctk.CTkLabel(
-                meta, text=self._row_subtitle(config), anchor="w",
-                font=make_font('caption'), text_color=COLORS['text_secondary'])
-            interval_label.pack(fill="x")
+                meta, text=self._row_subtitle(config), anchor="w", font=sub_font,
+                height=sub_font.metrics('linespace') + ROW_META_LINE_PAD,
+                text_color=COLORS['text_secondary'])
+            interval_label.pack(fill="x", pady=(ROW_META_LINE_GAP, 0))
 
             self._timer_labels.append(timer_label)
             self._interval_labels.append(interval_label)
@@ -2223,8 +2230,17 @@ class BreakApp:
         self._tip_target = widget           # authoritative "what we're tracking"
         if self._tip_after is not None:
             self.root.after_cancel(self._tip_after)
-        self._tip_after = self.root.after(
-            TOOLTIP_DELAY_MS, lambda: self._tip_show(widget, text))
+            self._tip_after = None
+        if self._tip_lbl is not None:
+            # A chip is still on screen (mid fade-out, or the pointer hopped from a
+            # sibling ▶): cancel the fade and bring it straight back — no re-delay.
+            if self._tip_fade is not None:
+                self.root.after_cancel(self._tip_fade)
+                self._tip_fade = None
+            self._tip_show(widget, text)
+        else:
+            self._tip_after = self.root.after(
+                TOOLTIP_DELAY_MS, lambda: self._tip_show(widget, text))
         self._tip_watch_start()             # guard the whole delay→show→shown lifetime
 
     def _pointer_over(self, widget):
@@ -2251,7 +2267,18 @@ class BreakApp:
         if self._pointer_over(self._tip_target):
             self._tip_watch_start()
         else:
-            self._tip_hide()
+            self._tip_dismiss()
+
+    def _tip_dismiss(self):
+        """Pointer left: stop tracking and fade the chip out (fade end → destroy)."""
+        self._tip_target = None
+        for attr in ("_tip_after", "_tip_watch"):
+            handle = getattr(self, attr)
+            if handle is not None:
+                self.root.after_cancel(handle)
+                setattr(self, attr, None)
+        if self._tip_lbl is not None:
+            self._tip_fade_start(out=True)
 
     def _tip_hide(self):
         self._tip_target = None
@@ -2282,28 +2309,33 @@ class BreakApp:
         by = widget.winfo_rooty() - self.root.winfo_rooty()
         self._tip_lbl.place(x=max(SPACE_XXS, bx - w // 2), y=by - h - SPACE_XXS)
         self._tip_lbl.lift()
-        self._tip_fade_in()
+        self._tip_fade_start(out=False)
 
-    def _tip_fade_in(self):
-        # Fade-in only. Hiding is a single destroy() path in _tip_hide (a fade-out
-        # would just animate a chip that Aqua then ghosts anyway — see _tip_hide).
+    def _tip_fade_start(self, out=False):
+        # Fade in (out=False) or out (out=True). A fade-OUT ends by destroying the
+        # chip — never place_forget(), which ghosts on Tk 9 Aqua (see _tip_hide).
         if self._tip_fade is not None:
             self.root.after_cancel(self._tip_fade)
             self._tip_fade = None
         if prefers_reduced_motion():
-            self._tip_paint(1.0)
+            self._tip_paint(0.0 if out else 1.0)
+            if out:
+                self._tip_hide()
             return
-        self._tip_fade_step(0)
+        self._tip_fade_step(0, out)
 
-    def _tip_fade_step(self, frame):
+    def _tip_fade_step(self, frame, out):
         if self._tip_lbl is None:
             return
-        self._tip_paint(ease_out_quad(min(1.0, frame / TOOLTIP_FADE_FRAMES)))
+        t = ease_out_quad(min(1.0, frame / TOOLTIP_FADE_FRAMES))
+        self._tip_paint(1.0 - t if out else t)
         if frame < TOOLTIP_FADE_FRAMES:
             self._tip_fade = self.root.after(
-                ANIMATION_FRAME_INTERVAL, lambda: self._tip_fade_step(frame + 1))
+                ANIMATION_FRAME_INTERVAL, lambda: self._tip_fade_step(frame + 1, out))
         else:
             self._tip_fade = None
+            if out:
+                self._tip_hide()   # destroy only after fully faded — no ghost
 
     def _tip_paint(self, alpha):
         """Fade the chip from the card background (alpha 0, invisible) to full."""
