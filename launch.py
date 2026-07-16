@@ -870,17 +870,15 @@ class CollapsibleSection(ctk.CTkFrame):
         """Hook: subclass header tweak when collapsing (e.g. show a summary)."""
 
     def toggle_expand(self):
-        # Instant (animate=False): Tk re-lays-out the whole window on every
-        # resize step, so any per-frame height animation jitters the content.
-        # Body + window snap together in one frame — clean and jitter-free.
+        # The section body animates its reveal; the WINDOW is resized only once
+        # per toggle (expand grows it up-front, collapse shrinks it at the end),
+        # so there's no per-frame window reflow to jitter the text.
         if self._expanded:
-            self.collapse(animate=False)
+            self.collapse()
         else:
-            self.expand(animate=False)
+            self.expand()
         if self._on_toggle is not None:
             self._on_toggle(self._expanded)
-        if self._on_resize is not None:
-            self._on_resize()
 
     def expand(self, animate=True):
         if self._expanded:
@@ -894,10 +892,19 @@ class CollapsibleSection(ctk.CTkFrame):
         self.chevron.configure(text="\u25B2")
         self.header_frame.pack_configure(pady=(PADDING_PANEL_Y // 2, 0))
         target = self._expanded_height or self.winfo_reqheight()
+        # Grow the window ONCE up-front (by the height this section will add) so
+        # the reveal has room; the section then animates inside it — no per-frame
+        # window resize (which reflows and jitters the whole window).
+        if self._on_resize is not None:
+            self._on_resize(target - self._collapsed_height)
 
         def on_complete():
             self._animating = False
             self.pack_propagate(True)
+            # Correct the up-front estimate once the reveal has settled (one
+            # resize — the delta from _expanded_height can be a few px off).
+            if self._on_resize is not None:
+                self._on_resize(0)
 
         if not animate:
             on_complete()
@@ -924,6 +931,9 @@ class CollapsibleSection(ctk.CTkFrame):
             self.chevron.configure(text="\u25BC")
             self.header_frame.pack_configure(
                 pady=(PADDING_PANEL_Y // 2, PADDING_PANEL_Y // 2))
+            # Shrink the window ONCE, after the body has fully collapsed.
+            if self._on_resize is not None:
+                self._on_resize(0)
 
         if not animate:
             self.pack_propagate(False)
@@ -2000,15 +2010,16 @@ class BreakApp:
         max_h = int(screen_h * SETTINGS_WINDOW_MAX_HEIGHT_RATIO)
         return max(min_h, min(content + SETTINGS_WINDOW_HEIGHT_SLACK, max_h))
 
-    def _resize_settings_to_content(self):
-        """Snap the window to fit its content (one resize, no animation). Tk
-        re-lays-out the whole window on every resize step, so an animated resize
-        jitters the text — an instant snap, like macOS System Settings, is the
-        clean choice. Show the scrollbar only when content still overflows."""
+    def _resize_settings_to_content(self, delta=0):
+        """Resize the window to fit its content in ONE step (no per-frame window
+        animation — that reflows and jitters the text). `delta` lets an expanding
+        section pre-grow the window by the height it's about to reveal, so the
+        section can then animate inside a stable window. Scrollbar shows only
+        when content still overflows."""
         win = getattr(self, '_settings_window', None)
         if win is None or not win.winfo_exists():
             return
-        content = self._settings_content_height()
+        content = self._settings_content_height() + delta
         target = self._settings_target_height(content)
         self._show_settings_scrollbar(content > target)
         self._apply_settings_height(target)
