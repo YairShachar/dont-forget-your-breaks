@@ -28,6 +28,7 @@ from dfyb.updater import (
     BASE_DIR,
 )
 from dfyb.animation import ease_out_quad, prefers_reduced_motion, lerp_color
+from dfyb.geometry import point_in_rect
 from dfyb.theme import resolve_font_family, resolve_color
 from dfyb.ring import ring_image
 from dfyb.activity.event_log import (
@@ -200,6 +201,7 @@ DOT_SIZE = 10            # status dot diameter
 ICON_CHIP = 40          # break-row icon chip (rounded square)
 TOOLTIP_DELAY_MS = 450   # gentle delay before a hover hint appears
 TOOLTIP_FADE_FRAMES = 8  # ~128ms fade in/out at ANIMATION_FRAME_INTERVAL
+TOOLTIP_POLL_MS = 120    # watchdog: re-check the pointer is still over the button
 PROGRESS_HEIGHT = 6     # slim progress-to-next-break bar
 HERO_PAD = SPACE_LG     # inner padding of the hero card
 DOT_PULSE_MS = 3200     # full breathe cycle of the on-track status dot
@@ -1334,6 +1336,7 @@ class BreakApp:
         self._tip_lbl = None    # shared hover-hint label
         self._tip_after = None  # pending show timer
         self._tip_fade = None   # pending fade frame
+        self._tip_watch = None  # pointer watchdog (hides even if <Leave> never fires)
         for i, config in enumerate(self.breaks):
             card = ctk.CTkFrame(main_frame, corner_radius=CORNER_RADIUS_PANEL,
                                 fg_color=COLORS['surface_card'])
@@ -2202,23 +2205,50 @@ class BreakApp:
                 del self._snooze_rows[eid]
 
     def _register_tooltip(self, widget, text):
-        """Bind a gentle hover hint. CTk widgets don't fire <Enter>/<Leave> on the
-        wrapper, but their internal canvas does — so bind there (reliable)."""
+        """Bind a gentle hover hint. The button's internal canvas fires <Enter>
+        (the wrapper doesn't), so we schedule the hint there. We do NOT trust
+        <Leave>: on macOS it silently fails to fire when the pointer exits the
+        window (e.g. onto another app), which strands the chip. Instead a timer
+        watches the pointer's real screen position and hides when it leaves."""
         canvas = getattr(widget, "_canvas", widget)
         canvas.bind("<Enter>", lambda _e: self._tip_schedule(widget, text), add="+")
-        canvas.bind("<Leave>", lambda _e: self._tip_hide(), add="+")
 
     def _tip_schedule(self, widget, text):
         if self._tip_after is not None:
             self.root.after_cancel(self._tip_after)
         self._tip_after = self.root.after(
             TOOLTIP_DELAY_MS, lambda: self._tip_show(widget, text))
+        self._tip_watch_start(widget)   # guard the whole delay→show→shown lifetime
+
+    def _pointer_over(self, widget):
+        """True if the mouse's screen coords fall inside the widget's rectangle.
+        Geometry-based (not event/hit-test based) so it stays correct even when
+        the pointer has left the app window without emitting a <Leave>."""
+        px, py = self.root.winfo_pointerxy()
+        return point_in_rect(px, py, widget.winfo_rootx(), widget.winfo_rooty(),
+                             widget.winfo_width(), widget.winfo_height())
+
+    def _tip_watch_start(self, widget):
+        if self._tip_watch is not None:
+            self.root.after_cancel(self._tip_watch)
+        self._tip_watch = self.root.after(
+            TOOLTIP_POLL_MS, lambda: self._tip_watch_tick(widget))
+
+    def _tip_watch_tick(self, widget):
+        self._tip_watch = None
+        if not self._pointer_over(widget):
+            self._tip_hide()                 # pointer gone — hide even with no <Leave>
+        elif self._tip_after is not None or (
+                self._tip_lbl is not None and self._tip_lbl.winfo_ismapped()):
+            self._tip_watch_start(widget)    # still hovering — keep watching
 
     def _tip_hide(self):
-        # Reliable + instant: the canvas <Leave> always fires when the pointer exits.
         if self._tip_after is not None:
             self.root.after_cancel(self._tip_after)
             self._tip_after = None
+        if self._tip_watch is not None:
+            self.root.after_cancel(self._tip_watch)
+            self._tip_watch = None
         if self._tip_fade is not None:
             self.root.after_cancel(self._tip_fade)
             self._tip_fade = None
