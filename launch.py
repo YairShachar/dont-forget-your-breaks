@@ -1355,9 +1355,9 @@ class BreakApp:
             timer_label = ctk.CTkLabel(row, text="--:--", font=make_font('body'), anchor="e")
             timer_label.pack(side="right")
             play_btn = ctk.CTkButton(
-                row, text="", image=load_icon('play', size=13),
+                row, text="", image=load_icon('play', size=14),
                 command=lambda c=config: self.break_now(c),
-                width=26, height=26, corner_radius=CORNER_RADIUS_INPUT,
+                width=22, height=26, corner_radius=CORNER_RADIUS_INPUT,
                 fg_color="transparent", hover_color=COLORS['surface_hover'])
             play_btn.pack(side="right", padx=(0, SPACE_XXS))
             self._tooltip_targets.append((play_btn, "Break now"))
@@ -2210,8 +2210,28 @@ class BreakApp:
         self._tip_after = None     # pending show timer
         self._tip_fade = None      # pending fade frame
         self._tip_hide_job = None  # guaranteed-hide backstop (no ghost box)
+        self._tip_poll_job = None  # while shown, poll the pointer (catches window-exit)
         self.root.bind("<Motion>", self._on_tooltip_motion, add="+")
         self.root.bind("<Leave>", self._on_root_leave, add="+")
+
+    def _tip_poll(self):
+        """While a hint is shown, keep checking the pointer is still on its target
+        — root <Motion>/<Leave> stop firing once the pointer leaves the window."""
+        self._tip_poll_job = None
+        if self._tip_lbl is None or not self._tip_lbl.winfo_ismapped():
+            return
+        widget = self._tip_widget
+        over = False
+        if widget is not None:
+            node = self.root.winfo_containing(*self.root.winfo_pointerxy())
+            path = str(node) if node is not None else ""
+            wp = str(widget)
+            over = path == wp or path.startswith(wp + ".")
+        if not over:
+            self._tip_widget = None
+            self._tip_hide()
+            return
+        self._tip_poll_job = self.root.after(120, self._tip_poll)
 
     def _on_tooltip_motion(self, _event=None):
         node = self.root.winfo_containing(*self.root.winfo_pointerxy())
@@ -2247,6 +2267,9 @@ class BreakApp:
         self._tip_hide()
 
     def _tip_hide(self):
+        if self._tip_poll_job is not None:
+            self.root.after_cancel(self._tip_poll_job)
+            self._tip_poll_job = None
         if self._tip_lbl is None or not self._tip_lbl.winfo_ismapped():
             return
         self._tip_fade_start(fading_in=False)
@@ -2278,6 +2301,9 @@ class BreakApp:
         self._tip_lbl.place(x=max(SPACE_XXS, bx - w // 2), y=by - h - SPACE_XXS)
         self._tip_lbl.lift()
         self._tip_fade_start(fading_in=True)
+        if self._tip_poll_job is not None:
+            self.root.after_cancel(self._tip_poll_job)
+        self._tip_poll_job = self.root.after(120, self._tip_poll)
 
     def _tip_fade_start(self, fading_in):
         if self._tip_fade is not None:
