@@ -198,7 +198,6 @@ BUTTON_HEIGHT_XLARGE = 40   # Popup actions (Snooze / ▾ / Done / Set)
 # Cockpit status hero
 DOT_SIZE = 10            # status dot diameter
 ICON_CHIP = 40          # break-row icon chip (rounded square)
-ROW_VALUE_WIDTH = 54    # right slot for the countdown
 TOOLTIP_DELAY_MS = 450  # gentle delay before a hover hint appears
 PROGRESS_HEIGHT = 6     # slim progress-to-next-break bar
 HERO_PAD = SPACE_LG     # inner padding of the hero card
@@ -1254,7 +1253,8 @@ class BreakApp:
         hero.pack(fill="x", pady=(0, SPACE_XS))
 
         hero_top = ctk.CTkFrame(hero, fg_color="transparent")
-        hero_top.pack(fill="x", padx=HERO_PAD, pady=(HERO_PAD, SPACE_XS))
+        # Less right padding so the gear sits closer to the edge (not "too centered").
+        hero_top.pack(fill="x", padx=(HERO_PAD, SPACE_SM), pady=(HERO_PAD, SPACE_XS))
 
         # Breathing status dot (centered in a fixed-size wrap for baseline align)
         dot_wrap = ctk.CTkFrame(hero_top, fg_color="transparent",
@@ -1347,22 +1347,18 @@ class BreakApp:
                 fg_color=TILE_CHIP_COLORS.get(icon_name, COLORS['surface_hover']))
             icon_chip.pack(side="left")
 
-            # Countdown (right slot).
-            value = ctk.CTkFrame(row, fg_color="transparent",
-                                 width=ROW_VALUE_WIDTH, height=ICON_CHIP)
-            value.pack(side="right")
-            value.pack_propagate(False)
-            timer_label = ctk.CTkLabel(value, text="--:--", font=make_font('body'))
-            timer_label.place(relx=1.0, rely=0.5, anchor="e")
-
-            # Quiet "take this break now" button — its own column, always visible,
-            # in the app's ghost-icon language (not a loud accent pill) (#5).
+            # Right cluster: the countdown, with a quiet "take this break now"
+            # button grouped immediately to its left (#5). The countdown is the
+            # rightmost element; the play button sits tight against it, not adrift
+            # in the middle.
+            timer_label = ctk.CTkLabel(row, text="--:--", font=make_font('body'), anchor="e")
+            timer_label.pack(side="right")
             play_btn = ctk.CTkButton(
                 row, text="", image=load_icon('play', size=13),
                 command=lambda c=config: self.break_now(c),
                 width=26, height=26, corner_radius=CORNER_RADIUS_INPUT,
                 fg_color="transparent", hover_color=COLORS['surface_hover'])
-            play_btn.pack(side="right", padx=(SPACE_XS, SPACE_SM))
+            play_btn.pack(side="right", padx=(0, SPACE_SM))
             self._tooltip_targets.append((play_btn, "Break now"))
 
             # Meta (middle): name + interval subtitle
