@@ -2259,7 +2259,12 @@ class BreakApp:
                 self.root.after_cancel(handle)
                 setattr(self, attr, None)
         if self._tip_lbl is not None:
-            self._tip_lbl.place_forget()
+            # DESTROY, not place_forget(): on Tk 9 Aqua place_forget() unmaps the
+            # overlay logically (winfo_ismapped→0) but never repaints the vacated
+            # pixels, so the chip ghosts on screen forever. destroy() tears down
+            # the NSView and forces the region to redraw. _tip_show recreates it.
+            self._tip_lbl.destroy()
+            self._tip_lbl = None
 
     def _tip_show(self, widget, text):
         self._tip_after = None
@@ -2275,31 +2280,28 @@ class BreakApp:
         by = widget.winfo_rooty() - self.root.winfo_rooty()
         self._tip_lbl.place(x=max(SPACE_XXS, bx - w // 2), y=by - h - SPACE_XXS)
         self._tip_lbl.lift()
-        self._tip_fade_start(fading_in=True)
+        self._tip_fade_in()
 
-    def _tip_fade_start(self, fading_in):
+    def _tip_fade_in(self):
+        # Fade-in only. Hiding is a single destroy() path in _tip_hide (a fade-out
+        # would just animate a chip that Aqua then ghosts anyway — see _tip_hide).
         if self._tip_fade is not None:
             self.root.after_cancel(self._tip_fade)
             self._tip_fade = None
         if prefers_reduced_motion():
-            self._tip_paint(1.0 if fading_in else 0.0)
-            if not fading_in and self._tip_lbl is not None:
-                self._tip_lbl.place_forget()
+            self._tip_paint(1.0)
             return
-        self._tip_fade_step(0, fading_in)
+        self._tip_fade_step(0)
 
-    def _tip_fade_step(self, frame, fading_in):
+    def _tip_fade_step(self, frame):
         if self._tip_lbl is None:
             return
-        t = ease_out_quad(min(1.0, frame / TOOLTIP_FADE_FRAMES))
-        self._tip_paint(t if fading_in else 1.0 - t)
+        self._tip_paint(ease_out_quad(min(1.0, frame / TOOLTIP_FADE_FRAMES)))
         if frame < TOOLTIP_FADE_FRAMES:
             self._tip_fade = self.root.after(
-                ANIMATION_FRAME_INTERVAL, lambda: self._tip_fade_step(frame + 1, fading_in))
+                ANIMATION_FRAME_INTERVAL, lambda: self._tip_fade_step(frame + 1))
         else:
             self._tip_fade = None
-            if not fading_in:
-                self._tip_lbl.place_forget()
 
     def _tip_paint(self, alpha):
         """Fade the chip from the card background (alpha 0, invisible) to full."""
