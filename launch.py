@@ -1994,13 +1994,12 @@ class BreakApp:
         _bind(self._settings_window)
 
     def _settings_content_height(self):
-        """Actual height the content needs (robust to per-monitor scaling: take
-        the larger of the frame's reqheight and the canvas content bbox)."""
+        """Height the content needs. Use reqheight only (fresh after
+        update_idletasks); the canvas bbox can lag a toggle and over-measure,
+        which made the window overshoot then clip back."""
         container = self._settings_container
         container.update_idletasks()
-        bbox = container._parent_canvas.bbox("all")
-        bbox_h = (bbox[3] - bbox[1]) if bbox else 0
-        return max(container.winfo_reqheight(), bbox_h) + 2 * PADDING_WINDOW
+        return container.winfo_reqheight() + 2 * PADDING_WINDOW
 
     def _settings_target_height(self, content):
         """Clamp the content height to a screen-relative [min, max], plus a slack
