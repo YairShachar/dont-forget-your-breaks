@@ -2444,9 +2444,12 @@ class BreakApp:
     def _tip_place(self, widget, text):
         """Create (if needed), label, and position the chip above `widget`."""
         if self._tip_lbl is None:
+            # bg_color matches the card so the label's bounding box doesn't show a
+            # dark ring at the rounded corners (the default bg is the darker window
+            # background, which read as an accidental stroke against the card).
             self._tip_lbl = ctk.CTkLabel(
                 self.root, text="", font=make_font('caption'), height=22,
-                corner_radius=CORNER_RADIUS_INPUT)
+                corner_radius=CORNER_RADIUS_INPUT, bg_color=COLORS['surface_card'])
         self._tip_lbl.configure(text=f"  {text}  ")   # breathing room around the text
         self._tip_lbl.update_idletasks()
         w, h = self._tip_lbl.winfo_reqwidth(), self._tip_lbl.winfo_reqheight()
@@ -2482,11 +2485,14 @@ class BreakApp:
                 self._tip_hide()   # destroy only after fully faded — no ghost
 
     def _tip_paint(self, alpha):
-        """Fade the chip from the card background (alpha 0, invisible) to full."""
+        """Fade the chip from the card background (alpha 0, invisible) to full.
+        bg_color tracks fg_color so the rounded-corner background matches the
+        fill — no dark ring at the anti-aliased edge."""
         mode = ctk.get_appearance_mode()
         base = resolve_color(COLORS['surface_card'], mode)
+        fill = lerp_color(base, resolve_color(COLORS['surface_hover'], mode), alpha)
         self._tip_lbl.configure(
-            fg_color=lerp_color(base, resolve_color(COLORS['surface_hover'], mode), alpha),
+            fg_color=fill, bg_color=fill,
             text_color=lerp_color(base, resolve_color(COLORS['text_secondary'], mode), alpha))
 
     def _row_subtitle(self, config):
