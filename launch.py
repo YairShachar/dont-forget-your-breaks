@@ -1275,7 +1275,7 @@ class BreakApp:
         self.settings_btn = ctk.CTkButton(
             hero_top, text="", image=load_icon('gear', size=17),
             command=self._open_settings,
-            width=28, height=28, corner_radius=CORNER_RADIUS_INPUT,
+            width=22, height=28, corner_radius=CORNER_RADIUS_INPUT,
             fg_color="transparent", hover_color=COLORS['surface_hover'])
         self.settings_btn.pack(side="right")
 
@@ -1330,6 +1330,7 @@ class BreakApp:
         self._timer_labels = []
         self._cue_labels = []
         self._interval_labels = []
+        self._row_hover = []   # (card, break_now button) for motion-driven hover
         for i, config in enumerate(self.breaks):
             card = ctk.CTkFrame(main_frame, corner_radius=CORNER_RADIUS_PANEL,
                                 fg_color=COLORS['surface_card'])
@@ -1388,10 +1389,7 @@ class BreakApp:
                             lambda e, c=config: self._edit_break_config(c))
 
             # Reveal "Break now" beside the countdown while the row is hovered (#5)
-            self._bind_row_hover(
-                (card, row, icon_chip, meta, name_label, interval_label,
-                 value, timer_label, break_now),
-                break_now)
+            self._row_hover.append((card, break_now))
 
         # Snoozed-break section (dynamic rows appear while a snooze is pending).
         # height=0 so the empty container doesn't reserve CTkFrame's default 200px
@@ -1447,6 +1445,11 @@ class BreakApp:
         self.root.bind('<Command-s>', lambda e: self._handle_toggle())
         self.root.bind('<Command-comma>', lambda e: self._open_settings())
         self.root.bind('<Command-period>', lambda e: self.reset() if self.running else None)
+
+        # Row hover (Break-now reveal): CTk frames don't fire <Enter>/<Leave>, so
+        # drive it from root motion, and clear it when the pointer leaves the window.
+        self.root.bind('<Motion>', self._update_row_hover, add="+")
+        self.root.bind('<Leave>', self._update_row_hover, add="+")
 
         # Start UI update loop
         self.update_ui()
@@ -2199,27 +2202,22 @@ class BreakApp:
                 self._snooze_rows[eid]["frame"].destroy()
                 del self._snooze_rows[eid]
 
-    def _bind_row_hover(self, widgets, action_btn):
-        """Reveal `action_btn` (Break now) to the LEFT of the countdown while the
-        pointer is anywhere on the row (the countdown stays visible); hide it on
-        leave. A deferred pointer check (by Tk path prefix) keeps it steady while
-        crossing the row's child widgets."""
-        card_path = str(widgets[0])
-
-        def show(_=None):
-            action_btn.place(relx=1.0, rely=0.5, anchor="e",
-                             x=-(ROW_VALUE_WIDTH + SPACE_SM))
-
-        def hide_if_outside():
-            node = self.root.winfo_containing(*self.root.winfo_pointerxy())
-            path = str(node) if node is not None else ""
-            if path == card_path or path.startswith(card_path + "."):
-                return                     # still within the row → keep revealed
-            action_btn.place_forget()
-
-        for w in widgets:
-            w.bind("<Enter>", show, add="+")
-            w.bind("<Leave>", lambda _e: self.root.after(60, hide_if_outside), add="+")
+    def _update_row_hover(self, _event=None):
+        """Reveal the Break-now button on whichever break row the pointer is over
+        (countdown stays visible). Driven by root <Motion> because CTk frames
+        don't reliably fire <Enter>/<Leave>."""
+        node = self.root.winfo_containing(*self.root.winfo_pointerxy())
+        path = str(node) if node is not None else ""
+        for card, btn in self._row_hover:
+            cp = str(card)
+            over = path == cp or path.startswith(cp + ".")
+            mapped = bool(btn.winfo_ismapped())
+            if over and not mapped:
+                btn.place(relx=1.0, rely=0.5, anchor="e",
+                          x=-(ROW_VALUE_WIDTH + SPACE_SM))
+                btn.lift()   # created before `meta`, so raise it above the row
+            elif not over and mapped:
+                btn.place_forget()
 
     def _row_subtitle(self, config):
         """Interval · duration label for a break row, e.g. 'every 15 min · 20 sec'."""
