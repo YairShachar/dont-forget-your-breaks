@@ -198,8 +198,7 @@ BUTTON_HEIGHT_XLARGE = 40   # Popup actions (Snooze / ▾ / Done / Set)
 # Cockpit status hero
 DOT_SIZE = 10            # status dot diameter
 ICON_CHIP = 40          # break-row icon chip (rounded square)
-ROW_VALUE_WIDTH = 54    # right slot for the countdown (always visible)
-ROW_ACTION_WIDTH = 96   # the Break-now button revealed on hover, left of the countdown
+ROW_VALUE_WIDTH = 54    # right slot for the countdown
 PROGRESS_HEIGHT = 6     # slim progress-to-next-break bar
 HERO_PAD = SPACE_LG     # inner padding of the hero card
 DOT_PULSE_MS = 3200     # full breathe cycle of the on-track status dot
@@ -1330,7 +1329,6 @@ class BreakApp:
         self._timer_labels = []
         self._cue_labels = []
         self._interval_labels = []
-        self._row_hover = []   # (card, break_now button) for motion-driven hover
         for i, config in enumerate(self.breaks):
             card = ctk.CTkFrame(main_frame, corner_radius=CORNER_RADIUS_PANEL,
                                 fg_color=COLORS['surface_card'])
@@ -1347,20 +1345,22 @@ class BreakApp:
                 fg_color=TILE_CHIP_COLORS.get(icon_name, COLORS['surface_hover']))
             icon_chip.pack(side="left")
 
-            # Value slot (right): the countdown stays visible. On row hover a
-            # "Break now" button reveals to its LEFT (overlay — nothing vanishes).
+            # Countdown (right slot).
             value = ctk.CTkFrame(row, fg_color="transparent",
                                  width=ROW_VALUE_WIDTH, height=ICON_CHIP)
             value.pack(side="right")
             value.pack_propagate(False)
             timer_label = ctk.CTkLabel(value, text="--:--", font=make_font('body'))
             timer_label.place(relx=1.0, rely=0.5, anchor="e")
-            break_now = ctk.CTkButton(
-                row, text="Break now", command=lambda c=config: self.break_now(c),
-                width=ROW_ACTION_WIDTH, height=28, corner_radius=CORNER_RADIUS_INPUT,
-                fg_color=COLORS['accent_primary'],
-                hover_color=COLORS['accent_primary_hover'],
-                font=make_font('caption', weight="bold"))  # placed on hover
+
+            # Quiet "take this break now" button — its own column, always visible,
+            # in the app's ghost-icon language (not a loud accent pill) (#5).
+            ctk.CTkButton(
+                row, text="", image=load_icon('play', size=13),
+                command=lambda c=config: self.break_now(c),
+                width=26, height=26, corner_radius=CORNER_RADIUS_INPUT,
+                fg_color="transparent", hover_color=COLORS['surface_hover']
+            ).pack(side="right", padx=(0, SPACE_XS))
 
             # Meta (middle): name + interval subtitle
             meta = ctk.CTkFrame(row, fg_color="transparent")
@@ -1387,9 +1387,6 @@ class BreakApp:
             for widget in (card, row, meta, name_label, timer_label, interval_label):
                 widget.bind("<Double-Button-1>",
                             lambda e, c=config: self._edit_break_config(c))
-
-            # Reveal "Break now" beside the countdown while the row is hovered (#5)
-            self._row_hover.append((card, break_now))
 
         # Snoozed-break section (dynamic rows appear while a snooze is pending).
         # height=0 so the empty container doesn't reserve CTkFrame's default 200px
@@ -1445,11 +1442,6 @@ class BreakApp:
         self.root.bind('<Command-s>', lambda e: self._handle_toggle())
         self.root.bind('<Command-comma>', lambda e: self._open_settings())
         self.root.bind('<Command-period>', lambda e: self.reset() if self.running else None)
-
-        # Row hover (Break-now reveal): CTk frames don't fire <Enter>/<Leave>, so
-        # drive it from root motion, and clear it when the pointer leaves the window.
-        self.root.bind('<Motion>', self._update_row_hover, add="+")
-        self.root.bind('<Leave>', self._update_row_hover, add="+")
 
         # Start UI update loop
         self.update_ui()
@@ -1980,9 +1972,10 @@ class BreakApp:
             pass
         return screens[0]
 
-    def trigger_break(self, config, held_reason=None):
+    def trigger_break(self, config, held_reason=None, preview=False):
         """Queue a break with the given configuration (skips a duplicate that's
-        already showing / queued / pending-snoozed) (#50)."""
+        already showing / queued / pending-snoozed) (#50). `preview=True` shows the
+        popup without touching the schedule (Test) — see #54."""
         name = config.name.get()
         queued = [b['name'] for b in self.break_queue]
         pending = [e['name'] for e in self._pending_snoozes]
@@ -1998,6 +1991,7 @@ class BreakApp:
             'end_sound': config.end_sound.get(),
             'loop_end_sound': config.loop_end_sound.get(),
             'held_reason': held_reason,
+            'preview': preview,
         }
         self.break_queue.append(break_data)
         self.root.after(0, self._process_break_queue)
@@ -2018,24 +2012,27 @@ class BreakApp:
 
         def on_popup_close():
             elapsed = int(time.time() - self.break_start_time) if self.break_start_time else 0
-            # Runs on the main thread. EventLog.append has no internal lock, but the
-            # timer thread skips all event-log writes while self.active_popup is set
-            # (cleared further down), so this call never interleaves with the loop's appends.
-            self._record_event(
-                BREAK_TAKEN,
-                name=break_data['name'],
-                duration=break_data['duration'],
-                used_seconds=elapsed,
-            )
-            for queued_break in self.break_queue:
-                queued_break['duration'] -= elapsed
+            # A preview (Test) must not touch the schedule: no BREAK_TAKEN event, no
+            # timer reset, no charging elapsed time to other queued breaks (#54).
+            if not break_data.get('preview'):
+                # Runs on the main thread. EventLog.append has no internal lock, but the
+                # timer thread skips all event-log writes while self.active_popup is set
+                # (cleared further down), so this call never interleaves with the loop's appends.
+                self._record_event(
+                    BREAK_TAKEN,
+                    name=break_data['name'],
+                    duration=break_data['duration'],
+                    used_seconds=elapsed,
+                )
+                for queued_break in self.break_queue:
+                    queued_break['duration'] -= elapsed
 
-            # Taking a break restarts its own scheduler timer so it can't be
-            # re-fired immediately (e.g. after a snooze / short interval) (#45).
-            for config in self.breaks:
-                if config.name.get() == break_data['name']:
-                    config.reset_timer()
-                    break
+                # Taking a break restarts its own scheduler timer so it can't be
+                # re-fired immediately (e.g. after a snooze / short interval) (#45).
+                for config in self.breaks:
+                    if config.name.get() == break_data['name']:
+                        config.reset_timer()
+                        break
 
             self.active_popup = None
             self._active_break_name = None
@@ -2138,8 +2135,8 @@ class BreakApp:
             remaining_seconds=snooze_remaining(entry["fire_time"], time.time()))
 
     def test_break(self, config):
-        """Test a specific break configuration."""
-        self.trigger_break(config)
+        """Preview a break configuration without affecting its schedule (#54)."""
+        self.trigger_break(config, preview=True)
 
     def break_now(self, config):
         """Take this break immediately: reset its countdown and show the popup.
@@ -2201,23 +2198,6 @@ class BreakApp:
             if eid not in current:
                 self._snooze_rows[eid]["frame"].destroy()
                 del self._snooze_rows[eid]
-
-    def _update_row_hover(self, _event=None):
-        """Reveal the Break-now button on whichever break row the pointer is over
-        (countdown stays visible). Driven by root <Motion> because CTk frames
-        don't reliably fire <Enter>/<Leave>."""
-        node = self.root.winfo_containing(*self.root.winfo_pointerxy())
-        path = str(node) if node is not None else ""
-        for card, btn in self._row_hover:
-            cp = str(card)
-            over = path == cp or path.startswith(cp + ".")
-            mapped = bool(btn.winfo_ismapped())
-            if over and not mapped:
-                btn.place(relx=1.0, rely=0.5, anchor="e",
-                          x=-(ROW_VALUE_WIDTH + SPACE_SM))
-                btn.lift()   # created before `meta`, so raise it above the row
-            elif not over and mapped:
-                btn.place_forget()
 
     def _row_subtitle(self, config):
         """Interval · duration label for a break row, e.g. 'every 15 min · 20 sec'."""
