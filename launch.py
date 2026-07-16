@@ -191,8 +191,9 @@ ROW_META_LINE_PAD = 2    # breathing inside each meta line box (added to font li
 ROW_META_LINE_GAP = 1    # gap between a break's title and its subtitle (group them tightly)
 SETTINGS_SUBOPTION_INDENT = 12   # left inset for a nested sub-option block
 SETTINGS_SUBOPTION_RULE_W = 2    # width of the hairline marking a nested sub-block
-# Which General-settings sections open on first ever launch (persisted thereafter).
-SECTION_DEFAULT_EXPANDED = {"smart_pausing": True, "break_popup": False, "app": False}
+# Which settings categories open on first ever launch (persisted thereafter).
+SECTION_DEFAULT_EXPANDED = {"breaks": True, "smart_pausing": True,
+                            "break_popup": False, "app": False}
 
 # Corner radii
 CORNER_RADIUS_PANEL = 10
@@ -245,6 +246,8 @@ PANEL_COLLAPSED_HEIGHT = 48      # Height of collapsed panel header
 # Settings window
 SETTINGS_WINDOW_WIDTH = 600             # px; height auto-fits the content
 SETTINGS_WINDOW_MAX_HEIGHT_RATIO = 0.9  # cap auto-height at 90% of screen height
+SETTINGS_WINDOW_MIN_HEIGHT = 200        # floor when everything is collapsed
+SETTINGS_WINDOW_OPACITY = 0.95          # slight translucency (0..1)
 SETTINGS_WINDOW_Y_OFFSET = 80           # px the window sits above the main window
 
 # Break popup
@@ -815,12 +818,13 @@ class CollapsibleSection(ctk.CTkFrame):
     sections so both use one animation and one visual grammar."""
 
     def __init__(self, parent, title, *, expanded=True, on_toggle=None,
-                 title_font=None):
+                 on_resize=None, title_font=None):
         super().__init__(parent, corner_radius=CORNER_RADIUS_PANEL,
                          fg_color=COLORS['surface_card'])
         self._initial_expanded = expanded
         self._expanded = True            # built expanded; finalize() collapses if asked
         self._on_toggle = on_toggle
+        self._on_resize = on_resize      # fired after a user toggle (to resize the window)
         self._animating = False
         self._animation_id = None
         self._expanded_height = None
@@ -833,13 +837,13 @@ class CollapsibleSection(ctk.CTkFrame):
         self.header_frame.pack(fill="x", padx=PADDING_PANEL_X,
                                pady=(PADDING_PANEL_Y // 2, 0))
         self.header_label = ctk.CTkLabel(self.header_frame, text=title,
-                                         font=font, cursor="hand2")
+                                         font=font, cursor="pointinghand")
         self.header_label.pack(side="left")
         self.header_right = ctk.CTkFrame(self.header_frame, fg_color="transparent")
         self.header_right.pack(side="right")
         self.chevron = ctk.CTkLabel(
             self.header_right, text="\u25B2", font=make_font('label'),
-            text_color=COLORS['text_secondary'], cursor="hand2")
+            text_color=COLORS['text_secondary'], cursor="pointinghand")
         self.chevron.pack(side="right")
         for widget in (self.header_frame, self.header_label, self.chevron):
             widget.bind("<Button-1>", lambda e: self.toggle_expand())
@@ -865,12 +869,17 @@ class CollapsibleSection(ctk.CTkFrame):
         """Hook: subclass header tweak when collapsing (e.g. show a summary)."""
 
     def toggle_expand(self):
+        # Instant (animate=False): the per-frame height reflow was janky inside the
+        # scrollable settings window. Smoothness now comes from the window resizing
+        # to fit via _on_resize, not from animating the frame's height.
         if self._expanded:
-            self.collapse()
+            self.collapse(animate=False)
         else:
-            self.expand()
+            self.expand(animate=False)
         if self._on_toggle is not None:
             self._on_toggle(self._expanded)
+        if self._on_resize is not None:
+            self._on_resize()
 
     def expand(self, animate=True):
         if self._expanded:
@@ -953,8 +962,8 @@ class CollapsibleSection(ctk.CTkFrame):
 class BreakConfigPanel(CollapsibleSection):
     """Collapsible panel for configuring a single break."""
 
-    def __init__(self, parent, config, on_test):
-        super().__init__(parent, title=config.name.get())
+    def __init__(self, parent, config, on_test, on_resize=None):
+        super().__init__(parent, title=config.name.get(), on_resize=on_resize)
         self.config = config
         self.on_test = on_test
         # Break-specific header summary: the timer, shown only when collapsed.
@@ -1776,6 +1785,7 @@ class BreakApp:
         self._settings_window.title("Break Settings")
         self._settings_window.resizable(False, True)
         self._settings_window.attributes('-topmost', self.always_on_top.get())
+        self._settings_window.attributes('-alpha', SETTINGS_WINDOW_OPACITY)  # slight translucency
         # Build hidden, then size to content and show — avoids a flash at the
         # wrong size and guarantees added settings are never clipped.
         self._settings_window.withdraw()
@@ -1786,29 +1796,34 @@ class BreakApp:
         self._settings_window.protocol("WM_DELETE_WINDOW", on_settings_close)
         self._settings_window.bind('<Escape>', lambda e: on_settings_close())
 
-        # Container
-        container = ctk.CTkFrame(self._settings_window, fg_color="transparent")
+        # Scrollable container so a fully-expanded settings window can scroll.
+        container = ctk.CTkScrollableFrame(self._settings_window, fg_color="transparent")
         container.pack(fill="both", expand=True, padx=PADDING_WINDOW, pady=PADDING_WINDOW)
+        self._settings_container = container
 
-        # Reuse existing BreakConfigPanel class
-        self._settings_panels = []
-        for config in self.breaks:
-            panel = BreakConfigPanel(container, config, self.test_break)
-            panel.pack(fill="x", pady=(0, ROW_SPACING))
-            self._settings_panels.append(panel)
-
-        # General settings — three collapsible sections (Smart pausing / Break
-        # popup / App). Each remembers its own open/closed state (persisted).
+        # Everything is a collapsible category (Breaks / Smart pausing / Break
+        # popup / App); each remembers its own open/closed state (persisted).
         self._settings_sections = []
 
         def _add_section(key, title):
             section = CollapsibleSection(
                 container, title,
                 expanded=self._sections_expanded.get(key, SECTION_DEFAULT_EXPANDED[key]),
-                on_toggle=lambda is_open, k=key: self._set_section_expanded(k, is_open))
+                on_toggle=lambda is_open, k=key: self._set_section_expanded(k, is_open),
+                on_resize=self._resize_settings_to_content)
             section.pack(fill="x", pady=(ROW_SPACING, 0))
             self._settings_sections.append(section)
             return section
+
+        # -- Breaks: each break is its own collapsible panel inside the category --
+        self._breaks_section = _add_section("breaks", "Breaks")
+        self._settings_panels = []
+        for config in self.breaks:
+            panel = BreakConfigPanel(self._breaks_section.body, config, self.test_break,
+                                     on_resize=self._resize_settings_to_content)
+            panel.pack(fill="x", pady=(0, ROW_SPACING))
+            self._settings_panels.append(panel)
+        self._breaks_section.finalize()
 
         def _checkbox(parent, text, variable):
             ctk.CTkCheckBox(parent, text=text, variable=variable,
@@ -1891,12 +1906,18 @@ class BreakApp:
         _checkbox(appsec.body, "Check for updates automatically", self.check_for_updates)
         appsec.finalize()
 
-        # Size the window to fit its content (so added settings never clip),
-        # capped at the screen height; center on the main window, then show.
+        # Trackpad/wheel scrolling over the whole content (not just the scrollbar).
+        self._enable_trackpad_scroll(container)
+
+        # Size the window to the scroll content, capped at the screen height —
+        # beyond the cap the container scrolls. Use the container's requested
+        # height (the window's own reqheight is just the scroll frame's minimum).
         self._settings_window.update_idletasks()
         max_height = int(self._settings_window.winfo_screenheight()
                          * SETTINGS_WINDOW_MAX_HEIGHT_RATIO)
-        height = min(self._settings_window.winfo_reqheight(), max_height)
+        content_height = container.winfo_reqheight() + 2 * PADDING_WINDOW
+        height = max(SETTINGS_WINDOW_MIN_HEIGHT, min(content_height, max_height))
+        self._show_settings_scrollbar(content_height > height)
         main_x = self.root.winfo_x()
         main_y = self.root.winfo_y()
         main_w = self.root.winfo_width()
@@ -1912,6 +1933,10 @@ class BreakApp:
         """Focus the settings panel that edits the given break (by identity)."""
         if config is None:
             return
+        breaks = getattr(self, '_breaks_section', None)
+        if breaks is not None and not breaks.is_expanded():
+            breaks.expand(animate=False)   # the break panels live inside this category
+            self._resize_settings_to_content()
         for panel in self._settings_panels:
             if panel.config is config:
                 panel.focus_config()
@@ -1933,6 +1958,53 @@ class BreakApp:
         """Remember a settings section's open/closed state across reopens/restarts."""
         self._sections_expanded[key] = is_open
         self._save_preferences()
+
+    def _enable_trackpad_scroll(self, scroll_frame):
+        """Make trackpad/wheel scrolling work ANYWHERE over the settings window.
+
+        CTk gates its own wheel handler on `check_if_master_is_canvas` and only
+        covers widgets inside the canvas — so the padding/edges don't scroll, and
+        small fractional trackpad deltas `int()`-truncate to 0 (two-finger drag
+        does nothing). Bind <MouseWheel> on every widget in the window and forward
+        to the canvas with a min step of 1; 'break' stops CTk's bind_all handler
+        from also firing (double speed)."""
+        canvas = scroll_frame._parent_canvas
+
+        def _on_wheel(event):
+            if canvas.yview() != (0.0, 1.0):          # only when there's overflow
+                step = -event.delta
+                canvas.yview_scroll(
+                    int(step) if abs(step) >= 1 else (1 if step > 0 else -1), "units")
+            return "break"
+
+        def _bind(widget):
+            widget.bind("<MouseWheel>", _on_wheel, add="+")
+            for child in widget.winfo_children():
+                _bind(child)
+
+        _bind(self._settings_window)
+
+    def _resize_settings_to_content(self):
+        """Grow/shrink the settings window to fit its content, clamped to
+        [MIN, screen*MAX]. Beyond the cap it scrolls — and only then is the
+        scrollbar shown."""
+        win = getattr(self, '_settings_window', None)
+        if win is None or not win.winfo_exists():
+            return
+        win.update_idletasks()
+        content = self._settings_container.winfo_reqheight() + 2 * PADDING_WINDOW
+        max_h = int(win.winfo_screenheight() * SETTINGS_WINDOW_MAX_HEIGHT_RATIO)
+        height = max(SETTINGS_WINDOW_MIN_HEIGHT, min(content, max_h))
+        win.geometry(f"{SETTINGS_WINDOW_WIDTH}x{height}")
+        self._show_settings_scrollbar(content > height)
+
+    def _show_settings_scrollbar(self, needed):
+        """Show the scrollbar only when the content overflows the window."""
+        scrollbar = self._settings_container._scrollbar
+        if needed:
+            scrollbar.grid()
+        else:
+            scrollbar.grid_remove()
 
     # ------------------ TIMER ------------------
 
