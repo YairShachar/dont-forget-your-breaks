@@ -119,6 +119,7 @@ FONT_SIZES = {
     'heading': 17,        # panel header, window title
     'body_emphasis': 16,  # popup primary message
     'subheading': 14,     # main control buttons, gear icon
+    'row_countdown': 16,  # break-row time-remaining — paired in weight with the ▶
     'body': 13,           # status, entries, timers
     'label': 12,          # field labels, chevron/▾ glyphs
     'caption': 10,        # helper/hint text
@@ -197,7 +198,7 @@ BUTTON_HEIGHT_SMALL = 28    # Test, play buttons
 BUTTON_HEIGHT_XLARGE = 40   # Popup actions (Snooze / ▾ / Done / Set)
 
 # Cockpit status hero
-DOT_SIZE = 10            # status dot diameter
+DOT_SIZE = 11            # status dot diameter
 ICON_CHIP = 40          # break-row icon chip (rounded square)
 PLAY_GLYPH_SIZE = 15    # "break now" ▶ — optically matched to the (airy) gear glyph
 PLAY_BTN_WIDTH = 24     # tight footprint so the ▶ hugs the countdown, not adrift
@@ -1360,7 +1361,7 @@ class BreakApp:
             # button grouped immediately to its left (#5). The countdown is the
             # rightmost element; the play button sits tight against it, not adrift
             # in the middle.
-            timer_label = ctk.CTkLabel(row, text="--:--", font=make_font('body'), anchor="e")
+            timer_label = ctk.CTkLabel(row, text="--:--", font=make_font('row_countdown'), anchor="e")
             timer_label.pack(side="right")
             play_btn = ctk.CTkButton(
                 row, text="", image=load_icon('play', size=PLAY_GLYPH_SIZE),
