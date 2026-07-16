@@ -29,6 +29,7 @@ from dfyb.updater import (
 )
 from dfyb.animation import ease_out_quad, prefers_reduced_motion, lerp_color
 from dfyb.geometry import point_in_rect
+from dfyb.settings_logic import suboption_state
 from dfyb.theme import resolve_font_family, resolve_color
 from dfyb.ring import ring_image
 from dfyb.activity.event_log import (
@@ -188,6 +189,10 @@ PADDING_PANEL_Y = SPACE_LG
 ROW_SPACING = SPACE_SM   # 10 → 8 (tighter rhythm, per proposal)
 ROW_META_LINE_PAD = 2    # breathing inside each meta line box (added to font linespace)
 ROW_META_LINE_GAP = 1    # gap between a break's title and its subtitle (group them tightly)
+SETTINGS_SUBOPTION_INDENT = 12   # left inset for a nested sub-option block
+SETTINGS_SUBOPTION_RULE_W = 2    # width of the hairline marking a nested sub-block
+# Which General-settings sections open on first ever launch (persisted thereafter).
+SECTION_DEFAULT_EXPANDED = {"smart_pausing": True, "break_popup": False, "app": False}
 
 # Corner radii
 CORNER_RADIUS_PANEL = 10
@@ -1148,6 +1153,8 @@ class BreakApp:
 
         # Load saved preferences or use defaults
         self.saved_prefs = self._load_preferences()
+        # Per-section open/closed state for the settings window (persisted).
+        self._sections_expanded = dict(self.saved_prefs.get("sections_expanded", {}))
 
         # Restore saved window position (size is derived from content after UI build)
         self._saved_position = None
@@ -1486,6 +1493,7 @@ class BreakApp:
             "count_mouse_move": self.count_mouse_move.get(),
             "snooze_seconds": self.snooze_seconds.get(),
             "last_update_check": self.saved_prefs.get("last_update_check", 0),
+            "sections_expanded": self._sections_expanded,
         }
         for config in self.breaks:
             prefs["breaks"].append({
@@ -1789,77 +1797,82 @@ class BreakApp:
             panel.pack(fill="x", pady=(0, ROW_SPACING))
             self._settings_panels.append(panel)
 
-        # General settings
-        general_frame = ctk.CTkFrame(container, corner_radius=CORNER_RADIUS_PANEL, fg_color=COLORS['surface_card'])
-        general_frame.pack(fill="x", pady=(ROW_SPACING, 0))
+        # General settings — three collapsible sections (Smart pausing / Break
+        # popup / App). Each remembers its own open/closed state (persisted).
+        self._settings_sections = []
 
-        ctk.CTkCheckBox(
-            general_frame, text="Always on top",
-            variable=self.always_on_top,
-            font=make_font('label')
-        ).pack(padx=PADDING_PANEL_X, pady=(PADDING_PANEL_Y, SPACE_XXS), anchor="w")
+        def _add_section(key, title):
+            section = CollapsibleSection(
+                container, title,
+                expanded=self._sections_expanded.get(key, SECTION_DEFAULT_EXPANDED[key]),
+                on_toggle=lambda is_open, k=key: self._set_section_expanded(k, is_open))
+            section.pack(fill="x", pady=(ROW_SPACING, 0))
+            self._settings_sections.append(section)
+            return section
 
-        ctk.CTkCheckBox(
-            general_frame, text="Check for updates automatically",
-            variable=self.check_for_updates,
-            font=make_font('label')
-        ).pack(padx=PADDING_PANEL_X, pady=(SPACE_XXS, SPACE_XXS), anchor="w")
+        def _checkbox(parent, text, variable):
+            ctk.CTkCheckBox(parent, text=text, variable=variable,
+                            font=make_font('label')).pack(
+                padx=PADDING_PANEL_X, pady=(SPACE_XXS, SPACE_XXS), anchor="w")
 
-        ctk.CTkCheckBox(
-            general_frame, text="Pause breaks while microphone is in use",
-            variable=self.defer_during_meetings,
-            font=make_font('label')
-        ).pack(padx=PADDING_PANEL_X, pady=(SPACE_XXS, SPACE_XXS), anchor="w")
+        # -- Smart pausing --
+        smart = _add_section("smart_pausing", "Smart pausing")
+        _checkbox(smart.body, "Pause breaks while microphone is in use",
+                  self.defer_during_meetings)
+        _checkbox(smart.body, "Pause breaks during fullscreen",
+                  self.defer_during_fullscreen)
+        _checkbox(smart.body, "Wait until you pause (typing or clicking)",
+                  self.defer_while_active)
 
-        ctk.CTkCheckBox(
-            general_frame, text="Pause breaks during fullscreen",
-            variable=self.defer_during_fullscreen,
-            font=make_font('label')
-        ).pack(padx=PADDING_PANEL_X, pady=(SPACE_XXS, SPACE_XXS), anchor="w")
+        # Nested sub-block under "Wait until you pause": indent + left hairline.
+        subwrap = ctk.CTkFrame(smart.body, fg_color="transparent")
+        subwrap.pack(fill="x", anchor="w",
+                     padx=(PADDING_PANEL_X + SETTINGS_SUBOPTION_INDENT, PADDING_PANEL_X),
+                     pady=(0, PADDING_PANEL_Y))
+        # height=1 + fill="y": a bare CTkFrame defaults to 200px tall (no children
+        # to shrink it), which would inflate the sub-block; fill stretches it to
+        # the actual content height instead.
+        ctk.CTkFrame(subwrap, width=SETTINGS_SUBOPTION_RULE_W, height=1,
+                     fg_color=COLORS['border']).pack(side="left", fill="y")
+        subblock = ctk.CTkFrame(subwrap, fg_color="transparent")
+        subblock.pack(side="left", fill="x", expand=True, padx=(SPACE_SM, 0))
 
-        ctk.CTkCheckBox(
-            general_frame, text="Wait until you pause (typing or clicking)",
-            variable=self.defer_while_active,
-            font=make_font('label')
-        ).pack(padx=PADDING_PANEL_X, pady=(SPACE_XXS, SPACE_XXS), anchor="w")
+        self._mouse_move_check = ctk.CTkCheckBox(
+            subblock, text="also count mouse movement",
+            variable=self.count_mouse_move, font=make_font('label'))
+        self._mouse_move_check.pack(pady=(0, SPACE_XXS), anchor="w")
 
-        ctk.CTkCheckBox(
-            general_frame, text="↳ also count mouse movement",
-            variable=self.count_mouse_move,
-            font=make_font('label'),
-            text_color=COLORS['text_secondary']
-        ).pack(padx=(PADDING_PANEL_X + ROW_SPACING, PADDING_PANEL_X),
-               pady=(0, SPACE_XXS), anchor="w")
-
-        pause_row = ctk.CTkFrame(general_frame, fg_color="transparent")
-        pause_row.pack(padx=(PADDING_PANEL_X + ROW_SPACING, PADDING_PANEL_X),
-                       pady=(0, SPACE_XXS), anchor="w", fill="x")
-        pause_value_label = ctk.CTkLabel(
-            pause_row, text=f"↳ Pause length: {self.activity_pause_seconds.get()} sec",
-            font=make_font('label'),
-            text_color=COLORS['text_secondary']
-        )
-        pause_value_label.pack(side="left")
+        pause_row = ctk.CTkFrame(subblock, fg_color="transparent")
+        pause_row.pack(anchor="w", fill="x")
+        self._pause_value_label = ctk.CTkLabel(
+            pause_row, text=f"Pause length: {self.activity_pause_seconds.get()} sec",
+            font=make_font('label'))
+        self._pause_value_label.pack(side="left")
 
         def _on_pause(value):
             secs = int(round(value))
             self.activity_pause_seconds.set(secs)
-            pause_value_label.configure(text=f"↳ Pause length: {secs} sec")
+            self._pause_value_label.configure(text=f"Pause length: {secs} sec")
 
-        pause_slider = ctk.CTkSlider(
+        self._pause_slider = ctk.CTkSlider(
             pause_row, from_=ACTIVITY_PAUSE_MIN, to=ACTIVITY_PAUSE_MAX,
-            number_of_steps=ACTIVITY_PAUSE_MAX - ACTIVITY_PAUSE_MIN, command=_on_pause
-        )
-        pause_slider.set(self.activity_pause_seconds.get())
-        pause_slider.pack(side="right")
+            number_of_steps=ACTIVITY_PAUSE_MAX - ACTIVITY_PAUSE_MIN, command=_on_pause)
+        self._pause_slider.set(self.activity_pause_seconds.get())
+        self._pause_slider.pack(side="right")
+        smart.finalize()
 
-        placement_row = ctk.CTkFrame(general_frame, fg_color="transparent")
+        # Grey out the sub-options live when "Wait until you pause" is off.
+        self._sync_activity_suboptions()
+        self.defer_while_active.trace_add(
+            'write', lambda *a: self._sync_activity_suboptions())
+
+        # -- Break popup --
+        popup = _add_section("break_popup", "Break popup")
+        placement_row = ctk.CTkFrame(popup.body, fg_color="transparent")
         placement_row.pack(padx=PADDING_PANEL_X, pady=(SPACE_XXS, PADDING_PANEL_Y),
                            anchor="w", fill="x")
-        ctk.CTkLabel(
-            placement_row, text="Break popup appears on",
-            font=make_font('label')
-        ).pack(side="left")
+        ctk.CTkLabel(placement_row, text="Appears on",
+                     font=make_font('label')).pack(side="left")
         value_to_label = {v: k for k, v in POPUP_PLACEMENT_LABELS.items()}
 
         def _on_placement(label):
@@ -1867,11 +1880,16 @@ class BreakApp:
 
         placement_menu = ctk.CTkOptionMenu(
             placement_row, values=list(POPUP_PLACEMENT_LABELS.keys()),
-            command=_on_placement,
-            font=make_font('label')
-        )
+            command=_on_placement, font=make_font('label'))
         placement_menu.set(value_to_label.get(self.popup_placement.get(), "Active screen"))
         placement_menu.pack(side="right")
+        popup.finalize()
+
+        # -- App --
+        appsec = _add_section("app", "App")
+        _checkbox(appsec.body, "Always on top", self.always_on_top)
+        _checkbox(appsec.body, "Check for updates automatically", self.check_for_updates)
+        appsec.finalize()
 
         # Size the window to fit its content (so added settings never clip),
         # capped at the screen height; center on the main window, then show.
@@ -1898,6 +1916,23 @@ class BreakApp:
             if panel.config is config:
                 panel.focus_config()
                 break
+
+    def _sync_activity_suboptions(self, *args):
+        """Enable/grey the 'wait until you pause' sub-options to match the parent."""
+        on = self.defer_while_active.get()
+        state = suboption_state(on)
+        for widget in (self._mouse_move_check, self._pause_slider):
+            if widget.winfo_exists():
+                widget.configure(state=state)
+        if self._pause_value_label.winfo_exists():
+            normal = ctk.ThemeManager.theme["CTkLabel"]["text_color"]
+            self._pause_value_label.configure(
+                text_color=normal if on else COLORS['text_secondary'])
+
+    def _set_section_expanded(self, key, is_open):
+        """Remember a settings section's open/closed state across reopens/restarts."""
+        self._sections_expanded[key] = is_open
+        self._save_preferences()
 
     # ------------------ TIMER ------------------
 
