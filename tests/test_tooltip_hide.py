@@ -40,6 +40,22 @@ def test_hide_destroys_the_chip_not_just_forgets_it():
         root.destroy()
 
 
+def test_redundant_enter_does_not_restart():
+    """macOS refires <Enter> on place()/lift(); a refire for the button we're
+    already tracking must be ignored, or it restarts the fade and flashes the
+    chip. Here: the second schedule must not replace the pending show timer."""
+    ctk, root, app = _make_app()
+    try:
+        play = _play_button(ctk, app._timer_labels[0].master)
+        app._tip_schedule(play, "Break now")
+        pending = app._tip_after
+        assert pending is not None
+        app._tip_schedule(play, "Break now")   # redundant <Enter>, same target
+        assert app._tip_after is pending        # same timer — not cancelled/restarted
+    finally:
+        root.destroy()
+
+
 def test_dismiss_still_ends_in_destroy(monkeypatch):
     """Fade-out must destroy the chip, not place_forget() it (which ghosts on Aqua).
     Forcing reduced motion makes the fade-out instant and deterministic."""

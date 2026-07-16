@@ -209,6 +209,7 @@ STATUS_DOT_NUDGE_Y = 2  # top-pad the dot down onto the text's OPTICAL centre; t
 TOOLTIP_DELAY_MS = 450   # gentle delay before a hover hint appears
 TOOLTIP_FADE_FRAMES = 8  # ~128ms fade in/out at ANIMATION_FRAME_INTERVAL
 TOOLTIP_POLL_MS = 120    # watchdog: re-check the pointer is still over the button
+TOOLTIP_MISS_LIMIT = 2   # consecutive off-target polls before hiding (edge-jitter guard)
 PROGRESS_HEIGHT = 6     # slim progress-to-next-break bar
 HERO_PAD = SPACE_LG     # inner padding of the hero card
 DOT_PULSE_MS = 3200     # full breathe cycle of the on-track status dot
@@ -1345,6 +1346,7 @@ class BreakApp:
         self._tip_fade = None   # pending fade frame
         self._tip_watch = None  # pointer watchdog (hides even if <Leave> never fires)
         self._tip_target = None  # widget the hint is tracking (authoritative)
+        self._tip_miss = 0       # consecutive off-target polls (edge-jitter hysteresis)
         for i, config in enumerate(self.breaks):
             card = ctk.CTkFrame(main_frame, corner_radius=CORNER_RADIUS_PANEL,
                                 fg_color=COLORS['surface_card'])
@@ -2227,17 +2229,24 @@ class BreakApp:
         canvas.bind("<Enter>", lambda _e: self._tip_schedule(widget, text), add="+")
 
     def _tip_schedule(self, widget, text):
+        # Ignore a redundant <Enter> for the button we're already handling. macOS
+        # refires <Enter> on the canvas when we place()/lift() the chip; without
+        # this guard each refire restarted the fade from 0, flashing the chip.
+        if widget is self._tip_target:
+            return
         self._tip_target = widget           # authoritative "what we're tracking"
+        self._tip_miss = 0
         if self._tip_after is not None:
             self.root.after_cancel(self._tip_after)
             self._tip_after = None
+        if self._tip_fade is not None:
+            self.root.after_cancel(self._tip_fade)
+            self._tip_fade = None
         if self._tip_lbl is not None:
-            # A chip is still on screen (mid fade-out, or the pointer hopped from a
-            # sibling ▶): cancel the fade and bring it straight back — no re-delay.
-            if self._tip_fade is not None:
-                self.root.after_cancel(self._tip_fade)
-                self._tip_fade = None
-            self._tip_show(widget, text)
+            # A chip is still on screen (switching from a sibling ▶, or reviving a
+            # fade-out): reposition and SNAP to full — no re-fade, so no pop/flash.
+            self._tip_place(widget, text)
+            self._tip_paint(1.0)
         else:
             self._tip_after = self.root.after(
                 TOOLTIP_DELAY_MS, lambda: self._tip_show(widget, text))
@@ -2258,16 +2267,21 @@ class BreakApp:
 
     def _tip_watch_tick(self):
         # Reschedule purely on target + pointer position — no dependency on the
-        # label's mapped-state timing (which raced and could kill the watchdog,
-        # stranding the chip). While a target is set and the pointer is over it,
-        # keep guarding; the instant it isn't, hide.
+        # label's mapped-state timing (which raced and could kill the watchdog).
+        # Require TOOLTIP_MISS_LIMIT consecutive off-target polls before hiding so
+        # a single edge-jitter sample can't flicker the chip out and back.
         self._tip_watch = None
         if self._tip_target is None:
             return
         if self._pointer_over(self._tip_target):
+            self._tip_miss = 0
             self._tip_watch_start()
         else:
-            self._tip_dismiss()
+            self._tip_miss += 1
+            if self._tip_miss >= TOOLTIP_MISS_LIMIT:
+                self._tip_dismiss()
+            else:
+                self._tip_watch_start()
 
     def _tip_dismiss(self):
         """Pointer left: stop tracking and fade the chip out (fade end → destroy)."""
@@ -2296,8 +2310,15 @@ class BreakApp:
             self._tip_lbl = None
 
     def _tip_show(self, widget, text):
+        """Fresh appearance after the hover delay: place the chip and fade it in."""
         self._tip_after = None
+        self._tip_miss = 0
         self._tip_watch_start()   # re-arm the guard for the shown phase
+        self._tip_place(widget, text)
+        self._tip_fade_start(out=False)
+
+    def _tip_place(self, widget, text):
+        """Create (if needed), label, and position the chip above `widget`."""
         if self._tip_lbl is None:
             self._tip_lbl = ctk.CTkLabel(
                 self.root, text="", font=make_font('caption'), height=22,
@@ -2309,7 +2330,6 @@ class BreakApp:
         by = widget.winfo_rooty() - self.root.winfo_rooty()
         self._tip_lbl.place(x=max(SPACE_XXS, bx - w // 2), y=by - h - SPACE_XXS)
         self._tip_lbl.lift()
-        self._tip_fade_start(out=False)
 
     def _tip_fade_start(self, out=False):
         # Fade in (out=False) or out (out=True). A fade-OUT ends by destroying the
