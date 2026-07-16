@@ -202,6 +202,8 @@ DOT_SIZE = 11            # status dot diameter
 ICON_CHIP = 40          # break-row icon chip (rounded square)
 PLAY_GLYPH_SIZE = 15    # "break now" ▶ — optically matched to the (airy) gear glyph
 PLAY_BTN_WIDTH = 24     # tight footprint so the ▶ hugs the countdown, not adrift
+STATUS_DOT_NUDGE_Y = 2  # top-pad the dot down onto the text's OPTICAL centre; the label
+                        # box-centre sits above the rendered glyphs, so plain centring reads high
 TOOLTIP_DELAY_MS = 450   # gentle delay before a hover hint appears
 TOOLTIP_FADE_FRAMES = 8  # ~128ms fade in/out at ANIMATION_FRAME_INTERVAL
 TOOLTIP_POLL_MS = 120    # watchdog: re-check the pointer is still over the button
@@ -1265,7 +1267,7 @@ class BreakApp:
         # Breathing status dot (centered in a fixed-size wrap for baseline align)
         dot_wrap = ctk.CTkFrame(hero_top, fg_color="transparent",
                                 width=DOT_SIZE, height=DOT_SIZE)
-        dot_wrap.pack(side="left")
+        dot_wrap.pack(side="left", pady=(STATUS_DOT_NUDGE_Y, 0))
         dot_wrap.pack_propagate(False)
         self.status_dot = ctk.CTkFrame(
             dot_wrap, width=DOT_SIZE, height=DOT_SIZE,
