@@ -246,8 +246,10 @@ PANEL_COLLAPSED_HEIGHT = 48      # Height of collapsed panel header
 # Settings window
 SETTINGS_WINDOW_WIDTH = 600             # px; height auto-fits the content
 SETTINGS_WINDOW_MAX_HEIGHT_RATIO = 0.9  # cap auto-height at 90% of screen height
-SETTINGS_WINDOW_MIN_HEIGHT = 200        # floor when everything is collapsed
+SETTINGS_WINDOW_MIN_HEIGHT_RATIO = 0.15  # floor as a fraction of screen height
 SETTINGS_WINDOW_OPACITY = 0.95          # slight translucency (0..1)
+SETTINGS_WINDOW_HEIGHT_SLACK = SPACE_LG  # margin below the last card so it never sits flush/cut
+SETTINGS_RESIZE_DURATION = 160          # ms; smooth window grow/shrink on expand/collapse
 SETTINGS_WINDOW_Y_OFFSET = 80           # px the window sits above the main window
 
 # Break popup
@@ -1909,20 +1911,18 @@ class BreakApp:
         # Trackpad/wheel scrolling over the whole content (not just the scrollbar).
         self._enable_trackpad_scroll(container)
 
-        # Size the window to the scroll content, capped at the screen height —
-        # beyond the cap the container scrolls. Use the container's requested
-        # height (the window's own reqheight is just the scroll frame's minimum).
+        # Size the window to its content (screen-relative min/max); beyond the
+        # cap the container scrolls. Placed centered over the main window, then
+        # clamped fully on-screen.
         self._settings_window.update_idletasks()
-        max_height = int(self._settings_window.winfo_screenheight()
-                         * SETTINGS_WINDOW_MAX_HEIGHT_RATIO)
-        content_height = container.winfo_reqheight() + 2 * PADDING_WINDOW
-        height = max(SETTINGS_WINDOW_MIN_HEIGHT, min(content_height, max_height))
+        content_height = self._settings_content_height()
+        height = self._settings_target_height(content_height)
         self._show_settings_scrollbar(content_height > height)
         main_x = self.root.winfo_x()
-        main_y = self.root.winfo_y()
         main_w = self.root.winfo_width()
         x = main_x + (main_w - SETTINGS_WINDOW_WIDTH) // 2
-        y = main_y - SETTINGS_WINDOW_Y_OFFSET
+        y = max(0, min(self.root.winfo_y() - SETTINGS_WINDOW_Y_OFFSET,
+                       self._settings_window.winfo_screenheight() - height))
         self._settings_window.geometry(f"{SETTINGS_WINDOW_WIDTH}x{height}+{x}+{y}")
         self._settings_window.deiconify()
         self._settings_window.lift()
@@ -1984,19 +1984,65 @@ class BreakApp:
 
         _bind(self._settings_window)
 
+    def _settings_content_height(self):
+        """Actual height the content needs (robust to per-monitor scaling: take
+        the larger of the frame's reqheight and the canvas content bbox)."""
+        container = self._settings_container
+        container.update_idletasks()
+        bbox = container._parent_canvas.bbox("all")
+        bbox_h = (bbox[3] - bbox[1]) if bbox else 0
+        return max(container.winfo_reqheight(), bbox_h) + 2 * PADDING_WINDOW
+
+    def _settings_target_height(self, content):
+        """Clamp the content height to a screen-relative [min, max], plus a slack
+        margin so the last card is never flush against the window edge."""
+        screen_h = self._settings_window.winfo_screenheight()
+        min_h = int(screen_h * SETTINGS_WINDOW_MIN_HEIGHT_RATIO)
+        max_h = int(screen_h * SETTINGS_WINDOW_MAX_HEIGHT_RATIO)
+        return max(min_h, min(content + SETTINGS_WINDOW_HEIGHT_SLACK, max_h))
+
     def _resize_settings_to_content(self):
-        """Grow/shrink the settings window to fit its content, clamped to
-        [MIN, screen*MAX]. Beyond the cap it scrolls — and only then is the
-        scrollbar shown."""
+        """Smoothly grow/shrink the window to fit its content; show the scrollbar
+        only when the (real) content still overflows the clamped window."""
         win = getattr(self, '_settings_window', None)
         if win is None or not win.winfo_exists():
             return
-        win.update_idletasks()
-        content = self._settings_container.winfo_reqheight() + 2 * PADDING_WINDOW
-        max_h = int(win.winfo_screenheight() * SETTINGS_WINDOW_MAX_HEIGHT_RATIO)
-        height = max(SETTINGS_WINDOW_MIN_HEIGHT, min(content, max_h))
-        win.geometry(f"{SETTINGS_WINDOW_WIDTH}x{height}")
-        self._show_settings_scrollbar(content > height)
+        content = self._settings_content_height()
+        target = self._settings_target_height(content)
+        self._show_settings_scrollbar(content > target)
+        self._animate_settings_height(win.winfo_height(), target)
+
+    def _animate_settings_height(self, start, end):
+        win = self._settings_window
+        if getattr(self, '_settings_resize_id', None):
+            self.root.after_cancel(self._settings_resize_id)
+            self._settings_resize_id = None
+        if start == end:
+            return
+        if prefers_reduced_motion():
+            self._apply_settings_height(end)
+            return
+        frames = max(1, SETTINGS_RESIZE_DURATION // ANIMATION_FRAME_INTERVAL)
+
+        def step(i):
+            t = ease_out_quad(min(1.0, i / frames))
+            self._apply_settings_height(int(start + (end - start) * t))
+            if i < frames and win.winfo_exists():
+                self._settings_resize_id = self.root.after(
+                    ANIMATION_FRAME_INTERVAL, lambda: step(i + 1))
+            else:
+                self._settings_resize_id = None
+                self._apply_settings_height(end)
+
+        step(1)
+
+    def _apply_settings_height(self, height):
+        """Set the window height, keeping it fully on-screen (clamp the top)."""
+        win = self._settings_window
+        if not win.winfo_exists():
+            return
+        y = max(0, min(win.winfo_y(), win.winfo_screenheight() - height))
+        win.geometry(f"{SETTINGS_WINDOW_WIDTH}x{height}+{win.winfo_x()}+{y}")
 
     def _show_settings_scrollbar(self, needed):
         """Show the scrollbar only when the content overflows the window."""
