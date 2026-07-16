@@ -199,8 +199,8 @@ BUTTON_HEIGHT_XLARGE = 40   # Popup actions (Snooze / ▾ / Done / Set)
 # Cockpit status hero
 DOT_SIZE = 10            # status dot diameter
 ICON_CHIP = 40          # break-row icon chip (rounded square)
-PLAY_GLYPH_SIZE = 18    # "break now" ▶ glyph — sized to match the countdown's weight
-PLAY_BTN_WIDTH = 26     # tight footprint so the ▶ hugs the countdown, not adrift
+PLAY_GLYPH_SIZE = 15    # "break now" ▶ — optically matched to the (airy) gear glyph
+PLAY_BTN_WIDTH = 24     # tight footprint so the ▶ hugs the countdown, not adrift
 TOOLTIP_DELAY_MS = 450   # gentle delay before a hover hint appears
 TOOLTIP_FADE_FRAMES = 8  # ~128ms fade in/out at ANIMATION_FRAME_INTERVAL
 TOOLTIP_POLL_MS = 120    # watchdog: re-check the pointer is still over the button
@@ -1339,6 +1339,7 @@ class BreakApp:
         self._tip_after = None  # pending show timer
         self._tip_fade = None   # pending fade frame
         self._tip_watch = None  # pointer watchdog (hides even if <Leave> never fires)
+        self._tip_target = None  # widget the hint is tracking (authoritative)
         for i, config in enumerate(self.breaks):
             card = ctk.CTkFrame(main_frame, corner_radius=CORNER_RADIUS_PANEL,
                                 fg_color=COLORS['surface_card'])
@@ -2216,11 +2217,12 @@ class BreakApp:
         canvas.bind("<Enter>", lambda _e: self._tip_schedule(widget, text), add="+")
 
     def _tip_schedule(self, widget, text):
+        self._tip_target = widget           # authoritative "what we're tracking"
         if self._tip_after is not None:
             self.root.after_cancel(self._tip_after)
         self._tip_after = self.root.after(
             TOOLTIP_DELAY_MS, lambda: self._tip_show(widget, text))
-        self._tip_watch_start(widget)   # guard the whole delay→show→shown lifetime
+        self._tip_watch_start()             # guard the whole delay→show→shown lifetime
 
     def _pointer_over(self, widget):
         """True if the mouse's screen coords fall inside the widget's rectangle.
@@ -2230,35 +2232,37 @@ class BreakApp:
         return point_in_rect(px, py, widget.winfo_rootx(), widget.winfo_rooty(),
                              widget.winfo_width(), widget.winfo_height())
 
-    def _tip_watch_start(self, widget):
+    def _tip_watch_start(self):
         if self._tip_watch is not None:
             self.root.after_cancel(self._tip_watch)
-        self._tip_watch = self.root.after(
-            TOOLTIP_POLL_MS, lambda: self._tip_watch_tick(widget))
+        self._tip_watch = self.root.after(TOOLTIP_POLL_MS, self._tip_watch_tick)
 
-    def _tip_watch_tick(self, widget):
+    def _tip_watch_tick(self):
+        # Reschedule purely on target + pointer position — no dependency on the
+        # label's mapped-state timing (which raced and could kill the watchdog,
+        # stranding the chip). While a target is set and the pointer is over it,
+        # keep guarding; the instant it isn't, hide.
         self._tip_watch = None
-        if not self._pointer_over(widget):
-            self._tip_hide()                 # pointer gone — hide even with no <Leave>
-        elif self._tip_after is not None or (
-                self._tip_lbl is not None and self._tip_lbl.winfo_ismapped()):
-            self._tip_watch_start(widget)    # still hovering — keep watching
+        if self._tip_target is None:
+            return
+        if self._pointer_over(self._tip_target):
+            self._tip_watch_start()
+        else:
+            self._tip_hide()
 
     def _tip_hide(self):
-        if self._tip_after is not None:
-            self.root.after_cancel(self._tip_after)
-            self._tip_after = None
-        if self._tip_watch is not None:
-            self.root.after_cancel(self._tip_watch)
-            self._tip_watch = None
-        if self._tip_fade is not None:
-            self.root.after_cancel(self._tip_fade)
-            self._tip_fade = None
+        self._tip_target = None
+        for attr in ("_tip_after", "_tip_watch", "_tip_fade"):
+            handle = getattr(self, attr)
+            if handle is not None:
+                self.root.after_cancel(handle)
+                setattr(self, attr, None)
         if self._tip_lbl is not None:
             self._tip_lbl.place_forget()
 
     def _tip_show(self, widget, text):
         self._tip_after = None
+        self._tip_watch_start()   # re-arm the guard for the shown phase
         if self._tip_lbl is None:
             self._tip_lbl = ctk.CTkLabel(
                 self.root, text="", font=make_font('caption'), height=22,
