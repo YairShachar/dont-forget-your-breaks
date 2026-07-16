@@ -249,7 +249,6 @@ SETTINGS_WINDOW_MAX_HEIGHT_RATIO = 0.9  # cap auto-height at 90% of screen heigh
 SETTINGS_WINDOW_MIN_HEIGHT_RATIO = 0.15  # floor as a fraction of screen height
 SETTINGS_WINDOW_OPACITY = 0.95          # slight translucency (0..1)
 SETTINGS_WINDOW_HEIGHT_SLACK = SPACE_LG  # margin below the last card so it never sits flush/cut
-SETTINGS_RESIZE_DURATION = 160          # ms; smooth window grow/shrink on expand/collapse
 SETTINGS_WINDOW_Y_OFFSET = 80           # px the window sits above the main window
 
 # Break popup
@@ -871,9 +870,9 @@ class CollapsibleSection(ctk.CTkFrame):
         """Hook: subclass header tweak when collapsing (e.g. show a summary)."""
 
     def toggle_expand(self):
-        # Instant (animate=False): the per-frame height reflow was janky inside the
-        # scrollable settings window. Smoothness now comes from the window resizing
-        # to fit via _on_resize, not from animating the frame's height.
+        # Instant (animate=False): Tk re-lays-out the whole window on every
+        # resize step, so any per-frame height animation jitters the content.
+        # Body + window snap together in one frame — clean and jitter-free.
         if self._expanded:
             self.collapse(animate=False)
         else:
@@ -2002,39 +2001,17 @@ class BreakApp:
         return max(min_h, min(content + SETTINGS_WINDOW_HEIGHT_SLACK, max_h))
 
     def _resize_settings_to_content(self):
-        """Smoothly grow/shrink the window to fit its content; show the scrollbar
-        only when the (real) content still overflows the clamped window."""
+        """Snap the window to fit its content (one resize, no animation). Tk
+        re-lays-out the whole window on every resize step, so an animated resize
+        jitters the text — an instant snap, like macOS System Settings, is the
+        clean choice. Show the scrollbar only when content still overflows."""
         win = getattr(self, '_settings_window', None)
         if win is None or not win.winfo_exists():
             return
         content = self._settings_content_height()
         target = self._settings_target_height(content)
         self._show_settings_scrollbar(content > target)
-        self._animate_settings_height(win.winfo_height(), target)
-
-    def _animate_settings_height(self, start, end):
-        win = self._settings_window
-        if getattr(self, '_settings_resize_id', None):
-            self.root.after_cancel(self._settings_resize_id)
-            self._settings_resize_id = None
-        if start == end:
-            return
-        if prefers_reduced_motion():
-            self._apply_settings_height(end)
-            return
-        frames = max(1, SETTINGS_RESIZE_DURATION // ANIMATION_FRAME_INTERVAL)
-
-        def step(i):
-            t = ease_out_quad(min(1.0, i / frames))
-            self._apply_settings_height(int(start + (end - start) * t))
-            if i < frames and win.winfo_exists():
-                self._settings_resize_id = self.root.after(
-                    ANIMATION_FRAME_INTERVAL, lambda: step(i + 1))
-            else:
-                self._settings_resize_id = None
-                self._apply_settings_height(end)
-
-        step(1)
+        self._apply_settings_height(target)
 
     def _apply_settings_height(self, height):
         """Set the window height, keeping it fully on-screen (clamp the top)."""
