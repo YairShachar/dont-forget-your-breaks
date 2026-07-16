@@ -199,6 +199,7 @@ BUTTON_HEIGHT_XLARGE = 40   # Popup actions (Snooze / ▾ / Done / Set)
 DOT_SIZE = 10            # status dot diameter
 ICON_CHIP = 40          # break-row icon chip (rounded square)
 ROW_VALUE_WIDTH = 54    # right slot for the countdown
+TOOLTIP_DELAY_MS = 450  # gentle delay before a hover hint appears
 PROGRESS_HEIGHT = 6     # slim progress-to-next-break bar
 HERO_PAD = SPACE_LG     # inner padding of the hero card
 DOT_PULSE_MS = 3200     # full breathe cycle of the on-track status dot
@@ -1272,9 +1273,9 @@ class BreakApp:
 
         # Settings gear (top-right of the hero)
         self.settings_btn = ctk.CTkButton(
-            hero_top, text="", image=load_icon('gear', size=17),
+            hero_top, text="", image=load_icon('gear', size=18),
             command=self._open_settings,
-            width=22, height=28, corner_radius=CORNER_RADIUS_INPUT,
+            width=18, height=28, corner_radius=CORNER_RADIUS_INPUT,
             fg_color="transparent", hover_color=COLORS['surface_hover'])
         self.settings_btn.pack(side="right")
 
@@ -1329,6 +1330,7 @@ class BreakApp:
         self._timer_labels = []
         self._cue_labels = []
         self._interval_labels = []
+        self._tooltip_targets = []   # (widget, hint text)
         for i, config in enumerate(self.breaks):
             card = ctk.CTkFrame(main_frame, corner_radius=CORNER_RADIUS_PANEL,
                                 fg_color=COLORS['surface_card'])
@@ -1355,12 +1357,13 @@ class BreakApp:
 
             # Quiet "take this break now" button — its own column, always visible,
             # in the app's ghost-icon language (not a loud accent pill) (#5).
-            ctk.CTkButton(
+            play_btn = ctk.CTkButton(
                 row, text="", image=load_icon('play', size=13),
                 command=lambda c=config: self.break_now(c),
                 width=26, height=26, corner_radius=CORNER_RADIUS_INPUT,
-                fg_color="transparent", hover_color=COLORS['surface_hover']
-            ).pack(side="right", padx=(0, SPACE_XS))
+                fg_color="transparent", hover_color=COLORS['surface_hover'])
+            play_btn.pack(side="right", padx=(SPACE_XS, SPACE_SM))
+            self._tooltip_targets.append((play_btn, "Break now"))
 
             # Meta (middle): name + interval subtitle
             meta = ctk.CTkFrame(row, fg_color="transparent")
@@ -1442,6 +1445,8 @@ class BreakApp:
         self.root.bind('<Command-s>', lambda e: self._handle_toggle())
         self.root.bind('<Command-comma>', lambda e: self._open_settings())
         self.root.bind('<Command-period>', lambda e: self.reset() if self.running else None)
+
+        self._setup_tooltips()
 
         # Start UI update loop
         self.update_ui()
@@ -2198,6 +2203,59 @@ class BreakApp:
             if eid not in current:
                 self._snooze_rows[eid]["frame"].destroy()
                 del self._snooze_rows[eid]
+
+    def _setup_tooltips(self):
+        """Gentle hover hints, driven by root <Motion> (CTk widgets don't fire
+        <Enter>/<Leave> reliably). A single reusable borderless tooltip window."""
+        self._tip_win = None
+        self._tip_lbl = None
+        self._tip_after = None
+        self._tip_widget = None
+        self.root.bind("<Motion>", self._on_tooltip_motion, add="+")
+
+    def _on_tooltip_motion(self, _event=None):
+        node = self.root.winfo_containing(*self.root.winfo_pointerxy())
+        path = str(node) if node is not None else ""
+        for widget, text in self._tooltip_targets:
+            wp = str(widget)
+            if path == wp or path.startswith(wp + "."):
+                if widget is not self._tip_widget:   # newly hovered → (re)schedule
+                    self._tip_cancel()
+                    self._tip_widget = widget
+                    self._tip_after = self.root.after(
+                        TOOLTIP_DELAY_MS, lambda w=widget, t=text: self._tip_show(w, t))
+                return
+        self._tip_cancel()
+
+    def _tip_cancel(self):
+        if self._tip_after is not None:
+            self.root.after_cancel(self._tip_after)
+            self._tip_after = None
+        self._tip_widget = None
+        if self._tip_win is not None:
+            self._tip_win.withdraw()
+
+    def _tip_show(self, widget, text):
+        mode = ctk.get_appearance_mode()
+        if self._tip_win is None:
+            self._tip_win = tk.Toplevel(self.root)
+            self._tip_win.overrideredirect(True)
+            self._tip_win.attributes("-topmost", True)
+            self._tip_lbl = tk.Label(
+                self._tip_win, padx=SPACE_SM, pady=SPACE_XXS, bd=0,
+                font=(resolve_font_family(FONT_SIZES['caption']), FONT_SIZES['caption']))
+            self._tip_lbl.pack()
+        self._tip_lbl.configure(
+            text=text,
+            bg=resolve_color(COLORS['surface_hover'], mode),
+            fg=resolve_color(COLORS['text_secondary'], mode))
+        self._tip_win.update_idletasks()
+        w, h = self._tip_win.winfo_reqwidth(), self._tip_win.winfo_reqheight()
+        x = widget.winfo_rootx() + widget.winfo_width() // 2 - w // 2
+        y = widget.winfo_rooty() - h - SPACE_XS
+        self._tip_win.geometry(f"+{x}+{y}")
+        self._tip_win.deiconify()
+        self._tip_win.lift()
 
     def _row_subtitle(self, config):
         """Interval · duration label for a break row, e.g. 'every 15 min · 20 sec'."""
