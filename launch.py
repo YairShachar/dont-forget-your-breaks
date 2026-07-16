@@ -1253,8 +1253,8 @@ class BreakApp:
         hero.pack(fill="x", pady=(0, SPACE_XS))
 
         hero_top = ctk.CTkFrame(hero, fg_color="transparent")
-        # Less right padding so the gear sits closer to the edge (not "too centered").
-        hero_top.pack(fill="x", padx=(HERO_PAD, SPACE_SM), pady=(HERO_PAD, SPACE_XS))
+        # No right padding so the gear sits flush in the corner (not "too centered").
+        hero_top.pack(fill="x", padx=(HERO_PAD, 0), pady=(HERO_PAD, SPACE_XS))
 
         # Breathing status dot (centered in a fixed-size wrap for baseline align)
         dot_wrap = ctk.CTkFrame(hero_top, fg_color="transparent",
@@ -1358,7 +1358,7 @@ class BreakApp:
                 command=lambda c=config: self.break_now(c),
                 width=26, height=26, corner_radius=CORNER_RADIUS_INPUT,
                 fg_color="transparent", hover_color=COLORS['surface_hover'])
-            play_btn.pack(side="right", padx=(0, SPACE_SM))
+            play_btn.pack(side="right", padx=(0, SPACE_XXS))
             self._tooltip_targets.append((play_btn, "Break now"))
 
             # Meta (middle): name + interval subtitle
@@ -2203,7 +2203,6 @@ class BreakApp:
     def _setup_tooltips(self):
         """Gentle hover hints, driven by root <Motion> (CTk widgets don't fire
         <Enter>/<Leave> reliably). A single reusable borderless tooltip window."""
-        self._tip_win = None
         self._tip_lbl = None
         self._tip_after = None
         self._tip_widget = None
@@ -2228,30 +2227,23 @@ class BreakApp:
             self.root.after_cancel(self._tip_after)
             self._tip_after = None
         self._tip_widget = None
-        if self._tip_win is not None:
-            self._tip_win.withdraw()
+        if self._tip_lbl is not None:
+            self._tip_lbl.place_forget()
 
     def _tip_show(self, widget, text):
-        mode = ctk.get_appearance_mode()
-        if self._tip_win is None:
-            self._tip_win = tk.Toplevel(self.root)
-            self._tip_win.overrideredirect(True)
-            self._tip_win.attributes("-topmost", True)
-            self._tip_lbl = tk.Label(
-                self._tip_win, padx=SPACE_SM, pady=SPACE_XXS, bd=0,
-                font=(resolve_font_family(FONT_SIZES['caption']), FONT_SIZES['caption']))
-            self._tip_lbl.pack()
-        self._tip_lbl.configure(
-            text=text,
-            bg=resolve_color(COLORS['surface_hover'], mode),
-            fg=resolve_color(COLORS['text_secondary'], mode))
-        self._tip_win.update_idletasks()
-        w, h = self._tip_win.winfo_reqwidth(), self._tip_win.winfo_reqheight()
-        x = widget.winfo_rootx() + widget.winfo_width() // 2 - w // 2
-        y = widget.winfo_rooty() - h - SPACE_XS
-        self._tip_win.geometry(f"+{x}+{y}")
-        self._tip_win.deiconify()
-        self._tip_win.lift()
+        # An in-window CTkLabel (not a Toplevel) — renders reliably on macOS.
+        if self._tip_lbl is None:
+            self._tip_lbl = ctk.CTkLabel(
+                self.root, text="", font=make_font('caption'), height=22,
+                fg_color=COLORS['surface_hover'], corner_radius=CORNER_RADIUS_INPUT,
+                text_color=COLORS['text_secondary'])
+        self._tip_lbl.configure(text=f"  {text}  ")   # breathing room around the text
+        self._tip_lbl.update_idletasks()
+        w, h = self._tip_lbl.winfo_reqwidth(), self._tip_lbl.winfo_reqheight()
+        bx = widget.winfo_rootx() - self.root.winfo_rootx() + widget.winfo_width() // 2
+        by = widget.winfo_rooty() - self.root.winfo_rooty()
+        self._tip_lbl.place(x=max(SPACE_XXS, bx - w // 2), y=by - h - SPACE_XXS)
+        self._tip_lbl.lift()
 
     def _row_subtitle(self, config):
         """Interval · duration label for a break row, e.g. 'every 15 min · 20 sec'."""
