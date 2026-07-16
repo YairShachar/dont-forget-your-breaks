@@ -870,13 +870,16 @@ class CollapsibleSection(ctk.CTkFrame):
         """Hook: subclass header tweak when collapsing (e.g. show a summary)."""
 
     def toggle_expand(self):
-        # The section body animates its reveal; the WINDOW is resized only once
-        # per toggle (expand grows it up-front, collapse shrinks it at the end),
-        # so there's no per-frame window reflow to jitter the text.
+        # Instant snap. Tk re-lays-out and repaints the whole window on every
+        # resize step, so animating the reveal jitters the text and can flash
+        # neighbours — instant is the crisp choice (macOS System Settings does
+        # the same). expand() still grows the window BEFORE showing the body, so
+        # content and window appear together in one frame (no pop-before).
+        # NOTE: a genuinely smooth accordion is deferred to the native rewrite.
         if self._expanded:
-            self.collapse()
+            self.collapse(animate=False)
         else:
-            self.expand()
+            self.expand(animate=False)
         if self._on_toggle is not None:
             self._on_toggle(self._expanded)
 
