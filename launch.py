@@ -27,7 +27,7 @@ from dfyb.updater import (
     HOMEBREW_CASK_NAME,
     BASE_DIR,
 )
-from dfyb.animation import ease_out_quad, prefers_reduced_motion
+from dfyb.animation import ease_out_quad, prefers_reduced_motion, lerp_color
 from dfyb.theme import resolve_font_family, resolve_color
 from dfyb.ring import ring_image
 from dfyb.activity.event_log import (
@@ -198,7 +198,8 @@ BUTTON_HEIGHT_XLARGE = 40   # Popup actions (Snooze / ▾ / Done / Set)
 # Cockpit status hero
 DOT_SIZE = 10            # status dot diameter
 ICON_CHIP = 40          # break-row icon chip (rounded square)
-TOOLTIP_DELAY_MS = 450  # gentle delay before a hover hint appears
+TOOLTIP_DELAY_MS = 450   # gentle delay before a hover hint appears
+TOOLTIP_FADE_FRAMES = 8  # ~128ms fade in/out at ANIMATION_FRAME_INTERVAL
 PROGRESS_HEIGHT = 6     # slim progress-to-next-break bar
 HERO_PAD = SPACE_LG     # inner padding of the hero card
 DOT_PULSE_MS = 3200     # full breathe cycle of the on-track status dot
@@ -2201,12 +2202,15 @@ class BreakApp:
                 del self._snooze_rows[eid]
 
     def _setup_tooltips(self):
-        """Gentle hover hints, driven by root <Motion> (CTk widgets don't fire
-        <Enter>/<Leave> reliably). A single reusable borderless tooltip window."""
+        """Gentle hover hints as an in-window label (CTk widgets don't fire
+        <Enter>/<Leave> reliably, so hover is derived from root <Motion>; a
+        pointer-bounds <Leave> check catches the pointer leaving the window)."""
         self._tip_lbl = None
-        self._tip_after = None
-        self._tip_widget = None
+        self._tip_widget = None   # target currently hovered, or None
+        self._tip_after = None    # pending show timer
+        self._tip_fade = None     # pending fade frame
         self.root.bind("<Motion>", self._on_tooltip_motion, add="+")
+        self.root.bind("<Leave>", self._on_root_leave, add="+")
 
     def _on_tooltip_motion(self, _event=None):
         node = self.root.winfo_containing(*self.root.winfo_pointerxy())
@@ -2214,29 +2218,39 @@ class BreakApp:
         for widget, text in self._tooltip_targets:
             wp = str(widget)
             if path == wp or path.startswith(wp + "."):
-                if widget is not self._tip_widget:   # newly hovered → (re)schedule
-                    self._tip_cancel()
+                if widget is not self._tip_widget:   # entered a new target
                     self._tip_widget = widget
+                    if self._tip_after is not None:
+                        self.root.after_cancel(self._tip_after)
                     self._tip_after = self.root.after(
                         TOOLTIP_DELAY_MS, lambda w=widget, t=text: self._tip_show(w, t))
                 return
-        self._tip_cancel()
+        self._tip_leave()
 
-    def _tip_cancel(self):
+    def _on_root_leave(self, _event=None):
+        # Real window-exit only (crossing onto a child also fires <Leave>).
+        px, py = self.root.winfo_pointerxy()
+        rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
+        if not (rx <= px < rx + self.root.winfo_width()
+                and ry <= py < ry + self.root.winfo_height()):
+            self._tip_leave()
+
+    def _tip_leave(self):
+        if self._tip_widget is None and self._tip_after is None:
+            return
+        self._tip_widget = None
         if self._tip_after is not None:
             self.root.after_cancel(self._tip_after)
             self._tip_after = None
-        self._tip_widget = None
-        if self._tip_lbl is not None:
-            self._tip_lbl.place_forget()
+        if self._tip_lbl is not None and self._tip_lbl.winfo_ismapped():
+            self._tip_fade_start(fading_in=False)
 
     def _tip_show(self, widget, text):
-        # An in-window CTkLabel (not a Toplevel) — renders reliably on macOS.
+        self._tip_after = None
         if self._tip_lbl is None:
             self._tip_lbl = ctk.CTkLabel(
                 self.root, text="", font=make_font('caption'), height=22,
-                fg_color=COLORS['surface_hover'], corner_radius=CORNER_RADIUS_INPUT,
-                text_color=COLORS['text_secondary'])
+                corner_radius=CORNER_RADIUS_INPUT)
         self._tip_lbl.configure(text=f"  {text}  ")   # breathing room around the text
         self._tip_lbl.update_idletasks()
         w, h = self._tip_lbl.winfo_reqwidth(), self._tip_lbl.winfo_reqheight()
@@ -2244,6 +2258,39 @@ class BreakApp:
         by = widget.winfo_rooty() - self.root.winfo_rooty()
         self._tip_lbl.place(x=max(SPACE_XXS, bx - w // 2), y=by - h - SPACE_XXS)
         self._tip_lbl.lift()
+        self._tip_fade_start(fading_in=True)
+
+    def _tip_fade_start(self, fading_in):
+        if self._tip_fade is not None:
+            self.root.after_cancel(self._tip_fade)
+            self._tip_fade = None
+        if prefers_reduced_motion():
+            self._tip_paint(1.0 if fading_in else 0.0)
+            if not fading_in and self._tip_lbl is not None:
+                self._tip_lbl.place_forget()
+            return
+        self._tip_fade_step(0, fading_in)
+
+    def _tip_fade_step(self, frame, fading_in):
+        if self._tip_lbl is None:
+            return
+        t = ease_out_quad(min(1.0, frame / TOOLTIP_FADE_FRAMES))
+        self._tip_paint(t if fading_in else 1.0 - t)
+        if frame < TOOLTIP_FADE_FRAMES:
+            self._tip_fade = self.root.after(
+                ANIMATION_FRAME_INTERVAL, lambda: self._tip_fade_step(frame + 1, fading_in))
+        else:
+            self._tip_fade = None
+            if not fading_in:
+                self._tip_lbl.place_forget()
+
+    def _tip_paint(self, alpha):
+        """Fade the chip from the card background (alpha 0, invisible) to full."""
+        mode = ctk.get_appearance_mode()
+        base = resolve_color(COLORS['surface_card'], mode)
+        self._tip_lbl.configure(
+            fg_color=lerp_color(base, resolve_color(COLORS['surface_hover'], mode), alpha),
+            text_color=lerp_color(base, resolve_color(COLORS['text_secondary'], mode), alpha))
 
     def _row_subtitle(self, config):
         """Interval · duration label for a break row, e.g. 'every 15 min · 20 sec'."""
