@@ -1,10 +1,27 @@
 from dfyb.insights.counts import (
     snooze_count_since_taken, first_snooze_seconds_ago, snooze_summary_label)
-from dfyb.activity.event_log import BREAK_SNOOZED, BREAK_TAKEN, NATURAL_BREAK
+from dfyb.activity.event_log import (
+    BREAK_SNOOZED, BREAK_TAKEN, NATURAL_BREAK, SESSION_STARTED)
 
 
 def ev(etype, ts=0, **data):
     return {"ts": ts, "type": etype, "data": data, "v": 1}
+
+
+# --- a Start begins a fresh cycle: stale snoozes must not carry over (#69) ---
+
+def test_count_resets_on_session_started():
+    events = [ev(BREAK_SNOOZED, name="Micro"), ev(BREAK_SNOOZED, name="Micro"),
+              ev(SESSION_STARTED),
+              ev(BREAK_SNOOZED, name="Micro")]
+    assert snooze_count_since_taken(events, "Micro") == 1
+
+
+def test_first_snooze_ago_resets_on_session_started():
+    events = [ev(BREAK_SNOOZED, name="Micro", ts=0),
+              ev(SESSION_STARTED, ts=100),
+              ev(BREAK_SNOOZED, name="Micro", ts=200)]
+    assert first_snooze_seconds_ago(events, "Micro", now=250) == 50
 
 
 # --- snooze_count_since_taken ---

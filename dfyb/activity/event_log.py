@@ -18,6 +18,7 @@ BREAK_SNOOZE_RETURNED = "break_snooze_returned"
 IDLE_DETECTED = "idle_detected"
 BREAK_DEFERRED = "break_deferred"
 NATURAL_BREAK = "natural_break"
+SESSION_STARTED = "session_started"   # user pressed Start — begins a fresh break cycle
 
 # Event record schema version. Bump when the event shape changes; readers may
 # branch on it. Old records lacking "v" are treated as unversioned.

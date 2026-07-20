@@ -1,16 +1,18 @@
 """Snooze insight counts derived from the event log. Pure — unit-tested."""
-from dfyb.activity.event_log import BREAK_SNOOZED, BREAK_TAKEN, NATURAL_BREAK
+from dfyb.activity.event_log import (
+    BREAK_SNOOZED, BREAK_TAKEN, NATURAL_BREAK, SESSION_STARTED)
 
 SECONDS_PER_MINUTE = 60
 
 
 def _cycle_start_index(events, break_name):
-    """Index where this break's current pending cycle begins (after the last
-    NATURAL_BREAK or the last BREAK_TAKEN for this break, whichever is later)."""
+    """Index where this break's current pending cycle begins — after the latest
+    of: a NATURAL_BREAK, a SESSION_STARTED (a fresh Start resets every break), or
+    a BREAK_TAKEN for this break."""
     start = 0
     for i, e in enumerate(events):
         etype = e["type"]
-        if etype == NATURAL_BREAK:
+        if etype == NATURAL_BREAK or etype == SESSION_STARTED:
             start = i + 1
         elif etype == BREAK_TAKEN and e["data"].get("name") == break_name:
             start = i + 1

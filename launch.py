@@ -34,7 +34,7 @@ from dfyb.theme import resolve_font_family, resolve_color
 from dfyb.ring import ring_image
 from dfyb.activity.event_log import (
     EventLog, BREAK_TAKEN, BREAK_SNOOZED,
-    BREAK_SNOOZE_CANCELLED, BREAK_SNOOZE_RETURNED)
+    BREAK_SNOOZE_CANCELLED, BREAK_SNOOZE_RETURNED, SESSION_STARTED)
 from dfyb.activity.sensors import read_context, frontmost_window_rect, smooth_fullscreen
 from dfyb.popup_placement import screen_for_point, center_on_screen, clamp_onscreen
 from dfyb.scheduler.adapter import states_from_configs
@@ -1704,6 +1704,19 @@ class BreakApp:
         self._episode = None  # fresh idle/deferred dedup marker each session
         self._held = None      # reset the held-reason each session
         self._fullscreen_grace = 0  # reset fullscreen hysteresis each session (#46)
+
+        # A fresh Start wipes stale pending state (#69): cancel any snoozes left
+        # over from a previous session so they can't fire now, and log a session
+        # boundary so snooze counts / "originally due" reset to this cycle.
+        for entry in list(self._pending_snoozes):
+            if entry.get("after_id") is not None:
+                try:
+                    self.root.after_cancel(entry["after_id"])
+                except Exception:
+                    pass
+        self._pending_snoozes.clear()
+        self._render_snooze_rows(time.time())
+        self._record_event(SESSION_STARTED)
 
         for config in self.breaks:
             config.reset_timer()
