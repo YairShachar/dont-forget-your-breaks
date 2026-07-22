@@ -222,8 +222,6 @@ DOT_SIZE = 11            # status dot diameter
 ICON_CHIP = 40          # break-row icon chip (rounded square)
 PLAY_GLYPH_SIZE = 15    # "break now" ▶ — optically matched to the (airy) gear glyph
 PLAY_BTN_WIDTH = 24     # tight footprint so the ▶ hugs the countdown, not adrift
-UPDATE_ICON_GLYPH = 13  # ↻ refresh glyph beside the version — small, unobtrusive
-UPDATE_ICON_WIDTH = 20  # tight footprint for the version-adjacent "check now" button
 STATUS_DOT_NUDGE_Y = 2  # top-pad the dot down onto the text's OPTICAL centre; the label
                         # box-centre sits above the rendered glyphs, so plain centring reads high
 TOOLTIP_DELAY_MS = 450   # gentle delay before a hover hint appears
@@ -1465,35 +1463,35 @@ class BreakApp:
         )
         # Hidden by default, shown when update is available
 
-        ctk.CTkButton(
+        self.feedback_btn = ctk.CTkButton(
             bottom_frame,
             text="Feedback",
             command=self._open_feedback,
             width=65,
             height=22,
-            corner_radius=6,
+            corner_radius=CORNER_RADIUS_INPUT,
             fg_color="transparent",
             hover_color=COLORS['surface_hover'],
             text_color=COLORS['text_tertiary'],
             font=make_font('caption')
-        ).pack(side="right")
+        )
+        self.feedback_btn.pack(side="right")
+        self._register_tooltip(self.feedback_btn,
+                               "We'd love your feedback or feature requests")
 
-        # Version label
-        ctk.CTkLabel(
-            bottom_frame,
-            text=f"v{get_current_version()}",
-            font=make_font('caption'),
-            text_color=COLORS['text_tertiary']
-        ).pack(side="right", padx=(0, SPACE_XXS))
-
-        # "Check for updates now" — a small refresh icon beside the version.
-        self.update_check_btn = ctk.CTkButton(
-            bottom_frame, text="", image=load_icon('refresh', size=UPDATE_ICON_GLYPH),
-            command=self._check_updates_now,
-            width=UPDATE_ICON_WIDTH, height=22, corner_radius=CORNER_RADIUS_INPUT,
-            fg_color="transparent", hover_color=COLORS['surface_hover'])
-        self.update_check_btn.pack(side="right", padx=(0, SPACE_XXS))
-        self._register_tooltip(self.update_check_btn, "Check for updates")
+        # The version doubles as "check for updates now": clicking forces a check
+        # (bypassing the 24h interval); hovering shows the hint. Width is measured
+        # from the text so the hover chip hugs it regardless of version length.
+        version_font = make_font('caption')
+        version_text = f"v{get_current_version()}"
+        self.version_btn = ctk.CTkButton(
+            bottom_frame, text=version_text, command=self._check_updates_now,
+            width=version_font.measure(version_text) + 2 * SPACE_SM, height=22,
+            corner_radius=CORNER_RADIUS_INPUT, fg_color="transparent",
+            hover_color=COLORS['surface_hover'], text_color=COLORS['text_tertiary'],
+            font=version_font)
+        self.version_btn.pack(side="right", padx=(0, SPACE_XXS))
+        self._register_tooltip(self.version_btn, "Check for updates")
 
         # Bind keyboard shortcuts
         self.root.bind('<Command-s>', lambda e: self._handle_toggle())
@@ -1597,7 +1595,7 @@ class BreakApp:
 
     def _check_for_updates_bg(self, manual=False):
         """Background thread: fetch latest version and notify UI. When `manual`
-        (the version-adjacent refresh icon), also give explicit feedback if the
+        (the user clicked the version number), also give explicit feedback if the
         app is already current or the check failed — an auto check stays silent."""
         try:
             result = fetch_latest_version()
@@ -1631,8 +1629,8 @@ class BreakApp:
         self.root.resizable(False, False)
 
     def _check_updates_now(self):
-        """Manual check triggered by the refresh icon beside the version — bypasses
-        the 24h interval and gives explicit feedback for every outcome."""
+        """Manual check triggered by clicking the version number — bypasses the
+        24h interval and gives explicit feedback for every outcome."""
         self.update_label.configure(text="Checking…", text_color=COLORS['text_tertiary'])
         self.update_label.pack(side="left", padx=(SPACE_SM, 0))
         threading.Thread(
@@ -2526,7 +2524,10 @@ class BreakApp:
         w, h = self._tip_lbl.winfo_reqwidth(), self._tip_lbl.winfo_reqheight()
         bx = widget.winfo_rootx() - self.root.winfo_rootx() + widget.winfo_width() // 2
         by = widget.winfo_rooty() - self.root.winfo_rooty()
-        self._tip_lbl.place(x=max(SPACE_XXS, bx - w // 2), y=by - h - SPACE_XXS)
+        # Centre over the widget, but clamp to BOTH window edges so a wide hint on
+        # a right-aligned control (e.g. Feedback) shifts left instead of clipping.
+        x = min(max(SPACE_XXS, bx - w // 2), self.root.winfo_width() - w - SPACE_XXS)
+        self._tip_lbl.place(x=x, y=by - h - SPACE_XXS)
         self._tip_lbl.lift()
 
     def _tip_fade_start(self, out=False):
