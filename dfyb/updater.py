@@ -15,6 +15,17 @@ GITHUB_RELEASES_PAGE_URL = f"https://github.com/{GITHUB_REPO}/releases/latest"
 HOMEBREW_CASK_NAME = "dont-forget-your-breaks"
 
 
+def should_check_for_updates(pref_enabled, hours_since_last, interval_hours,
+                             force=False):
+    """Decide whether to run an update check now. Pure (no clock / IO) so it is
+    unit-tested. Never runs when the user disabled checks; `force` (a launch /
+    reload, or the manual 'check now' icon) bypasses the interval; otherwise the
+    interval must have elapsed since the last check."""
+    if not pref_enabled:
+        return False
+    return force or hours_since_last >= interval_hours
+
+
 def get_current_version():
     """Read the current app version from VERSION file."""
     try:

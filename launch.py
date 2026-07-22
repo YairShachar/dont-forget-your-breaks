@@ -23,6 +23,7 @@ from dfyb.updater import (
     get_current_version,
     fetch_latest_version,
     is_installed_via_homebrew,
+    should_check_for_updates,
     VERSION_FILE,
     HOMEBREW_CASK_NAME,
     BASE_DIR,
@@ -121,6 +122,7 @@ if IS_DEV:
     EVENTS_FILE = EVENTS_FILE.with_name("events.dev.jsonl")
 GITHUB_NEW_ISSUE_URL = "https://github.com/YairShachar/dont-forget-your-breaks/issues/new"
 UPDATE_CHECK_INTERVAL_HOURS = 24
+UPDATE_TOAST_MS = 3000    # how long the "up to date" / "check failed" note lingers
 
 # Typography sizes (role-based; family auto-picked by the 20pt optical split)
 FONT_SIZES = {
@@ -220,6 +222,8 @@ DOT_SIZE = 11            # status dot diameter
 ICON_CHIP = 40          # break-row icon chip (rounded square)
 PLAY_GLYPH_SIZE = 15    # "break now" ▶ — optically matched to the (airy) gear glyph
 PLAY_BTN_WIDTH = 24     # tight footprint so the ▶ hugs the countdown, not adrift
+UPDATE_ICON_GLYPH = 13  # ↻ refresh glyph beside the version — small, unobtrusive
+UPDATE_ICON_WIDTH = 20  # tight footprint for the version-adjacent "check now" button
 STATUS_DOT_NUDGE_Y = 2  # top-pad the dot down onto the text's OPTICAL centre; the label
                         # box-centre sits above the rendered glyphs, so plain centring reads high
 TOOLTIP_DELAY_MS = 450   # gentle delay before a hover hint appears
@@ -1267,7 +1271,7 @@ class BreakApp:
         self._build_ui()
         self._fit_window_to_content()
         self._setup_auto_save()
-        self._schedule_update_check()
+        self._schedule_update_check(force=True)   # check on every launch/reload
 
         # Save window geometry on close
         root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -1482,6 +1486,15 @@ class BreakApp:
             text_color=COLORS['text_tertiary']
         ).pack(side="right", padx=(0, SPACE_XXS))
 
+        # "Check for updates now" — a small refresh icon beside the version.
+        self.update_check_btn = ctk.CTkButton(
+            bottom_frame, text="", image=load_icon('refresh', size=UPDATE_ICON_GLYPH),
+            command=self._check_updates_now,
+            width=UPDATE_ICON_WIDTH, height=22, corner_radius=CORNER_RADIUS_INPUT,
+            fg_color="transparent", hover_color=COLORS['surface_hover'])
+        self.update_check_btn.pack(side="right", padx=(0, SPACE_XXS))
+        self._register_tooltip(self.update_check_btn, "Check for updates")
+
         # Bind keyboard shortcuts
         self.root.bind('<Command-s>', lambda e: self._handle_toggle())
         self.root.bind('<Command-comma>', lambda e: self._open_settings())
@@ -1559,28 +1572,33 @@ class BreakApp:
 
     # ------------------ UPDATE CHECKER ------------------
 
-    def _should_check_for_updates(self):
-        """Return True if enough time has passed since the last update check."""
-        if not self.check_for_updates.get():
-            logging.debug("Update check disabled by user preference")
-            return False
+    def _should_check_for_updates(self, force=False):
+        """Whether an update check is due now — delegates the decision to the pure,
+        unit-tested updater.should_check_for_updates. `force` bypasses the interval."""
         last_check = self.saved_prefs.get("last_update_check", 0)
         hours_since = (time.time() - last_check) / 3600
-        should_check = hours_since >= UPDATE_CHECK_INTERVAL_HOURS
-        logging.debug(f"Update check: last={last_check}, hours_since={hours_since:.1f}, should_check={should_check}")
-        return should_check
+        decision = should_check_for_updates(
+            self.check_for_updates.get(), hours_since,
+            UPDATE_CHECK_INTERVAL_HOURS, force)
+        logging.debug("Update check due? pref=%s hours_since=%.1f force=%s -> %s",
+                      self.check_for_updates.get(), hours_since, force, decision)
+        return decision
 
-    def _schedule_update_check(self):
-        """Start a background update check if due."""
-        if self._should_check_for_updates():
-            logging.debug("Starting background update check thread")
+    def _schedule_update_check(self, force=False):
+        """Start a background update check. `force` bypasses the 24h interval so
+        every launch/reload checks (subject only to the user's pref); the hourly
+        re-schedule stays interval-gated for long-running sessions."""
+        if self._should_check_for_updates(force=force):
+            logging.debug("Starting background update check thread (force=%s)", force)
             thread = threading.Thread(target=self._check_for_updates_bg, daemon=True)
             thread.start()
         # Re-check eligibility every hour for long-running sessions
         self.root.after(3600 * 1000, self._schedule_update_check)
 
-    def _check_for_updates_bg(self):
-        """Background thread: fetch latest version and notify UI."""
+    def _check_for_updates_bg(self, manual=False):
+        """Background thread: fetch latest version and notify UI. When `manual`
+        (the version-adjacent refresh icon), also give explicit feedback if the
+        app is already current or the check failed — an auto check stays silent."""
         try:
             result = fetch_latest_version()
             current_version = get_current_version()
@@ -1588,6 +1606,7 @@ class BreakApp:
             # Update last check timestamp regardless of result
             self.saved_prefs["last_update_check"] = time.time()
             self.root.after(0, lambda: self._save_preferences())
+            newer = False
             if result:
                 latest_version, release_url = result
                 newer = is_newer_version(latest_version, current_version)
@@ -1595,8 +1614,12 @@ class BreakApp:
                 if newer:
                     self.available_update = (latest_version, release_url)
                     self.root.after(0, lambda: self._show_update_banner(latest_version))
+            if manual and not newer:
+                self.root.after(0, self._show_up_to_date)
         except Exception as e:
             logging.error(f"Update check failed: {e}", exc_info=True)
+            if manual:
+                self.root.after(0, self._show_update_check_failed)
 
     def _show_update_banner(self, version):
         """Show the update available label in the main UI."""
@@ -1606,6 +1629,28 @@ class BreakApp:
         self.root.resizable(True, True)
         self._fit_window_to_content()
         self.root.resizable(False, False)
+
+    def _check_updates_now(self):
+        """Manual check triggered by the refresh icon beside the version — bypasses
+        the 24h interval and gives explicit feedback for every outcome."""
+        self.update_label.configure(text="Checking…", text_color=COLORS['text_tertiary'])
+        self.update_label.pack(side="left", padx=(SPACE_SM, 0))
+        threading.Thread(
+            target=lambda: self._check_for_updates_bg(manual=True), daemon=True).start()
+
+    def _show_up_to_date(self):
+        """Transient 'already current' note (manual check found no newer release)."""
+        self.update_label.configure(text="✓ Up to date",
+                                    text_color=COLORS['accent_success'])
+        self.update_label.pack(side="left", padx=(SPACE_SM, 0))
+        self.root.after(UPDATE_TOAST_MS, self.update_label.pack_forget)
+
+    def _show_update_check_failed(self):
+        """Transient note when a manual check couldn't reach GitHub."""
+        self.update_label.configure(text="Couldn't check — try later",
+                                    text_color=COLORS['text_tertiary'])
+        self.update_label.pack(side="left", padx=(SPACE_SM, 0))
+        self.root.after(UPDATE_TOAST_MS, self.update_label.pack_forget)
 
     def _handle_update(self):
         """Handle click on the update banner."""

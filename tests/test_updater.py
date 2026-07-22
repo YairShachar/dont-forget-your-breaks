@@ -5,7 +5,10 @@ from dfyb.updater import (
     get_current_version,
     fetch_latest_version,
     is_installed_via_homebrew,
+    should_check_for_updates,
 )
+
+INTERVAL = 24
 
 
 class FakeProc:
@@ -49,3 +52,20 @@ def test_is_installed_via_homebrew(monkeypatch):
     assert is_installed_via_homebrew() is True
     monkeypatch.setattr(updater.subprocess, "run", lambda *a, **k: FakeProc(1))
     assert is_installed_via_homebrew() is False
+
+
+def test_disabled_pref_never_checks_even_when_forced():
+    # The user's opt-out wins over both the interval and force (launch/manual).
+    assert should_check_for_updates(False, 999, INTERVAL) is False
+    assert should_check_for_updates(False, 999, INTERVAL, force=True) is False
+
+
+def test_interval_gates_the_periodic_check():
+    assert should_check_for_updates(True, INTERVAL - 0.1, INTERVAL) is False
+    assert should_check_for_updates(True, INTERVAL, INTERVAL) is True
+    assert should_check_for_updates(True, INTERVAL + 5, INTERVAL) is True
+
+
+def test_force_bypasses_the_interval_when_enabled():
+    # Launch/reload and the manual "check now" icon check even if just checked.
+    assert should_check_for_updates(True, 0.0, INTERVAL, force=True) is True

@@ -24,6 +24,7 @@ ICON_SPECS = {
     "chevron": ("chevron.down",        LIGHT_INK, DARK_INK),   # UI glyph
     "gear":    ("gearshape.fill",      LIGHT_INK, DARK_INK),   # UI glyph
     "play":    ("play.fill",           LIGHT_INK, DARK_INK),   # "take a break now"
+    "refresh": ("arrow.clockwise",     LIGHT_INK, DARK_INK),   # "check for updates now"
 }
 CHIP_LIGHT = (236, 236, 238, 255)
 CHIP_DARK = (58, 58, 60, 255)
