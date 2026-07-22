@@ -65,6 +65,10 @@ ctk.set_appearance_mode("system")  # Follow system dark/light mode
 ctk.set_default_color_theme("blue")  # macOS-style blue accent
 
 APP_NAME = "Don't Forget Your Breaks"
+# DFYB_DEV=1 runs a parallel dev instance: its own lock/prefs/events (so it runs
+# alongside the real app without clashing or clobbering) + a visible DEV marker.
+IS_DEV = os.environ.get("DFYB_DEV") == "1"
+MENUBAR_NAME = APP_NAME + " (DEV)" if IS_DEV else APP_NAME
 
 # Set macOS menu bar app name (instead of "Python")
 if sys.platform == "darwin":
@@ -95,7 +99,7 @@ if sys.platform == "darwin":
         CFStr.CFStringCreateWithCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint32]
 
         key = CFStr.CFStringCreateWithCString(None, b'CFBundleName', 0)
-        val = CFStr.CFStringCreateWithCString(None, APP_NAME.encode('utf-8'), 0)
+        val = CFStr.CFStringCreateWithCString(None, MENUBAR_NAME.encode('utf-8'), 0)
 
         objc.objc_msgSend.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
         sel_setObject = objc.sel_registerName(b'setObject:forKey:')
@@ -109,6 +113,12 @@ TIME_UNITS = ["sec", "min", "hour"]
 CONFIG_FILE = Path.home() / "Library" / "Preferences" / "com.yairs.dontforgetyourbreaks.json"
 LOCK_FILE = Path.home() / "Library" / "Application Support" / "DontForgetYourBreaks" / ".lock"
 EVENTS_FILE = Path.home() / "Library" / "Application Support" / "DontForgetYourBreaks" / "events.jsonl"
+if IS_DEV:
+    # Isolate all mutable state so the dev instance runs alongside the real app
+    # (its own lock → no single-instance clash) and never touches real prefs/events.
+    CONFIG_FILE = CONFIG_FILE.with_name("com.yairs.dontforgetyourbreaks.dev.json")
+    LOCK_FILE = LOCK_FILE.with_name(".lock.dev")
+    EVENTS_FILE = EVENTS_FILE.with_name("events.dev.jsonl")
 GITHUB_NEW_ISSUE_URL = "https://github.com/YairShachar/dont-forget-your-breaks/issues/new"
 UPDATE_CHECK_INTERVAL_HOURS = 24
 
@@ -1143,7 +1153,7 @@ class BreakConfigPanel(CollapsibleSection):
 class BreakApp:
     def __init__(self, root):
         self.root = root
-        root.title(APP_NAME)
+        root.title(f"{APP_NAME}  ✦ DEV" if IS_DEV else APP_NAME)
         root.resizable(False, False)
 
         self.running = False
