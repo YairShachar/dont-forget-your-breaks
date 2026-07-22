@@ -94,6 +94,26 @@ def test_microphone_in_use_non_darwin_is_false(monkeypatch):
     assert sensors.microphone_in_use() is False
 
 
+# --- any_input_device_running: mic-in-use across ALL devices, not just default (#40) ---
+
+def test_no_devices_means_mic_free():
+    assert sensors.any_input_device_running([]) is False
+
+
+def test_input_device_running_means_mic_in_use():
+    # (has_input, is_running) — a non-default input device is the one running.
+    assert sensors.any_input_device_running([(False, False), (True, True)]) is True
+
+
+def test_only_output_running_is_not_mic_in_use():
+    # playing music (an OUTPUT device running) must NOT read as a mic in use.
+    assert sensors.any_input_device_running([(False, True), (True, False)]) is False
+
+
+def test_input_devices_idle_means_mic_free():
+    assert sensors.any_input_device_running([(True, False), (True, False)]) is False
+
+
 def test_read_context_meeting_gated_off(monkeypatch):
     monkeypatch.setattr(sensors, "idle_seconds", lambda: 0.0)
     monkeypatch.setattr(sensors, "frontmost_is_fullscreen", lambda: False)

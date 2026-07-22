@@ -5,6 +5,7 @@ fullscreen=False) so the scheduler falls back to today's 'always fire' behavior.
 `Quartz` is imported lazily inside each function so this module imports cleanly
 on non-macOS CI (where Quartz is absent).
 """
+import logging
 import struct
 import sys
 
@@ -168,34 +169,62 @@ def smooth_fullscreen(raw_fullscreen, grace_left, grace_ticks=FULLSCREEN_GRACE_T
     return False, 0
 
 
+def any_input_device_running(device_states):
+    """Given `(has_input, is_running)` per audio device, True if any INPUT-capable
+    device is running — i.e. the mic is in use by some app, on ANY device (not
+    just the system default). Pure; the CoreAudio enumeration builds the list.
+    Output devices (music/speakers) must not count, hence the `has_input` gate."""
+    return any(has_input and is_running for has_input, is_running in device_states)
+
+
 def microphone_in_use():
-    """True if the default input device is running somewhere (~ mic in a call,
-    incl. browser calls). False on non-macOS or any failure (fails safe)."""
+    """True if any INPUT-capable audio device is running somewhere (~ a mic in a
+    call/recording). Enumerates ALL devices, not just the system default input —
+    a call routed through AirPods/a headset/another device was missed before (#40).
+    False on non-macOS or any failure (fails safe)."""
     if sys.platform != "darwin":
         return False
     try:
         import CoreAudio as CA
         import objc
 
-        def _get_u32(objid, selector):
-            addr = CA.AudioObjectPropertyAddress(
-                selector,
-                CA.kAudioObjectPropertyScopeGlobal,
-                CA.kAudioObjectPropertyElementMain,
-            )
-            # qualifier MUST be objc.NULL; out-param MUST be None (pyobjc allocates + returns it)
-            status, _size, data = CA.AudioObjectGetPropertyData(
-                objid, addr, 0, objc.NULL, UINT32_SIZE, None)
-            if status != 0:
-                return None
-            return struct.unpack("I", bytes(data))[0]
+        def _addr(selector, scope=CA.kAudioObjectPropertyScopeGlobal):
+            return CA.AudioObjectPropertyAddress(
+                selector, scope, CA.kAudioObjectPropertyElementMain)
 
-        device = _get_u32(CA.kAudioObjectSystemObject,
-                          CA.kAudioHardwarePropertyDefaultInputDevice)
-        if not device:
+        def _is_running(device):
+            # qualifier MUST be objc.NULL; out-param MUST be None (pyobjc allocates it).
+            status, _size, data = CA.AudioObjectGetPropertyData(
+                device, _addr(CA.kAudioDevicePropertyDeviceIsRunningSomewhere),
+                0, objc.NULL, UINT32_SIZE, None)
+            return status == 0 and struct.unpack("I", bytes(data))[0] != 0
+
+        def _has_input(device):
+            # An input-capable device has ≥1 input stream (bytes > 0 in input scope).
+            status, size = CA.AudioObjectGetPropertyDataSize(
+                device, _addr(CA.kAudioDevicePropertyStreams,
+                              CA.kAudioObjectPropertyScopeInput),
+                0, objc.NULL, None)
+            return status == 0 and size > 0
+
+        status, size = CA.AudioObjectGetPropertyDataSize(
+            CA.kAudioObjectSystemObject,
+            _addr(CA.kAudioHardwarePropertyDevices), 0, objc.NULL, None)
+        count = size // UINT32_SIZE
+        if status != 0 or count <= 0:
             return False
-        return bool(_get_u32(device, CA.kAudioDevicePropertyDeviceIsRunningSomewhere))
-    except Exception:
+        status, _size, raw = CA.AudioObjectGetPropertyData(
+            CA.kAudioObjectSystemObject, _addr(CA.kAudioHardwarePropertyDevices),
+            0, objc.NULL, size, None)
+        if status != 0:
+            return False
+        device_ids = struct.unpack("%dI" % count, bytes(raw)[:count * UINT32_SIZE])
+
+        return any_input_device_running(
+            [(_has_input(d), _is_running(d)) for d in device_ids])
+    except Exception as e:
+        # Was failing SILENTLY to "no mic" — log so this class of miss is visible.
+        logging.debug("microphone_in_use() failed, assuming mic free: %s", e)
         return False
 
 
