@@ -1,4 +1,5 @@
-from dfyb.insights.status import format_countdown, progress_fraction, compute_status
+from dfyb.insights.status import (format_countdown, progress_fraction, compute_status,
+                                  RESTED_HEADLINE, RESTED_SUBTEXT)
 
 
 class TestFormat:
@@ -70,3 +71,37 @@ class TestCompute:
     def test_holding_unknown_reason_falls_back(self):
         v = compute_status(**self.base(held_reason="thing"))
         assert v.headline == "Waiting — thing" and v.chip == "Breaks pause during thing"
+
+
+# --- welcome-back cue (Task 4) ---------------------------------------------
+
+_BASE = dict(next_name="Micro Break", next_remaining=100, next_interval=200)
+
+
+def test_just_rested_shows_welcome_back_on_track():
+    v = compute_status(running=True, paused=False, held_reason=None,
+                       break_active=False, just_rested=True, **_BASE)
+    assert v.headline == RESTED_HEADLINE
+    assert v.subtext == RESTED_SUBTEXT
+    assert v.state == "on_track" and v.dot == "good"
+
+
+def test_just_rested_ignored_when_paused():
+    v = compute_status(running=True, paused=True, held_reason=None,
+                       break_active=False, just_rested=True, **_BASE)
+    assert v.state == "paused"
+
+
+def test_just_rested_ignored_when_holding_or_break():
+    held = compute_status(running=True, paused=False, held_reason="away",
+                          break_active=False, just_rested=True, **_BASE)
+    brk = compute_status(running=True, paused=False, held_reason=None,
+                         break_active=True, just_rested=True, **_BASE)
+    assert held.state == "holding"
+    assert brk.state == "break"
+
+
+def test_default_just_rested_is_backward_compatible():
+    v = compute_status(running=True, paused=False, held_reason=None,
+                       break_active=False, **_BASE)
+    assert v.state == "on_track" and v.headline.startswith("Next break")
