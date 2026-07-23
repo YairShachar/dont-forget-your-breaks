@@ -1296,6 +1296,8 @@ class BreakApp:
         self._build_ui()
         self._fit_window_to_content()
         self._setup_auto_save()
+        self._restore_session()      # resume timers/snoozes if the last exit was an involuntary, recent one
+        self._session_save_tick()    # begin the periodic snapshot heartbeat
         self._schedule_update_check(force=True)   # check on every launch/reload
 
         # Save window geometry on close
@@ -1628,6 +1630,48 @@ class BreakApp:
         """Heartbeat: snapshot the live session, then reschedule."""
         self._save_session(resumable=True)
         self.root.after(SESSION_SAVE_INTERVAL_SECONDS * 1000, self._session_save_tick)
+
+    def _restore_session(self):
+        """If the last exit was involuntary (crash / future self-update) and recent,
+        resume timers + snoozes exactly. A purposeful quit or a stale snapshot is ignored
+        (fresh). Never resets timers / clears snoozes / logs SESSION_STARTED (that's Start)."""
+        try:
+            raw = json.loads(SESSION_FILE.read_text()) if SESSION_FILE.exists() else None
+        except Exception:
+            raw = None
+        snapshot = parse_snapshot(raw)
+        now = time.time()
+        if not should_resume(snapshot, now, SESSION_RESUME_WINDOW_SECONDS):
+            return
+
+        remaining = remaining_by_name(snapshot, [c.name.get() for c in self.breaks])
+        for config in self.breaks:
+            if config.name.get() in remaining:
+                config.remaining = remaining[config.name.get()]
+
+        for s in snoozes_to_restore(snapshot, now):
+            entry = {"name": s["name"], "break_data": s["break_data"],
+                     "fire_time": s["fire_time"], "after_id": None}
+            entry["after_id"] = self.root.after(
+                max(0, int(s["remaining"] * 1000)),
+                lambda bd=s["break_data"], e=entry: self._requeue_break(bd, e))
+            self._pending_snoozes.append(entry)
+        self._render_snooze_rows(now)
+
+        if snapshot["running"]:
+            self.running = True
+            self.paused = False
+            self.stop_event.clear()
+            self._episode = None
+            self._held = None
+            self._fullscreen_grace = 0
+            self._render_status()
+            self.toggle_btn.configure(text="Pause", fg_color=COLORS['accent_warning'],
+                                      hover_color=COLORS['accent_warning_hover'])
+            self.reset_btn.configure(state="normal")
+            self._spin_timer_loop()
+            if snapshot["paused"]:
+                self.toggle_pause()   # flip to paused (Resume button + paused visual)
 
     def _on_close(self):
         """Handle window close."""
