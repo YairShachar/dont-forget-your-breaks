@@ -69,3 +69,10 @@ def test_read_tolerates_unversioned_events(tmp_path):
     p.write_text('{"ts": 1.0, "type": "break_taken", "data": {}}\n')  # old, no "v"
     events = EventLog(p).read()
     assert events == [{"ts": 1.0, "type": "break_taken", "data": {}}]
+
+
+def test_new_analyzable_events_defined():
+    from dfyb.activity import event_log as el
+    assert el.BREAK_RESCHEDULED == "break_rescheduled"
+    assert el.SESSION_RESUMED == "session_resumed"
+    assert el.APP_UPDATED == "app_updated"

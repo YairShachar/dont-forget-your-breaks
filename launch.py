@@ -40,11 +40,13 @@ from dfyb.theme import resolve_font_family, resolve_color
 from dfyb.ring import ring_image
 from dfyb.activity.event_log import (
     EventLog, BREAK_TAKEN, BREAK_SNOOZED, BREAK_SKIPPED,
-    BREAK_SNOOZE_CANCELLED, BREAK_SNOOZE_RETURNED, SESSION_STARTED)
+    BREAK_SNOOZE_CANCELLED, BREAK_SNOOZE_RETURNED, SESSION_STARTED,
+    BREAK_RESCHEDULED, SESSION_RESUMED, APP_UPDATED)
 from dfyb.activity.sensors import read_context, frontmost_window_rect, smooth_fullscreen
 from dfyb.popup_placement import screen_for_point, center_on_screen, clamp_onscreen
 from dfyb.scheduler.adapter import states_from_configs
 from dfyb.scheduler.tick import advance, IDLE_EPISODE
+from dfyb.scheduler.reschedule import reschedule_step, reschedule_bounds, nudged_remaining
 from dfyb.scheduler.engine import (decide, DEFER, coordinate_thresholds,
                                    AWAY_IDLE_THRESHOLD_SECONDS,
                                    NATURAL_BREAK_IDLE_THRESHOLD_SECONDS)
@@ -1398,6 +1400,7 @@ class BreakApp:
 
         # ---- Break rows: icon · name/interval · countdown/Break now ----
         self._timer_labels = []
+        self._reschedule = None   # active reschedule popover state, or None
         self._cue_labels = []
         self._interval_labels = []
         self._tip_lbl = None    # shared hover-hint label
@@ -1427,6 +1430,11 @@ class BreakApp:
             # LEFT of the time, so actions and value read as two distinct groups (#5).
             timer_label = ctk.CTkLabel(row, text="--:--", font=make_font('row_countdown'), anchor="e")
             timer_label.pack(side="right")
+            # Tap the countdown to reschedule this cycle sooner/later (one-time).
+            timer_label.configure(cursor="pointinghand")
+            timer_label.bind("<Button-1>",
+                             lambda e, c=config, w=timer_label: self._open_reschedule(c, w))
+            self._register_tooltip(timer_label, "Reschedule next break")
             play_btn = ctk.CTkButton(
                 row, text="", image=load_icon('play', size=PLAY_GLYPH_SIZE),
                 command=lambda c=config: self.break_now(c), anchor="e",
@@ -1468,8 +1476,9 @@ class BreakApp:
                 text_color=COLORS['text_secondary'], font=make_font('caption'))
             self._cue_labels.append(cue_label)
 
-            # Double-click a row → configure this break (#43)
-            for widget in (card, row, meta, name_label, timer_label, interval_label):
+            # Double-click a row → configure this break (#43). The countdown is
+            # excluded — it's a single-click reschedule target instead.
+            for widget in (card, row, meta, name_label, interval_label):
                 widget.bind("<Double-Button-1>",
                             lambda e, c=config: self._edit_break_config(c))
 
@@ -1536,6 +1545,9 @@ class BreakApp:
         self.root.bind('<Command-s>', lambda e: self._handle_toggle())
         self.root.bind('<Command-comma>', lambda e: self._open_settings())
         self.root.bind('<Command-period>', lambda e: self.reset() if self.running else None)
+        # Dismiss the reschedule popover on click-away / Escape (guarded no-op otherwise).
+        self.root.bind("<Button-1>", self._reschedule_click_away, add="+")
+        self.root.bind("<Escape>", lambda e: self._close_reschedule(), add="+")
 
         # Start UI update loop
         self.update_ui()
@@ -1660,6 +1672,9 @@ class BreakApp:
                 lambda bd=s["break_data"], e=entry: self._requeue_break(bd, e))
             self._pending_snoozes.append(entry)
         self._render_snooze_rows(now)
+        self._record_event(SESSION_RESUMED, running=snapshot["running"],
+                           resumed_breaks=len(remaining),
+                           resumed_snoozes=len(self._pending_snoozes))
 
         if snapshot["running"]:
             self.running = True
@@ -1817,6 +1832,7 @@ class BreakApp:
     def _relaunch_after_update(self, app_path):
         """Save a resumable snapshot + prefs, spawn a detached relauncher, then hard-exit
         (os._exit skips _on_close, which would mark the snapshot non-resumable)."""
+        self._record_event(APP_UPDATED, to_version=self.available_update[0])
         self._save_preferences(include_geometry=True)
         self._save_session(resumable=True)
         subprocess.Popen(relaunch_command(os.getpid(), app_path))
@@ -2598,6 +2614,84 @@ class BreakApp:
         config.reset_timer()
         self._record_event(BREAK_SKIPPED, name=config.name.get())
         self.update_ui()
+
+    def _open_reschedule(self, config, anchor):
+        """In-window popover to nudge THIS cycle's countdown sooner/later (one-time)."""
+        self._close_reschedule()   # one at a time
+        interval = config.get_interval_seconds()
+        floor, ceiling = reschedule_bounds(interval)
+        r = self._reschedule = {"config": config, "floor": floor, "ceiling": ceiling,
+                                "step": reschedule_step(interval),
+                                "open_remaining": config.remaining, "just_opened": True}
+        ov = ctk.CTkFrame(self.root, corner_radius=CORNER_RADIUS_PANEL,
+                          fg_color=COLORS['surface_card'], border_width=1,
+                          border_color=COLORS['border'])
+        ctk.CTkLabel(ov, text=f"Next {config.name.get()}", font=make_font('caption'),
+                     text_color=COLORS['text_tertiary']).pack(padx=SPACE_MD, pady=(SPACE_SM, 0))
+        rowf = ctk.CTkFrame(ov, fg_color="transparent")
+        rowf.pack(padx=SPACE_MD, pady=SPACE_SM)
+        r["sooner"] = ctk.CTkButton(
+            rowf, text="◀ Sooner", width=76, command=lambda: self._reschedule_nudge(-1),
+            fg_color="transparent", hover_color=COLORS['surface_hover'],
+            text_color=COLORS['accent_primary'], font=make_font('label'))
+        r["sooner"].pack(side="left")
+        r["time"] = ctk.CTkLabel(rowf, text=self._format_time(config.remaining),
+                                 font=make_font('subheading'), width=72)
+        r["time"].pack(side="left", padx=SPACE_SM)
+        r["later"] = ctk.CTkButton(
+            rowf, text="Later ▶", width=76, command=lambda: self._reschedule_nudge(1),
+            fg_color="transparent", hover_color=COLORS['surface_hover'],
+            text_color=COLORS['accent_primary'], font=make_font('label'))
+        r["later"].pack(side="left")
+        ov.update_idletasks()
+        ow, oh = ov.winfo_reqwidth(), ov.winfo_reqheight()
+        ax = anchor.winfo_rootx() - self.root.winfo_rootx()
+        ay = anchor.winfo_rooty() - self.root.winfo_rooty()
+        # right-align under the countdown, clamped to both window edges
+        x = min(max(SPACE_XXS, ax + anchor.winfo_width() - ow),
+                self.root.winfo_width() - ow - SPACE_XXS)
+        below = ay + anchor.winfo_height() + SPACE_XXS
+        # drop below the countdown, or flip above it when there's no room (bottom rows)
+        y = below if below + oh <= self.root.winfo_height() else max(SPACE_XXS, ay - oh - SPACE_XXS)
+        ov.place(x=x, y=y)
+        ov.lift()
+        r["overlay"] = ov
+        r["sooner"].configure(state="normal" if config.remaining > floor else "disabled")
+        r["later"].configure(state="normal" if config.remaining < ceiling else "disabled")
+
+    def _reschedule_nudge(self, direction):
+        r = self._reschedule
+        cfg = r["config"]
+        cfg.remaining = nudged_remaining(cfg.remaining, direction * r["step"],
+                                         r["floor"], r["ceiling"])
+        r["time"].configure(text=self._format_time(cfg.remaining))
+        r["sooner"].configure(state="normal" if cfg.remaining > r["floor"] else "disabled")
+        r["later"].configure(state="normal" if cfg.remaining < r["ceiling"] else "disabled")
+        self.update_ui()
+
+    def _reschedule_click_away(self, event):
+        r = self._reschedule
+        if not r:
+            return
+        if r.get("just_opened"):
+            r["just_opened"] = False   # ignore the very click that opened the popover
+            return
+        ov = r["overlay"]
+        if not point_in_rect(event.x_root, event.y_root, ov.winfo_rootx(),
+                             ov.winfo_rooty(), ov.winfo_width(), ov.winfo_height()):
+            self._close_reschedule()
+
+    def _close_reschedule(self):
+        r = self._reschedule
+        if not r:
+            return
+        cfg = r["config"]
+        if cfg.remaining != r["open_remaining"]:
+            self._record_event(BREAK_RESCHEDULED, name=cfg.name.get(),
+                               from_seconds=r["open_remaining"], to_seconds=cfg.remaining,
+                               delta_seconds=cfg.remaining - r["open_remaining"])
+        r["overlay"].destroy()   # destroy, not place_forget (Tk 9 Aqua ghost)
+        self._reschedule = None
 
     # ------------------ UI UPDATE ------------------
 
