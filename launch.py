@@ -1848,8 +1848,12 @@ class BreakApp:
             hover_color=COLORS['accent_warning_hover']
         )
         self.reset_btn.configure(state="normal")
+        self._spin_timer_loop()
 
-        # New generation so any not-yet-exited thread from a prior session stops.
+    def _spin_timer_loop(self):
+        """Launch the per-tick timer thread for the current running session — shared by
+        start() (fresh) and _restore_session() (resume). A new generation stops any
+        left-over thread from a prior session."""
         self._timer_generation += 1
         threading.Thread(
             target=self.timer_loop, args=(self._timer_generation,), daemon=True
