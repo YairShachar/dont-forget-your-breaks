@@ -31,6 +31,8 @@ from dfyb.updater import (
 from dfyb.animation import ease_out_quad, prefers_reduced_motion, lerp_color
 from dfyb.geometry import point_in_rect
 from dfyb.settings_logic import suboption_state
+from dfyb.session import (build_snapshot, parse_snapshot, should_resume,
+                          remaining_by_name, snoozes_to_restore)
 from dfyb.theme import resolve_font_family, resolve_color
 from dfyb.ring import ring_image
 from dfyb.activity.event_log import (
@@ -116,12 +118,17 @@ TIME_UNITS = ["sec", "min", "hour"]
 CONFIG_FILE = Path.home() / "Library" / "Preferences" / "com.yairs.dontforgetyourbreaks.json"
 LOCK_FILE = Path.home() / "Library" / "Application Support" / "DontForgetYourBreaks" / ".lock"
 EVENTS_FILE = Path.home() / "Library" / "Application Support" / "DontForgetYourBreaks" / "events.jsonl"
+SESSION_FILE = Path.home() / "Library" / "Application Support" / "DontForgetYourBreaks" / "session.json"
 if IS_DEV:
     # Isolate all mutable state so the dev instance runs alongside the real app
     # (its own lock → no single-instance clash) and never touches real prefs/events.
     CONFIG_FILE = CONFIG_FILE.with_name("com.yairs.dontforgetyourbreaks.dev.json")
     LOCK_FILE = LOCK_FILE.with_name(".lock.dev")
     EVENTS_FILE = EVENTS_FILE.with_name("events.dev.jsonl")
+    SESSION_FILE = SESSION_FILE.with_name("session.dev.json")
+
+SESSION_SAVE_INTERVAL_SECONDS = 5      # how often to snapshot the live session
+SESSION_RESUME_WINDOW_SECONDS = 600    # resume only if the crash/relaunch was within this
 GITHUB_NEW_ISSUE_URL = "https://github.com/YairShachar/dont-forget-your-breaks/issues/new"
 UPDATE_CHECK_INTERVAL_HOURS = 24
 UPDATE_TOAST_MS = 3000    # how long the "up to date" / "check failed" note lingers
