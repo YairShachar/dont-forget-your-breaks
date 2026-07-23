@@ -39,7 +39,7 @@ from dfyb.activity.event_log import (
 from dfyb.activity.sensors import read_context, frontmost_window_rect, smooth_fullscreen
 from dfyb.popup_placement import screen_for_point, center_on_screen, clamp_onscreen
 from dfyb.scheduler.adapter import states_from_configs
-from dfyb.scheduler.tick import advance
+from dfyb.scheduler.tick import advance, IDLE_EPISODE
 from dfyb.scheduler.engine import (decide, DEFER, coordinate_thresholds,
                                    AWAY_IDLE_THRESHOLD_SECONDS,
                                    NATURAL_BREAK_IDLE_THRESHOLD_SECONDS)
@@ -1182,6 +1182,7 @@ class BreakApp:
         self.event_log = EventLog(EVENTS_FILE)
         self._episode = None  # idle/deferred dedup marker for the smart-timing loop
         self._held = None      # reason the due break is currently held (transparency)
+        self._rested_ack_until = None  # time.time() until which to show "welcome back"
         self._fullscreen_grace = 0  # ticks of fullscreen hysteresis left (#46)
         self._debounce_after = {}   # key -> pending after-id for debounced commits (#47)
         self._timer_generation = 0  # bumped each start(); stale threads exit
@@ -2198,9 +2199,13 @@ class BreakApp:
                 ctx = dataclass_replace(ctx, is_fullscreen=effective_fullscreen)
                 states = states_from_configs(self.breaks)
                 pause, away, natural = self._scheduler_thresholds()
+                prev_episode = self._episode
                 new_remaining, fire_index, events, self._episode = advance(
                     states, ctx, self._episode, pause_threshold=pause,
                     away_threshold=away, natural_threshold=natural)
+                if prev_episode == IDLE_EPISODE and self._episode != IDLE_EPISODE:
+                    # user just returned from a rest that reset the timers
+                    self._rested_ack_until = time.time() + NATURAL_BREAK_ACK_SECONDS
                 for config, remaining in zip(self.breaks, new_remaining):
                     config.remaining = remaining
                 for event_type, data in events:
@@ -2645,10 +2650,13 @@ class BreakApp:
             next_name = nxt.name.get()
             next_remaining = max(0, nxt.remaining)
             next_interval = nxt.get_interval_seconds()
+        just_rested = (self._rested_ack_until is not None
+                       and time.time() < self._rested_ack_until)
         view = compute_status(
             running=self.running, paused=self.paused, held_reason=self._held,
             next_name=next_name, next_remaining=next_remaining,
-            next_interval=next_interval, break_active=self.active_popup is not None)
+            next_interval=next_interval, break_active=self.active_popup is not None,
+            just_rested=just_rested)
         self.status_dot.configure(fg_color=STATUS_DOT_COLORS[view.dot])
         self.status.configure(text=STATUS_STATE_LABELS[view.state],
                               text_color=COLORS['text_secondary'])
