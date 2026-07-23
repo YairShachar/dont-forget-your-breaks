@@ -1,5 +1,7 @@
 """App version reporting and GitHub/Homebrew update checks."""
 import json
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -52,11 +54,44 @@ def fetch_latest_version():
         return None
 
 
+BREW_PATHS = ("/opt/homebrew/bin/brew", "/usr/local/bin/brew")
+
+
+def find_brew():
+    """Absolute path to `brew`, or None. GUI apps launched from the Dock lack
+    /opt/homebrew/bin on PATH, so probe the known Homebrew locations before which()."""
+    for p in BREW_PATHS:
+        if os.path.exists(p):
+            return p
+    return shutil.which("brew")
+
+
+def app_bundle_from_executable(executable, frozen):
+    """The running .app bundle path (…/X.app) for a frozen build, else None."""
+    if not frozen:
+        return None
+    for parent in Path(executable).parents:
+        if parent.suffix == ".app":
+            return str(parent)
+    return None
+
+
+def relaunch_command(pid, app_path):
+    """A detached shell command that waits for `pid` to exit, then reopens `app_path` —
+    used to relaunch into the freshly-installed version after we hard-exit."""
+    return ["/bin/sh", "-c",
+            f'while kill -0 {pid} 2>/dev/null; do sleep 0.2; done; open "{app_path}"']
+
+
 def is_installed_via_homebrew():
-    """Check if the app was installed via Homebrew cask."""
+    """Check if the app was installed via Homebrew cask (using an absolute brew path
+    so it works from the GUI PATH, not just a shell)."""
+    brew = find_brew()
+    if not brew:
+        return False
     try:
         result = subprocess.run(
-            ["brew", "list", "--cask", HOMEBREW_CASK_NAME],
+            [brew, "list", "--cask", HOMEBREW_CASK_NAME],
             capture_output=True, timeout=10
         )
         return result.returncode == 0
