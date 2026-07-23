@@ -1649,8 +1649,11 @@ class BreakApp:
                 if newer:
                     self.available_update = (latest_version, release_url)
                     self.root.after(0, lambda: self._show_update_banner(latest_version))
-            if manual and not newer:
-                self.root.after(0, self._show_up_to_date)
+            if manual:
+                if result is None:              # fetch failed (no network / API error)
+                    self.root.after(0, self._show_update_check_failed)
+                elif not newer:
+                    self.root.after(0, self._show_up_to_date)
         except Exception as e:
             logging.error(f"Update check failed: {e}", exc_info=True)
             if manual:
