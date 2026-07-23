@@ -32,6 +32,9 @@ HELD_LABELS = {
     "active": ("you're busy", "during activity"),
 }
 
+RESTED_HEADLINE = "Welcome back"
+RESTED_SUBTEXT = "That counted as a break — timers reset"
+
 
 @dataclass
 class StatusView:
@@ -45,7 +48,7 @@ class StatusView:
 
 
 def compute_status(*, running, paused, held_reason, next_name,
-                   next_remaining, next_interval, break_active):
+                   next_remaining, next_interval, break_active, just_rested=False):
     """Derive the hero view from app state. Order matters: idle → paused →
     holding → break → on-track. Paused keeps the countdown visible (the pill
     carries the 'Paused' state) and freezes the bar in grey; on-track/holding
@@ -67,6 +70,10 @@ def compute_status(*, running, paused, held_reason, next_name,
             chip=f"Breaks pause {tail}", progress_style="live")
     if break_active:
         return StatusView("break", "warning", "Break time", next_name, 1.0)
+    if just_rested:
+        return StatusView(
+            "on_track", "good", RESTED_HEADLINE, RESTED_SUBTEXT,
+            progress_fraction(next_remaining, next_interval), progress_style="live")
     return StatusView(
         "on_track", "good", f"Next break in {format_countdown(next_remaining)}",
         next_name, progress_fraction(next_remaining, next_interval),

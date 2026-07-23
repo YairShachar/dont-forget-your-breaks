@@ -4,6 +4,7 @@ from dataclasses import dataclass
 # Configurable thresholds (can surface to a settings UI in a later phase).
 NATURAL_BREAK_IDLE_THRESHOLD_SECONDS = 300  # idle >= this => natural break (reset all timers)
 AWAY_IDLE_THRESHOLD_SECONDS = 60            # idle >= this at fire time => defer (briefly away)
+MIN_LADDER_GAP_SECONDS = 5                  # strict-ordering floor between pause < away < natural
 
 FIRE = "fire"
 DEFER = "defer"
@@ -40,6 +41,17 @@ def is_natural_break(idle_seconds, threshold=NATURAL_BREAK_IDLE_THRESHOLD_SECOND
     return idle_seconds >= threshold
 
 
+def coordinate_thresholds(pause, away, natural, gap=MIN_LADDER_GAP_SECONDS):
+    """Return (pause, away, natural) guaranteed strictly ordered pause < away <
+    natural, anchored on `pause` (the user's explicit wait-until-you-pause value);
+    the upper rungs are floored up by `gap` as needed. Idempotent — coordinating an
+    already-ordered triple is a no-op. Pure; the safety net that makes the
+    'set pause >= away => break never fires' edge bug impossible for ANY config."""
+    away = max(away, pause + gap)
+    natural = max(natural, away + gap)
+    return pause, away, natural
+
+
 def decide(ctx, away_threshold=AWAY_IDLE_THRESHOLD_SECONDS, pause_threshold=0):
     """Decide whether a due break should FIRE or DEFER given the current context."""
     if ctx.is_fullscreen:
@@ -61,8 +73,12 @@ def step(states, ctx,
          pause_threshold=0):
     """Advance one 1-second tick. Returns a StepResult describing what to do.
 
-    `states` is a list[BreakState] parallel to the app's break configs.
+    `states` is a list[BreakState] parallel to the app's break configs. Thresholds
+    are coordinated (pause < away < natural) up front, so the decision is coherent
+    for ANY caller-supplied values (incl. legacy / hand-edited prefs).
     """
+    pause_threshold, away_threshold, natural_threshold = coordinate_thresholds(
+        pause_threshold, away_threshold, natural_threshold)
     # 1. Natural break: idle long enough -> reset all timers, do not decrement.
     if is_natural_break(ctx.idle_seconds, natural_threshold):
         return StepResult(new_remaining=[s.interval_seconds for s in states],
