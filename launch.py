@@ -1418,10 +1418,9 @@ class BreakApp:
                 fg_color=TILE_CHIP_COLORS.get(icon_name, COLORS['surface_hover']))
             icon_chip.pack(side="left")
 
-            # Right cluster: the countdown, with a quiet "take this break now"
-            # button grouped immediately to its left (#5). The countdown is the
-            # rightmost element; the play button sits tight against it, not adrift
-            # in the middle.
+            # Right cluster: countdown is the rightmost value. The action pair — Break-now
+            # (▶, primary, leads) then Skip (⏭) — hugs together and sits a clear gap to the
+            # LEFT of the time, so actions and value read as two distinct groups (#5).
             timer_label = ctk.CTkLabel(row, text="--:--", font=make_font('row_countdown'), anchor="e")
             timer_label.pack(side="right")
             play_btn = ctk.CTkButton(
@@ -1429,14 +1428,14 @@ class BreakApp:
                 command=lambda c=config: self.break_now(c), anchor="e",
                 width=PLAY_BTN_WIDTH, height=26, corner_radius=CORNER_RADIUS_INPUT,
                 fg_color="transparent", hover_color=COLORS['surface_hover'])
-            play_btn.pack(side="right", padx=(0, SPACE_XXS))
-            self._register_tooltip(play_btn, "Break now")
             skip_btn = ctk.CTkButton(
                 row, text="", image=load_icon('skip', size=PLAY_GLYPH_SIZE),
                 command=lambda c=config: self.skip_break(c), anchor="e",
                 width=PLAY_BTN_WIDTH, height=26, corner_radius=CORNER_RADIUS_INPUT,
                 fg_color="transparent", hover_color=COLORS['surface_hover'])
-            skip_btn.pack(side="right", padx=(0, SPACE_XXS))
+            skip_btn.pack(side="right", padx=(0, SPACE_LG))   # ⏭ nearest the time, clear gap before it
+            play_btn.pack(side="right", padx=(0, 0))          # ▶ leads, hugging ⏭
+            self._register_tooltip(play_btn, "Break now")
             self._register_tooltip(skip_btn, "Skip this one")
 
             # Meta (middle): name + interval subtitle
