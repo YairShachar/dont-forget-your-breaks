@@ -73,8 +73,12 @@ def step(states, ctx,
          pause_threshold=0):
     """Advance one 1-second tick. Returns a StepResult describing what to do.
 
-    `states` is a list[BreakState] parallel to the app's break configs.
+    `states` is a list[BreakState] parallel to the app's break configs. Thresholds
+    are coordinated (pause < away < natural) up front, so the decision is coherent
+    for ANY caller-supplied values (incl. legacy / hand-edited prefs).
     """
+    pause_threshold, away_threshold, natural_threshold = coordinate_thresholds(
+        pause_threshold, away_threshold, natural_threshold)
     # 1. Natural break: idle long enough -> reset all timers, do not decrement.
     if is_natural_break(ctx.idle_seconds, natural_threshold):
         return StepResult(new_remaining=[s.interval_seconds for s in states],

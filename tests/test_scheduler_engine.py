@@ -249,3 +249,43 @@ def test_coordinate_all_equal_gets_gapped():
 def test_coordinate_is_idempotent():
     once = coordinate_thresholds(90, 60, 90)
     assert coordinate_thresholds(*once) == once
+
+
+# --- step() honors coordinated thresholds (Task 2) -------------------------
+
+def _due_states():
+    # one break that becomes due this tick (remaining 1 -> 0)
+    return [BreakState(remaining=1, interval_seconds=1500, duration_seconds=300)]
+
+
+def test_regression_pause_ge_away_still_fires_when_present():
+    # pause 90 >= away 60: previously "away" defers at 60 before active_idle hits
+    # 90, so a still pause could NEVER fire. Coordination floors away to 95, so a
+    # present-and-paused user (idle 92 in [90,95)) fires.
+    ctx = Context(idle_seconds=92, is_fullscreen=False, active_idle_seconds=92)
+    res = step(_due_states(), ctx, natural_threshold=300,
+               away_threshold=60, pause_threshold=90)
+    assert res.fire_index == 0
+    assert res.defer_reason is None
+
+
+def test_gone_past_configured_away_defers_away():
+    ctx = Context(idle_seconds=96, is_fullscreen=False, active_idle_seconds=96)
+    res = step(_due_states(), ctx, natural_threshold=300,
+               away_threshold=60, pause_threshold=90)  # coordinated away = 95
+    assert res.fire_index is None
+    assert res.defer_reason == "away"
+
+
+def test_present_pause_never_labelled_away():
+    # stopped typing but moving the mouse: present (idle low) + paused -> FIRE
+    ctx = Context(idle_seconds=1, is_fullscreen=False, active_idle_seconds=10)
+    res = step(_due_states(), ctx, away_threshold=60, pause_threshold=3)
+    assert res.fire_index == 0
+
+
+def test_configured_natural_threshold_resets_timers():
+    ctx = Context(idle_seconds=200, is_fullscreen=False, active_idle_seconds=200)
+    res = step(_due_states(), ctx, natural_threshold=180)  # 200 >= 180
+    assert res.natural_break is True
+    assert res.new_remaining == [1500]
