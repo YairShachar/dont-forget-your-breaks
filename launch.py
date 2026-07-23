@@ -1607,9 +1607,32 @@ class BreakApp:
         except IOError as e:
             print(f"Warning: Could not save preferences: {e}")
 
+    def _save_session(self, resumable=True):
+        """Persist the live runtime snapshot (atomic temp+replace) for crash/update
+        resume. `resumable=False` on a purposeful quit so the next launch starts fresh."""
+        try:
+            snapshot = build_snapshot(
+                saved_at=time.time(), resumable=resumable,
+                running=self.running, paused=self.paused,
+                breaks=[(c.name.get(), c.remaining) for c in self.breaks],
+                snoozes=[{"name": e["name"], "fire_time": e["fire_time"],
+                          "break_data": e["break_data"]} for e in self._pending_snoozes])
+            SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+            tmp = SESSION_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(snapshot))
+            os.replace(tmp, SESSION_FILE)
+        except Exception as e:
+            logging.debug("session save failed: %s", e)
+
+    def _session_save_tick(self):
+        """Heartbeat: snapshot the live session, then reschedule."""
+        self._save_session(resumable=True)
+        self.root.after(SESSION_SAVE_INTERVAL_SECONDS * 1000, self._session_save_tick)
+
     def _on_close(self):
         """Handle window close."""
         self._save_preferences(include_geometry=True)
+        self._save_session(resumable=False)   # purposeful quit -> next launch starts fresh
         self.root.destroy()
 
     # ------------------ UPDATE CHECKER ------------------
