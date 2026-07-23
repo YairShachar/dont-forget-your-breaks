@@ -40,7 +40,9 @@ from dfyb.activity.sensors import read_context, frontmost_window_rect, smooth_fu
 from dfyb.popup_placement import screen_for_point, center_on_screen, clamp_onscreen
 from dfyb.scheduler.adapter import states_from_configs
 from dfyb.scheduler.tick import advance
-from dfyb.scheduler.engine import decide, DEFER
+from dfyb.scheduler.engine import (decide, DEFER, coordinate_thresholds,
+                                   AWAY_IDLE_THRESHOLD_SECONDS,
+                                   NATURAL_BREAK_IDLE_THRESHOLD_SECONDS)
 from dfyb.scheduler.dedup import break_in_play
 from dfyb.timer_lifecycle import timer_should_continue
 from dfyb.macos_window import pin_to_active_space
@@ -269,6 +271,16 @@ POPUP_WIDTH = 380  # height fits content (see CountdownPopup._position_popup)
 ACTIVITY_PAUSE_MIN = 2
 ACTIVITY_PAUSE_MAX = 15
 ACTIVITY_PAUSE_DEFAULT = 2   # seconds of stillness before a due break fires
+# Away / natural-rest idle lines (sliders; ranges deliberately non-overlapping with
+# the pause range so the three can never fall out of order — pause<=15 < away 30..120
+# < natural 180..1800). Defaults reuse the engine's ladder constants.
+AWAY_IDLE_MIN_SECONDS = 30
+AWAY_IDLE_MAX_SECONDS = 120
+AWAY_IDLE_STEP_SECONDS = 5
+NATURAL_BREAK_MIN_SECONDS = 180
+NATURAL_BREAK_MAX_SECONDS = 1800
+NATURAL_BREAK_STEP_SECONDS = 60
+NATURAL_BREAK_ACK_SECONDS = 6   # how long the "welcome back" cue lingers
 SNOOZE_RECHECK_MS = 5000     # while a snoozed break is context-deferred, re-check this often
 CONFIG_COMMIT_DEBOUNCE_MS = 800  # wait this long after the last keystroke before applying a typed interval/duration
 OVER_BREAK_SUFFIX = "over your break"  # trails the +MM:SS over-breaking count-up
@@ -1223,6 +1235,13 @@ class BreakApp:
             value=self.saved_prefs.get("activity_pause_seconds", ACTIVITY_PAUSE_DEFAULT)
         )
         self.activity_pause_seconds.trace_add('write', self._save_preferences)
+        self.away_idle_seconds = ctk.IntVar(
+            value=self.saved_prefs.get("away_idle_seconds", AWAY_IDLE_THRESHOLD_SECONDS))
+        self.away_idle_seconds.trace_add('write', self._save_preferences)
+        self.natural_break_seconds = ctk.IntVar(
+            value=self.saved_prefs.get("natural_break_seconds",
+                                       NATURAL_BREAK_IDLE_THRESHOLD_SECONDS))
+        self.natural_break_seconds.trace_add('write', self._save_preferences)
         # Whether bare mouse movement counts as activity for wait-until-you-pause
         # (default off — typing/clicks/scroll count, cursor nudges don't) (#41).
         self.count_mouse_move = ctk.BooleanVar(
@@ -1534,6 +1553,8 @@ class BreakApp:
             "popup_placement": self.popup_placement.get(),
             "defer_while_active": self.defer_while_active.get(),
             "activity_pause_seconds": self.activity_pause_seconds.get(),
+            "away_idle_seconds": self.away_idle_seconds.get(),
+            "natural_break_seconds": self.natural_break_seconds.get(),
             "count_mouse_move": self.count_mouse_move.get(),
             "snooze_seconds": self.snooze_seconds.get(),
             "last_update_check": self.saved_prefs.get("last_update_check", 0),
@@ -2141,11 +2162,10 @@ class BreakApp:
                     ctx.is_fullscreen, self._fullscreen_grace)
                 ctx = dataclass_replace(ctx, is_fullscreen=effective_fullscreen)
                 states = states_from_configs(self.breaks)
-                pause = (self.activity_pause_seconds.get()
-                         if self.defer_while_active.get() else 0)
+                pause, away, natural = self._scheduler_thresholds()
                 new_remaining, fire_index, events, self._episode = advance(
-                    states, ctx, self._episode, pause_threshold=pause
-                )
+                    states, ctx, self._episode, pause_threshold=pause,
+                    away_threshold=away, natural_threshold=natural)
                 for config, remaining in zip(self.breaks, new_remaining):
                     config.remaining = remaining
                 for event_type, data in events:
@@ -2164,6 +2184,14 @@ class BreakApp:
                     self.trigger_break(self.breaks[fire_index], held_reason=held_reason)
             except Exception as e:
                 logging.error(f"timer_loop tick failed: {e}", exc_info=True)
+
+    def _scheduler_thresholds(self):
+        """Coordinated (pause, away, natural) idle thresholds from prefs — the one
+        source of truth for both the timer loop and the snooze-hold check."""
+        pause = (self.activity_pause_seconds.get()
+                 if self.defer_while_active.get() else 0)
+        return coordinate_thresholds(pause, self.away_idle_seconds.get(),
+                                     self.natural_break_seconds.get())
 
     def _capture_active_screen(self):
         """Screen (x, y, w, h) the user is working on, captured BEFORE the popup
@@ -2312,9 +2340,10 @@ class BreakApp:
             check_fullscreen=self.defer_during_fullscreen.get(),
             count_mouse_move=self.count_mouse_move.get(),
         )
-        pause = (self.activity_pause_seconds.get()
-                 if self.defer_while_active.get() else 0)
-        if should_hold_snooze(self.paused, decide(ctx, pause_threshold=pause) == DEFER):
+        pause, away, _natural = self._scheduler_thresholds()
+        if should_hold_snooze(self.paused,
+                              decide(ctx, away_threshold=away,
+                                     pause_threshold=pause) == DEFER):
             # Not a good moment (paused or context-deferred) — wait and re-check.
             logging.info("snoozed break held (paused=%s fullscreen=%s meeting=%s), re-checking",
                          self.paused, ctx.is_fullscreen, ctx.is_meeting)
