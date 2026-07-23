@@ -171,7 +171,7 @@ echo -e "${YELLOW}Building macOS app with PyInstaller...${NC}"
 echo ""
 echo -e "${YELLOW}Creating DMG...${NC}"
 cd dist
-rm -f "$DMG_NAME"
+rm -f "$DMG_NAME" rw.*.dmg   # also clear any leftover read-write temp from a prior failed run
 create-dmg \
     --volname "$APP_NAME" \
     --window-pos 200 120 \
@@ -184,6 +184,11 @@ create-dmg \
     "$APP_NAME.app" \
     2>&1 | grep -v "hdiutil does not support" || true
 cd ..
+
+# create-dmg's real exit code is masked by the pipe above; verify the artifact
+# exists instead. Aborts BEFORE commit/tag/push (the trap restores VERSION), so a
+# failed DMG can never leave a tag+commit with no GitHub release (the v1.8.7 bug).
+[ -f "dist/$DMG_NAME" ] || preflight_fail "create-dmg produced no dist/$DMG_NAME — aborting before release"
 
 # Calculate SHA256
 echo ""

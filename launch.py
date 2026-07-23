@@ -34,7 +34,7 @@ from dfyb.settings_logic import suboption_state
 from dfyb.theme import resolve_font_family, resolve_color
 from dfyb.ring import ring_image
 from dfyb.activity.event_log import (
-    EventLog, BREAK_TAKEN, BREAK_SNOOZED,
+    EventLog, BREAK_TAKEN, BREAK_SNOOZED, BREAK_SKIPPED,
     BREAK_SNOOZE_CANCELLED, BREAK_SNOOZE_RETURNED, SESSION_STARTED)
 from dfyb.activity.sensors import read_context, frontmost_window_rect, smooth_fullscreen
 from dfyb.popup_placement import screen_for_point, center_on_screen, clamp_onscreen
@@ -1422,6 +1422,13 @@ class BreakApp:
                 fg_color="transparent", hover_color=COLORS['surface_hover'])
             play_btn.pack(side="right", padx=(0, SPACE_XXS))
             self._register_tooltip(play_btn, "Break now")
+            skip_btn = ctk.CTkButton(
+                row, text="", image=load_icon('skip', size=PLAY_GLYPH_SIZE),
+                command=lambda c=config: self.skip_break(c), anchor="e",
+                width=PLAY_BTN_WIDTH, height=26, corner_radius=CORNER_RADIUS_INPUT,
+                fg_color="transparent", hover_color=COLORS['surface_hover'])
+            skip_btn.pack(side="right", padx=(0, SPACE_XXS))
+            self._register_tooltip(skip_btn, "Skip this one")
 
             # Meta (middle): name + interval subtitle
             meta = ctk.CTkFrame(row, fg_color="transparent")
@@ -1531,6 +1538,14 @@ class BreakApp:
         else:
             self.root.geometry(f"{w}x{h}")
 
+    def _refit_window(self):
+        """Re-grow/shrink the (otherwise size-locked) window to fit content when
+        rows are added/removed (snooze rows, update banner). Toggles resizable so
+        the geometry actually changes."""
+        self.root.resizable(True, True)
+        self._fit_window_to_content()
+        self.root.resizable(False, False)
+
     # ------------------ PREFERENCES ------------------
 
     def _load_preferences(self):
@@ -1634,8 +1649,11 @@ class BreakApp:
                 if newer:
                     self.available_update = (latest_version, release_url)
                     self.root.after(0, lambda: self._show_update_banner(latest_version))
-            if manual and not newer:
-                self.root.after(0, self._show_up_to_date)
+            if manual:
+                if result is None:              # fetch failed (no network / API error)
+                    self.root.after(0, self._show_update_check_failed)
+                elif not newer:
+                    self.root.after(0, self._show_up_to_date)
         except Exception as e:
             logging.error(f"Update check failed: {e}", exc_info=True)
             if manual:
@@ -1645,10 +1663,7 @@ class BreakApp:
         """Show the update available label in the main UI."""
         self.update_label.configure(text=f"v{version} available — Update")
         self.update_label.pack(side="left")
-        # Temporarily allow resize so the window can adjust to fit the new label
-        self.root.resizable(True, True)
-        self._fit_window_to_content()
-        self.root.resizable(False, False)
+        self._refit_window()   # grow to fit the new banner label
 
     def _check_updates_now(self):
         """Manual check triggered by clicking the version number — bypasses the
@@ -2335,7 +2350,7 @@ class BreakApp:
                 self._render_status()
             # An explicit snooze always comes back after its delay, regardless of
             # Start/Stop; _requeue_break holds it while paused or context-deferred.
-            entry = {"name": break_data['name'],
+            entry = {"name": break_data['name'], "break_data": break_data,
                      "fire_time": time.time() + snooze_seconds, "after_id": None}
             entry["after_id"] = self.root.after(
                 snooze_delay_ms(snooze_seconds),
@@ -2416,6 +2431,25 @@ class BreakApp:
             BREAK_SNOOZE_CANCELLED, name=entry["name"],
             remaining_seconds=snooze_remaining(entry["fire_time"], time.time()))
 
+    def _fire_snooze_now(self, entry):
+        """▶ on a snooze row: bring the snoozed break back right now — skip the
+        remaining wait and the context-hold (explicit action, like Break now)."""
+        if entry.get("after_id") is not None:
+            try:
+                self.root.after_cancel(entry["after_id"])
+            except Exception:
+                pass
+        if entry in self._pending_snoozes:
+            self._pending_snoozes.remove(entry)
+        break_data = entry["break_data"]
+        self._record_event(BREAK_SNOOZE_RETURNED, name=break_data['name'], early=True)
+        self._render_snooze_rows(time.time())
+        if break_in_play(break_data['name'], self._active_break_name,
+                         [b['name'] for b in self.break_queue], []):
+            return
+        self.break_queue.append(break_data)
+        self.root.after(0, self._process_break_queue)
+
     def test_break(self, config):
         """Preview a break configuration without affecting its schedule (#54)."""
         self.trigger_break(config, preview=True)
@@ -2435,6 +2469,14 @@ class BreakApp:
         self.trigger_break(config)
         self.update_ui()
 
+    def skip_break(self, config):
+        """⏭ on a break row: skip this cycle — reset the countdown to a full
+        interval so it won't fire now (it returns on its normal schedule), and log
+        it as skipped (not taken)."""
+        config.reset_timer()
+        self._record_event(BREAK_SKIPPED, name=config.name.get())
+        self.update_ui()
+
     # ------------------ UI UPDATE ------------------
 
     def _build_snooze_row(self, entry, status):
@@ -2452,6 +2494,13 @@ class BreakApp:
             font=make_font('caption'),
             command=lambda: self._cancel_snooze(entry)
         ).pack(side="right", padx=(0, PADDING_PANEL_X), pady=SPACE_SM)
+        take_now = ctk.CTkButton(
+            row, text="", image=load_icon('play', size=PLAY_GLYPH_SIZE),
+            width=28, height=BUTTON_HEIGHT_SMALL, corner_radius=CORNER_RADIUS_INPUT,
+            fg_color="transparent", hover_color=COLORS['surface_hover'],
+            command=lambda: self._fire_snooze_now(entry))
+        take_now.pack(side="right", padx=(0, SPACE_XS), pady=SPACE_SM)
+        self._register_tooltip(take_now, "Take now")
         status_label = ctk.CTkLabel(
             row, text=status,
             font=make_font('caption'),
@@ -2461,6 +2510,7 @@ class BreakApp:
 
     def _render_snooze_rows(self, now):
         entries = self._pending_snoozes
+        rows_before = len(self._snooze_rows)
         if entries and self._snooze_header.winfo_manager() != "pack":
             self._snooze_header.pack(anchor="w", padx=PADDING_PANEL_X, pady=(SPACE_XXS, SPACE_XXS))
         elif not entries and self._snooze_header.winfo_manager() == "pack":
@@ -2480,6 +2530,8 @@ class BreakApp:
             if eid not in current:
                 self._snooze_rows[eid]["frame"].destroy()
                 del self._snooze_rows[eid]
+        if len(self._snooze_rows) != rows_before:
+            self._refit_window()   # grow/shrink so snooze rows are never clipped
 
     def _register_tooltip(self, widget, text):
         """Bind a gentle hover hint. The button's internal canvas fires <Enter>
