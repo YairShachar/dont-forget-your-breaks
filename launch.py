@@ -1975,6 +1975,21 @@ class BreakApp:
             number_of_steps=ACTIVITY_PAUSE_MAX - ACTIVITY_PAUSE_MIN, command=_on_pause)
         self._pause_slider.set(self.activity_pause_seconds.get())
         self._pause_slider.pack(side="right")
+
+        # Away & rest timing — always-on lines (independent of wait-until-you-pause).
+        ctk.CTkLabel(smart.body, text="Away & rest timing", font=make_font('caption'),
+                     text_color=COLORS['text_tertiary']).pack(
+            anchor="w", padx=PADDING_PANEL_X, pady=(SPACE_SM, SPACE_XXS))
+        timing = ctk.CTkFrame(smart.body, fg_color="transparent")
+        timing.pack(fill="x", anchor="w", padx=PADDING_PANEL_X, pady=(0, PADDING_PANEL_Y))
+        self._build_timing_slider(
+            timing, self.away_idle_seconds,
+            lambda v: f"Consider you away after: {v} sec",
+            AWAY_IDLE_MIN_SECONDS, AWAY_IDLE_MAX_SECONDS, AWAY_IDLE_STEP_SECONDS)
+        self._build_timing_slider(
+            timing, self.natural_break_seconds,
+            lambda v: f"Count as a rest after: {v // 60} min",
+            NATURAL_BREAK_MIN_SECONDS, NATURAL_BREAK_MAX_SECONDS, NATURAL_BREAK_STEP_SECONDS)
         smart.finalize()
 
         # Grey out the sub-options live when "Wait until you pause" is off.
@@ -2040,6 +2055,26 @@ class BreakApp:
             if panel.config is config:
                 panel.focus_config()
                 break
+
+    def _build_timing_slider(self, parent, var, label_fn, lo, hi, step):
+        """A labeled slider row (label left, slider right) that writes `var` and
+        updates its label live via label_fn(value). Mirrors the Pause-length control
+        for the always-on away/rest lines."""
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(anchor="w", fill="x", pady=(SPACE_XS, 0))
+        var.set(max(lo, min(hi, var.get())))   # heal an out-of-range stored value
+        label = ctk.CTkLabel(row, text=label_fn(var.get()), font=make_font('label'))
+        label.pack(side="left")
+
+        def _on(value):
+            v = int(round(value / step) * step)
+            var.set(v)
+            label.configure(text=label_fn(v))
+
+        slider = ctk.CTkSlider(row, from_=lo, to=hi,
+                               number_of_steps=(hi - lo) // step, command=_on)
+        slider.set(var.get())
+        slider.pack(side="right")
 
     def _sync_activity_suboptions(self, *args):
         """Enable/grey the 'wait until you pause' sub-options to match the parent."""
