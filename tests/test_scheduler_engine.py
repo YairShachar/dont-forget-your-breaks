@@ -1,6 +1,9 @@
 from dfyb.scheduler.engine import (
     Context, BreakState, step, decide, is_natural_break, FIRE, DEFER,
+    coordinate_thresholds, MIN_LADDER_GAP_SECONDS,
 )
+
+GAP = MIN_LADDER_GAP_SECONDS
 
 
 def ctx(idle=0.0, fullscreen=False):
@@ -221,3 +224,28 @@ def test_decide_away_ignores_active_idle():
     # away keys off idle_seconds (any input) regardless of active_idle
     ctx = Context(idle_seconds=100, is_fullscreen=False, active_idle_seconds=0)
     assert decide(ctx, pause_threshold=2) == DEFER
+
+
+# --- coordinate_thresholds (Task 1) ---------------------------------------
+
+def test_coordinate_keeps_already_ordered_values():
+    assert coordinate_thresholds(2, 60, 300) == (2, 60, 300)
+    assert coordinate_thresholds(0, 60, 300) == (0, 60, 300)
+
+
+def test_coordinate_floors_away_above_pause():
+    assert coordinate_thresholds(90, 60, 300) == (90, 90 + GAP, 300)
+
+
+def test_coordinate_floors_natural_above_away():
+    # away floored above pause, then natural floored above that
+    assert coordinate_thresholds(90, 60, 90) == (90, 90 + GAP, 90 + 2 * GAP)
+
+
+def test_coordinate_all_equal_gets_gapped():
+    assert coordinate_thresholds(50, 50, 50) == (50, 50 + GAP, 50 + 2 * GAP)
+
+
+def test_coordinate_is_idempotent():
+    once = coordinate_thresholds(90, 60, 90)
+    assert coordinate_thresholds(*once) == once

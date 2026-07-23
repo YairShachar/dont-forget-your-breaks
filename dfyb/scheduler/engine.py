@@ -4,6 +4,7 @@ from dataclasses import dataclass
 # Configurable thresholds (can surface to a settings UI in a later phase).
 NATURAL_BREAK_IDLE_THRESHOLD_SECONDS = 300  # idle >= this => natural break (reset all timers)
 AWAY_IDLE_THRESHOLD_SECONDS = 60            # idle >= this at fire time => defer (briefly away)
+MIN_LADDER_GAP_SECONDS = 5                  # strict-ordering floor between pause < away < natural
 
 FIRE = "fire"
 DEFER = "defer"
@@ -38,6 +39,17 @@ class StepResult:
 def is_natural_break(idle_seconds, threshold=NATURAL_BREAK_IDLE_THRESHOLD_SECONDS):
     """True if the user has been idle long enough to count as having taken a break."""
     return idle_seconds >= threshold
+
+
+def coordinate_thresholds(pause, away, natural, gap=MIN_LADDER_GAP_SECONDS):
+    """Return (pause, away, natural) guaranteed strictly ordered pause < away <
+    natural, anchored on `pause` (the user's explicit wait-until-you-pause value);
+    the upper rungs are floored up by `gap` as needed. Idempotent — coordinating an
+    already-ordered triple is a no-op. Pure; the safety net that makes the
+    'set pause >= away => break never fires' edge bug impossible for ANY config."""
+    away = max(away, pause + gap)
+    natural = max(natural, away + gap)
+    return pause, away, natural
 
 
 def decide(ctx, away_threshold=AWAY_IDLE_THRESHOLD_SECONDS, pause_threshold=0):
