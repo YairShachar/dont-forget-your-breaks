@@ -1,5 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+with open('VERSION') as _vf:
+    APP_VERSION = _vf.read().strip()
 
 a = Analysis(
     ['launch.py'],
@@ -41,6 +43,15 @@ exe = EXE(
 app = BUNDLE(
     exe,
     name='Dont Forget Your Breaks.app',
-    icon=None,
-    bundle_identifier=None,
+    icon='assets/AppIcon.icns',
+    bundle_identifier='com.yairs.dontforgetyourbreaks',
+    info_plist={
+        # Dock / ⌘-Tab / Finder show the real name (with apostrophe) + a real icon;
+        # version is read from VERSION so it stops reporting 0.0.0.
+        'CFBundleName': "Don't Forget Your Breaks",
+        'CFBundleDisplayName': "Don't Forget Your Breaks",
+        'CFBundleShortVersionString': APP_VERSION,
+        'CFBundleVersion': APP_VERSION,
+        'NSHighResolutionCapable': True,
+    },
 )
