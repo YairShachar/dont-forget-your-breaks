@@ -31,6 +31,8 @@ from dfyb.updater import (
 from dfyb.animation import ease_out_quad, prefers_reduced_motion, lerp_color
 from dfyb.geometry import point_in_rect
 from dfyb.settings_logic import suboption_state
+from dfyb.session import (build_snapshot, parse_snapshot, should_resume,
+                          remaining_by_name, snoozes_to_restore)
 from dfyb.theme import resolve_font_family, resolve_color
 from dfyb.ring import ring_image
 from dfyb.activity.event_log import (
@@ -116,12 +118,17 @@ TIME_UNITS = ["sec", "min", "hour"]
 CONFIG_FILE = Path.home() / "Library" / "Preferences" / "com.yairs.dontforgetyourbreaks.json"
 LOCK_FILE = Path.home() / "Library" / "Application Support" / "DontForgetYourBreaks" / ".lock"
 EVENTS_FILE = Path.home() / "Library" / "Application Support" / "DontForgetYourBreaks" / "events.jsonl"
+SESSION_FILE = Path.home() / "Library" / "Application Support" / "DontForgetYourBreaks" / "session.json"
 if IS_DEV:
     # Isolate all mutable state so the dev instance runs alongside the real app
     # (its own lock → no single-instance clash) and never touches real prefs/events.
     CONFIG_FILE = CONFIG_FILE.with_name("com.yairs.dontforgetyourbreaks.dev.json")
     LOCK_FILE = LOCK_FILE.with_name(".lock.dev")
     EVENTS_FILE = EVENTS_FILE.with_name("events.dev.jsonl")
+    SESSION_FILE = SESSION_FILE.with_name("session.dev.json")
+
+SESSION_SAVE_INTERVAL_SECONDS = 5      # how often to snapshot the live session
+SESSION_RESUME_WINDOW_SECONDS = 600    # resume only if the crash/relaunch was within this
 GITHUB_NEW_ISSUE_URL = "https://github.com/YairShachar/dont-forget-your-breaks/issues/new"
 UPDATE_CHECK_INTERVAL_HOURS = 24
 UPDATE_TOAST_MS = 3000    # how long the "up to date" / "check failed" note lingers
@@ -1289,6 +1296,8 @@ class BreakApp:
         self._build_ui()
         self._fit_window_to_content()
         self._setup_auto_save()
+        self._restore_session()      # resume timers/snoozes if the last exit was an involuntary, recent one
+        self._session_save_tick()    # begin the periodic snapshot heartbeat
         self._schedule_update_check(force=True)   # check on every launch/reload
 
         # Save window geometry on close
@@ -1600,9 +1609,74 @@ class BreakApp:
         except IOError as e:
             print(f"Warning: Could not save preferences: {e}")
 
+    def _save_session(self, resumable=True):
+        """Persist the live runtime snapshot (atomic temp+replace) for crash/update
+        resume. `resumable=False` on a purposeful quit so the next launch starts fresh."""
+        try:
+            snapshot = build_snapshot(
+                saved_at=time.time(), resumable=resumable,
+                running=self.running, paused=self.paused,
+                breaks=[(c.name.get(), c.remaining) for c in self.breaks],
+                snoozes=[{"name": e["name"], "fire_time": e["fire_time"],
+                          "break_data": e["break_data"]} for e in self._pending_snoozes])
+            SESSION_FILE.parent.mkdir(parents=True, exist_ok=True)
+            tmp = SESSION_FILE.with_suffix(".tmp")
+            tmp.write_text(json.dumps(snapshot))
+            os.replace(tmp, SESSION_FILE)
+        except Exception as e:
+            logging.debug("session save failed: %s", e)
+
+    def _session_save_tick(self):
+        """Heartbeat: snapshot the live session, then reschedule."""
+        self._save_session(resumable=True)
+        self.root.after(SESSION_SAVE_INTERVAL_SECONDS * 1000, self._session_save_tick)
+
+    def _restore_session(self):
+        """If the last exit was involuntary (crash / future self-update) and recent,
+        resume timers + snoozes exactly. A purposeful quit or a stale snapshot is ignored
+        (fresh). Never resets timers / clears snoozes / logs SESSION_STARTED (that's Start)."""
+        try:
+            raw = json.loads(SESSION_FILE.read_text()) if SESSION_FILE.exists() else None
+        except Exception:
+            raw = None
+        snapshot = parse_snapshot(raw)
+        now = time.time()
+        if not should_resume(snapshot, now, SESSION_RESUME_WINDOW_SECONDS):
+            return
+
+        remaining = remaining_by_name(snapshot, [c.name.get() for c in self.breaks])
+        for config in self.breaks:
+            if config.name.get() in remaining:
+                config.remaining = remaining[config.name.get()]
+
+        for s in snoozes_to_restore(snapshot, now):
+            entry = {"name": s["name"], "break_data": s["break_data"],
+                     "fire_time": s["fire_time"], "after_id": None}
+            entry["after_id"] = self.root.after(
+                max(0, int(s["remaining"] * 1000)),
+                lambda bd=s["break_data"], e=entry: self._requeue_break(bd, e))
+            self._pending_snoozes.append(entry)
+        self._render_snooze_rows(now)
+
+        if snapshot["running"]:
+            self.running = True
+            self.paused = False
+            self.stop_event.clear()
+            self._episode = None
+            self._held = None
+            self._fullscreen_grace = 0
+            self._render_status()
+            self.toggle_btn.configure(text="Pause", fg_color=COLORS['accent_warning'],
+                                      hover_color=COLORS['accent_warning_hover'])
+            self.reset_btn.configure(state="normal")
+            self._spin_timer_loop()
+            if snapshot["paused"]:
+                self.toggle_pause()   # flip to paused (Resume button + paused visual)
+
     def _on_close(self):
         """Handle window close."""
         self._save_preferences(include_geometry=True)
+        self._save_session(resumable=False)   # purposeful quit -> next launch starts fresh
         self.root.destroy()
 
     # ------------------ UPDATE CHECKER ------------------
@@ -1818,8 +1892,12 @@ class BreakApp:
             hover_color=COLORS['accent_warning_hover']
         )
         self.reset_btn.configure(state="normal")
+        self._spin_timer_loop()
 
-        # New generation so any not-yet-exited thread from a prior session stops.
+    def _spin_timer_loop(self):
+        """Launch the per-tick timer thread for the current running session — shared by
+        start() (fresh) and _restore_session() (resume). A new generation stops any
+        left-over thread from a prior session."""
         self._timer_generation += 1
         threading.Thread(
             target=self.timer_loop, args=(self._timer_generation,), daemon=True
