@@ -24,6 +24,9 @@ from dfyb.updater import (
     fetch_latest_version,
     is_installed_via_homebrew,
     should_check_for_updates,
+    find_brew,
+    app_bundle_from_executable,
+    relaunch_command,
     VERSION_FILE,
     HOMEBREW_CASK_NAME,
     BASE_DIR,
@@ -132,6 +135,7 @@ SESSION_RESUME_WINDOW_SECONDS = 600    # resume only if the crash/relaunch was w
 GITHUB_NEW_ISSUE_URL = "https://github.com/YairShachar/dont-forget-your-breaks/issues/new"
 UPDATE_CHECK_INTERVAL_HOURS = 24
 UPDATE_TOAST_MS = 3000    # how long the "up to date" / "check failed" note lingers
+BREW_UPGRADE_TIMEOUT_S = 300   # brew upgrade download+install headroom (seconds)
 
 # Typography sizes (role-based; family auto-picked by the 20pt optical split)
 FONT_SIZES = {
@@ -1772,20 +1776,61 @@ class BreakApp:
             webbrowser.open(release_url)
 
     def _update_via_homebrew(self):
-        """Launch Homebrew upgrade in the default terminal."""
-        upgrade_cmd = f"brew upgrade --cask {HOMEBREW_CASK_NAME}"
-        if sys.platform == "darwin":
-            # Open Terminal.app with the upgrade command
-            script = (
-                f'tell application "Terminal"\n'
-                f'    activate\n'
-                f'    do script "{upgrade_cmd}"\n'
-                f'end tell'
-            )
-            subprocess.Popen(["osascript", "-e", script])
+        """Seamless Homebrew update: silently `brew upgrade`, then relaunch into the new
+        version with timers restored. Falls back to the releases page when we can't do it
+        safely (source run, brew missing, or no resolvable .app bundle)."""
+        brew = find_brew()
+        app_path = app_bundle_from_executable(sys.executable, getattr(sys, "frozen", False))
+        if not brew or not app_path:
+            webbrowser.open(self.available_update[1])   # manual fallback
+            return
+        self._show_updating()
+        threading.Thread(target=self._run_brew_upgrade, args=(brew, app_path),
+                         daemon=True).start()
+
+    def _run_brew_upgrade(self, brew, app_path):
+        """Background: brew upgrade, then confirm the installed cask version advanced."""
+        target = self.available_update[0]
+        ok = False
+        try:
+            up = subprocess.run([brew, "upgrade", "--cask", HOMEBREW_CASK_NAME],
+                                capture_output=True, text=True,
+                                timeout=BREW_UPGRADE_TIMEOUT_S)
+            if up.returncode == 0:
+                ver = subprocess.run(
+                    [brew, "list", "--cask", "--versions", HOMEBREW_CASK_NAME],
+                    capture_output=True, text=True, timeout=30)
+                tokens = ver.stdout.split()
+                installed = tokens[-1] if tokens else ""
+                ok = bool(installed) and (installed == target
+                                          or is_newer_version(installed, target))
+        except Exception as e:
+            logging.error("brew upgrade failed: %s", e)
+        self.root.after(0, lambda: self._finish_brew_upgrade(ok, app_path))
+
+    def _finish_brew_upgrade(self, ok, app_path):
+        if ok:
+            self._relaunch_after_update(app_path)
         else:
-            # Fallback: just open the releases page
-            webbrowser.open(self.available_update[1])
+            self._update_failed()
+
+    def _relaunch_after_update(self, app_path):
+        """Save a resumable snapshot + prefs, spawn a detached relauncher, then hard-exit
+        (os._exit skips _on_close, which would mark the snapshot non-resumable)."""
+        self._save_preferences(include_geometry=True)
+        self._save_session(resumable=True)
+        subprocess.Popen(relaunch_command(os.getpid(), app_path))
+        os._exit(0)
+
+    def _show_updating(self):
+        """Banner → 'Updating…' (disabled) while the upgrade runs."""
+        self.update_label.configure(text="Updating…", state="disabled",
+                                    text_color=COLORS['text_tertiary'])
+
+    def _update_failed(self):
+        """Upgrade failed / didn't advance: revert to a clickable retry state."""
+        self.update_label.configure(text="Update failed — try again", state="normal",
+                                    text_color=COLORS['accent_warning'])
 
     def _on_main_focus(self, event=None):
         """When main window is focused, bring popup to user if active."""
