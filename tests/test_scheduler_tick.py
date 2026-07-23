@@ -102,3 +102,24 @@ def test_advance_defers_active():
     assert fire_index is None
     assert events == [(BREAK_DEFERRED, {"reason": "active"})]
     assert ep == DEFERRED_EPISODE
+
+
+# --- advance forwards away/natural thresholds (Task 3) ---------------------
+
+def _due_states():
+    return [BreakState(remaining=1, interval_seconds=1500, duration_seconds=300)]
+
+
+def test_advance_forwards_away_threshold():
+    c = Context(idle_seconds=40, is_fullscreen=False, active_idle_seconds=40)
+    # pause off (0): a due break fires when present (idle < away), defers when away.
+    _, fire_lo, _, _ = advance(_due_states(), c, None, pause_threshold=0, away_threshold=30)
+    _, fire_hi, _, _ = advance(_due_states(), c, None, pause_threshold=0, away_threshold=60)
+    assert fire_lo is None      # idle 40 >= away 30 -> defer away
+    assert fire_hi == 0         # idle 40 < away 60 -> fire
+
+
+def test_advance_forwards_natural_threshold():
+    c = Context(idle_seconds=200, is_fullscreen=False, active_idle_seconds=200)
+    _, _, _, ep = advance(_due_states(), c, None, natural_threshold=180)
+    assert ep == IDLE_EPISODE    # 200 >= 180 -> natural break episode
