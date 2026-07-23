@@ -19,6 +19,9 @@ IDLE_DETECTED = "idle_detected"
 BREAK_DEFERRED = "break_deferred"
 NATURAL_BREAK = "natural_break"
 SESSION_STARTED = "session_started"   # user pressed Start — begins a fresh break cycle
+BREAK_RESCHEDULED = "break_rescheduled"   # one-time nudge of the next break sooner/later
+SESSION_RESUMED = "session_resumed"       # timers/snoozes restored after a crash/update relaunch
+APP_UPDATED = "app_updated"               # a self-update applied a new version
 
 # Event record schema version. Bump when the event shape changes; readers may
 # branch on it. Old records lacking "v" are treated as unversioned.
