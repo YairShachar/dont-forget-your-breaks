@@ -138,6 +138,7 @@ GITHUB_NEW_ISSUE_URL = "https://github.com/YairShachar/dont-forget-your-breaks/i
 UPDATE_CHECK_INTERVAL_HOURS = 24
 UPDATE_TOAST_MS = 3000    # how long the "up to date" / "check failed" note lingers
 BREW_UPGRADE_TIMEOUT_S = 300   # brew upgrade download+install headroom (seconds)
+BREW_UPDATE_TIMEOUT_S = 120    # brew update (tap refresh) headroom (seconds)
 
 # Typography sizes (role-based; family auto-picked by the 20pt optical split)
 FONT_SIZES = {
@@ -1808,6 +1809,14 @@ class BreakApp:
         target = self.available_update[0]
         ok = False
         try:
+            # brew's local tap can lag, so `brew upgrade` alone reports "already installed"
+            # on a stale tap (the version never advances). Refresh first — best-effort, so a
+            # failed refresh still lets the upgrade run if the tap happens to be current.
+            try:
+                subprocess.run([brew, "update"], capture_output=True, text=True,
+                               timeout=BREW_UPDATE_TIMEOUT_S)
+            except Exception as e:
+                logging.warning("brew update failed (continuing to upgrade): %s", e)
             up = subprocess.run([brew, "upgrade", "--cask", HOMEBREW_CASK_NAME],
                                 capture_output=True, text=True,
                                 timeout=BREW_UPGRADE_TIMEOUT_S)
