@@ -40,7 +40,8 @@ from dfyb.theme import resolve_font_family, resolve_color
 from dfyb.ring import ring_image
 from dfyb.activity.event_log import (
     EventLog, BREAK_TAKEN, BREAK_SNOOZED, BREAK_SKIPPED,
-    BREAK_SNOOZE_CANCELLED, BREAK_SNOOZE_RETURNED, SESSION_STARTED)
+    BREAK_SNOOZE_CANCELLED, BREAK_SNOOZE_RETURNED, SESSION_STARTED,
+    BREAK_RESCHEDULED, SESSION_RESUMED, APP_UPDATED)
 from dfyb.activity.sensors import read_context, frontmost_window_rect, smooth_fullscreen
 from dfyb.popup_placement import screen_for_point, center_on_screen, clamp_onscreen
 from dfyb.scheduler.adapter import states_from_configs
@@ -1660,6 +1661,9 @@ class BreakApp:
                 lambda bd=s["break_data"], e=entry: self._requeue_break(bd, e))
             self._pending_snoozes.append(entry)
         self._render_snooze_rows(now)
+        self._record_event(SESSION_RESUMED, running=snapshot["running"],
+                           resumed_breaks=len(remaining),
+                           resumed_snoozes=len(self._pending_snoozes))
 
         if snapshot["running"]:
             self.running = True
@@ -1817,6 +1821,7 @@ class BreakApp:
     def _relaunch_after_update(self, app_path):
         """Save a resumable snapshot + prefs, spawn a detached relauncher, then hard-exit
         (os._exit skips _on_close, which would mark the snapshot non-resumable)."""
+        self._record_event(APP_UPDATED, to_version=self.available_update[0])
         self._save_preferences(include_geometry=True)
         self._save_session(resumable=True)
         subprocess.Popen(relaunch_command(os.getpid(), app_path))
