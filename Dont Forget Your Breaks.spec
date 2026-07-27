@@ -23,10 +23,9 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
-    name='Dont Forget Your Breaks',
+    exclude_binaries=True,   # one-DIR: libs/data live beside the exe (no per-launch
+    name='Dont Forget Your Breaks',   # unpacking → the app starts in ~seconds, not ~30s)
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -40,8 +39,17 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
 )
-app = BUNDLE(
+coll = COLLECT(
     exe,
+    a.binaries,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='Dont Forget Your Breaks',
+)
+app = BUNDLE(
+    coll,
     name='Dont Forget Your Breaks.app',
     icon='assets/AppIcon.icns',
     bundle_identifier='com.yairs.dontforgetyourbreaks',
