@@ -280,6 +280,12 @@ fi
 # Return to project directory
 cd - > /dev/null
 
+# Remove the build output now the release is published. dist/ is only needed
+# transiently to build the DMG; leaving it behind creates a stray, runnable .app
+# that Spotlight indexes and that's easy to launch by accident instead of the real
+# /Applications install — the parallel-copy trap. No dist/ = no trap.
+rm -rf dist build
+
 echo ""
 echo -e "${GREEN}✓ Released v$VERSION${NC}"
 echo "  GitHub: https://github.com/$GITHUB_REPO/releases/tag/v$VERSION"
