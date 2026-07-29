@@ -18,11 +18,12 @@ UINT32_SIZE = 4
 # A window counts as covering a display if it reaches each edge within this many
 # points — absorbs rounding between window bounds and display bounds.
 FULLSCREEN_COVER_TOLERANCE_PX = 2
-# Once fullscreen is really observed, keep treating the context as fullscreen for
-# this many subsequent ticks even if the raw signal drops out. Bridges the brief
-# gap during a Space-to-Space swipe (CGWindowList shows no covering window
-# mid-transition), so a due break doesn't fire behind the destination Space (#46).
-FULLSCREEN_GRACE_TICKS = 3
+# Once a defer signal (fullscreen / mic-in-use / active-input) is really observed,
+# keep treating it as present for this many subsequent ticks even if the raw signal
+# drops out for a sample. Bridges brief dropouts — a Space-to-Space swipe hiding the
+# covering window (#46), a per-utterance mic-device stop, a momentary typing pause —
+# so a due break doesn't fire into the gap (#84).
+DEFER_GRACE_TICKS = 3
 
 
 def idle_seconds():
@@ -154,15 +155,16 @@ def frontmost_is_fullscreen():
         return False
 
 
-def smooth_fullscreen(raw_fullscreen, grace_left, grace_ticks=FULLSCREEN_GRACE_TICKS):
-    """Hysteresis over transient fullscreen-detection gaps (e.g. Space swipes).
+def smooth_signal(raw_on, grace_left, grace_ticks=DEFER_GRACE_TICKS):
+    """Hysteresis over transient dropouts of any boolean defer signal (fullscreen,
+    mic-in-use, active-input).
 
-    Pure and tick-based (no clock) so it is unit-tested off macOS. Once fullscreen
+    Pure and tick-based (no clock) so it is unit-tested off macOS. Once the signal
     is really observed, it 'sticks' for up to `grace_ticks` subsequent ticks even
-    if the raw signal drops out. Returns (effective_fullscreen, new_grace_left);
-    the caller carries `new_grace_left` into the next tick.
+    if the raw reading drops out. Returns (effective_on, new_grace_left); the caller
+    carries `new_grace_left` into the next tick.
     """
-    if raw_fullscreen:
+    if raw_on:
         return True, grace_ticks
     if grace_left > 0:
         return True, grace_left - 1

@@ -42,7 +42,7 @@ from dfyb.activity.event_log import (
     EventLog, BREAK_TAKEN, BREAK_SNOOZED, BREAK_SKIPPED,
     BREAK_SNOOZE_CANCELLED, BREAK_SNOOZE_RETURNED, SESSION_STARTED,
     BREAK_RESCHEDULED, SESSION_RESUMED, APP_UPDATED)
-from dfyb.activity.sensors import read_context, frontmost_window_rect, smooth_fullscreen
+from dfyb.activity.sensors import read_context, frontmost_window_rect, smooth_signal
 from dfyb.popup_placement import screen_for_point, center_on_screen, clamp_onscreen
 from dfyb.scheduler.adapter import states_from_configs
 from dfyb.scheduler.tick import advance, IDLE_EPISODE
@@ -2356,7 +2356,7 @@ class BreakApp:
                 )
                 # Bridge transient fullscreen dropouts (e.g. Space-to-Space
                 # swipes) so a due break doesn't fire behind a fullscreen app (#46).
-                effective_fullscreen, self._fullscreen_grace = smooth_fullscreen(
+                effective_fullscreen, self._fullscreen_grace = smooth_signal(
                     ctx.is_fullscreen, self._fullscreen_grace)
                 ctx = dataclass_replace(ctx, is_fullscreen=effective_fullscreen)
                 states = states_from_configs(self.breaks)
