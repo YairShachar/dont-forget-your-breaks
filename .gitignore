@@ -35,3 +35,7 @@ CLAUDE.local.md
 DontForgetYourBreaks.app/
 .superpowers/
 scripts/_icon_preview.png
+
+# Local-only artifacts (reports opened via file://, icon previews)
+reports/
+scripts/_*.png
