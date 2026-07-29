@@ -115,3 +115,37 @@ def test_remaining_clamps_past_due():
 
 def test_remaining_ten_seconds():
     assert snooze_remaining(1010, 1000) == 10
+
+
+# --- next_clear_streak: debounce a snooze return over transient dropouts (#84) ---
+from dfyb.snooze import next_clear_streak
+
+
+def test_clear_streak_defer_resets_and_holds():
+    # a DEFER (context_defers=True) always resets the streak and holds
+    assert next_clear_streak(1, True, 2) == (0, False)
+    assert next_clear_streak(0, True, 2) == (0, False)
+
+
+def test_clear_streak_needs_consecutive_clears():
+    # one clear poll is not enough when 2 are required
+    assert next_clear_streak(0, False, 2) == (1, False)
+    # the second consecutive clear returns the break
+    assert next_clear_streak(1, False, 2) == (2, True)
+
+
+def test_clear_streak_bridges_a_single_dropout():
+    # clear, then a one-poll DEFER (mic blip) resets, so it does NOT return early
+    streak, ret = next_clear_streak(0, False, 2)   # clear
+    assert (streak, ret) == (1, False)
+    streak, ret = next_clear_streak(streak, True, 2)  # dropout -> reset
+    assert (streak, ret) == (0, False)
+    streak, ret = next_clear_streak(streak, False, 2)  # clear again
+    assert (streak, ret) == (1, False)
+    streak, ret = next_clear_streak(streak, False, 2)  # second consecutive clear
+    assert (streak, ret) == (2, True)
+
+
+def test_clear_streak_required_one_returns_immediately():
+    # required=1 means no debounce (legacy behaviour)
+    assert next_clear_streak(0, False, 1) == (1, True)

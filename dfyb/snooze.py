@@ -36,6 +36,20 @@ def should_hold_snooze(paused, context_defers):
     return bool(paused or context_defers)
 
 
+def next_clear_streak(prev_streak, context_defers, required):
+    """Debounce a snoozed break's return over transient sensor dropouts (#84).
+
+    The snooze-return poll re-checks context; a single unlucky poll landing in a
+    mic-device blip (or a brief typing pause) must not fire the break mid-activity.
+    Require `required` CONSECUTIVE clear polls before returning. Any deferring poll
+    resets the streak. Pure — returns (new_streak, should_return).
+    """
+    if context_defers:
+        return 0, False
+    new_streak = prev_streak + 1
+    return new_streak, new_streak >= required
+
+
 def snooze_remaining(fire_time, now):
     """Whole seconds until a snoozed break returns (clamped at 0)."""
     return max(0, int(fire_time - now))
