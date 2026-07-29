@@ -39,13 +39,13 @@ from dfyb.session import (build_snapshot, parse_snapshot, should_resume,
 from dfyb.theme import resolve_font_family, resolve_color
 from dfyb.ring import ring_image
 from dfyb.activity.event_log import (
-    EventLog, BREAK_TAKEN, BREAK_SNOOZED, BREAK_SKIPPED,
+    EventLog, BREAK_TAKEN, BREAK_FIRED, BREAK_SNOOZED, BREAK_SKIPPED,
     BREAK_SNOOZE_CANCELLED, BREAK_SNOOZE_RETURNED, SESSION_STARTED,
     BREAK_RESCHEDULED, SESSION_RESUMED, APP_UPDATED)
 from dfyb.activity.sensors import read_context, frontmost_window_rect, smooth_signal
 from dfyb.popup_placement import screen_for_point, center_on_screen, clamp_onscreen
 from dfyb.scheduler.adapter import states_from_configs
-from dfyb.scheduler.tick import advance, IDLE_EPISODE
+from dfyb.scheduler.tick import advance, apply_snooze_freeze, IDLE_EPISODE
 from dfyb.scheduler.reschedule import reschedule_step, reschedule_bounds, nudged_remaining
 from dfyb.scheduler.engine import (decide, DEFER, coordinate_thresholds,
                                    AWAY_IDLE_THRESHOLD_SECONDS,
@@ -58,7 +58,7 @@ from dfyb.insights.status import compute_status
 from dfyb.insights.over_break import format_over_time
 from dfyb.snooze import (
     snooze_delay_ms, format_snooze_short, format_snooze_long, custom_snooze_seconds,
-    should_hold_snooze, snooze_remaining)
+    should_hold_snooze, snooze_remaining, next_clear_streak)
 from dfyb.insights.counts import (
     snooze_count_since_taken, first_snooze_seconds_ago, snooze_summary_label)
 
@@ -296,6 +296,8 @@ NATURAL_BREAK_MAX_SECONDS = 1800
 NATURAL_BREAK_STEP_SECONDS = 60
 NATURAL_BREAK_ACK_SECONDS = 6   # how long the "welcome back" cue lingers
 SNOOZE_RECHECK_MS = 5000     # while a snoozed break is context-deferred, re-check this often
+SNOOZE_CLEAR_POLLS_REQUIRED = 2  # consecutive clear polls before a snooze returns (debounces a mic/activity blip, #84)
+ROW_SNOOZED_SUBTITLE = "Snoozed"  # break-row subtitle while a snooze is pending (its countdown shows the return time)
 CONFIG_COMMIT_DEBOUNCE_MS = 800  # wait this long after the last keystroke before applying a typed interval/duration
 OVER_BREAK_SUFFIX = "over your break"  # trails the +MM:SS over-breaking count-up
 SNOOZE_OPTIONS_SECONDS = [30, 60, 120, 300, 600, 900, 1800]  # ▾ menu presets
@@ -1198,6 +1200,9 @@ class BreakApp:
         self._held = None      # reason the due break is currently held (transparency)
         self._rested_ack_until = None  # time.time() until which to show "welcome back"
         self._fullscreen_grace = 0  # ticks of fullscreen hysteresis left (#46)
+        self._meeting_grace = 0     # ticks of mic-in-use hysteresis left (#84)
+        self._active_grace = 0      # ticks of active-input hysteresis left (#84)
+        self._countdown_color = None  # cached default row-countdown color (for un-greying, #84)
         self._debounce_after = {}   # key -> pending after-id for debounced commits (#47)
         self._timer_generation = 0  # bumped each start(); stale threads exit
 
@@ -1683,7 +1688,7 @@ class BreakApp:
             self.stop_event.clear()
             self._episode = None
             self._held = None
-            self._fullscreen_grace = 0
+            self._reset_defer_grace()
             self._render_status()
             self.toggle_btn.configure(text="Pause", fg_color=COLORS['accent_warning'],
                                       hover_color=COLORS['accent_warning_hover'])
@@ -1936,7 +1941,7 @@ class BreakApp:
         self.stop_event.clear()
         self._episode = None  # fresh idle/deferred dedup marker each session
         self._held = None      # reset the held-reason each session
-        self._fullscreen_grace = 0  # reset fullscreen hysteresis each session (#46)
+        self._reset_defer_grace()  # reset fullscreen/mic/active hysteresis each session (#46/#84)
 
         # A fresh Start wipes stale pending state (#69): cancel any snoozes left
         # over from a previous session so they can't fire now, and log a session
@@ -2354,17 +2359,38 @@ class BreakApp:
                     check_fullscreen=self.defer_during_fullscreen.get(),
                     count_mouse_move=self.count_mouse_move.get(),
                 )
-                # Bridge transient fullscreen dropouts (e.g. Space-to-Space
-                # swipes) so a due break doesn't fire behind a fullscreen app (#46).
-                effective_fullscreen, self._fullscreen_grace = smooth_signal(
-                    ctx.is_fullscreen, self._fullscreen_grace)
-                ctx = dataclass_replace(ctx, is_fullscreen=effective_fullscreen)
-                states = states_from_configs(self.breaks)
                 pause, away, natural = self._scheduler_thresholds()
+                # Raw sensor readings (pre-hysteresis), kept verbatim to log at fire
+                # time so an intermittent mid-activity fire is diagnosable (#84).
+                raw_meeting, raw_fullscreen = ctx.is_meeting, ctx.is_fullscreen
+                raw_active_idle = (ctx.idle_seconds if ctx.active_idle_seconds is None
+                                   else ctx.active_idle_seconds)
+                # Bridge transient dropouts of each interrupt signal so a due break
+                # doesn't fire into a one-sample gap: #46 (fullscreen, Space swipes),
+                # #84 (mic per-utterance blips, brief typing pauses).
+                eff_fullscreen, self._fullscreen_grace = smooth_signal(
+                    raw_fullscreen, self._fullscreen_grace)
+                eff_meeting, self._meeting_grace = smooth_signal(
+                    raw_meeting, self._meeting_grace)
+                raw_active = pause > 0 and raw_active_idle < pause
+                eff_active, self._active_grace = smooth_signal(
+                    raw_active, self._active_grace)
+                ctx = dataclass_replace(
+                    ctx, is_fullscreen=eff_fullscreen, is_meeting=eff_meeting,
+                    active_idle_seconds=(0.0 if eff_active else ctx.active_idle_seconds))
+                states = states_from_configs(self.breaks)
+                prev_remaining = [c.remaining for c in self.breaks]
                 prev_episode = self._episode
                 new_remaining, fire_index, events, self._episode = advance(
                     states, ctx, self._episode, pause_threshold=pause,
                     away_threshold=away, natural_threshold=natural)
+                # A break with a pending snooze is frozen — the snooze IS its next
+                # occurrence, so it neither counts down nor fires from the loop (#84).
+                pending_names = {e['name'] for e in self._pending_snoozes}
+                if pending_names:
+                    new_remaining, fire_index = apply_snooze_freeze(
+                        new_remaining, fire_index, prev_remaining,
+                        [c.name.get() for c in self.breaks], pending_names)
                 if prev_episode == IDLE_EPISODE and self._episode != IDLE_EPISODE:
                     # user just returned from a rest that reset the timers
                     self._rested_ack_until = time.time() + NATURAL_BREAK_ACK_SECONDS
@@ -2375,17 +2401,38 @@ class BreakApp:
                 held_reason, self._held = track_held(
                     events, fire_index is not None, self._held)
                 if fire_index is not None:
+                    name = self.breaks[fire_index].name.get()
+                    self._log_break_fired(
+                        name, "scheduled", raw_idle=ctx.idle_seconds,
+                        raw_active_idle=raw_active_idle, raw_meeting=raw_meeting,
+                        raw_fullscreen=raw_fullscreen, pause=pause, away=away,
+                        held_reason=held_reason)
                     logging.info(
-                        "break due, firing: %s (idle=%.0fs fullscreen=%s meeting=%s held=%s)",
-                        self.breaks[fire_index].name.get(),
-                        ctx.idle_seconds,
-                        ctx.is_fullscreen,
-                        ctx.is_meeting,
-                        held_reason,
-                    )
+                        "break due, firing: %s (idle=%.0fs raw_meeting=%s raw_fs=%s held=%s)",
+                        name, ctx.idle_seconds, raw_meeting, raw_fullscreen, held_reason)
                     self.trigger_break(self.breaks[fire_index], held_reason=held_reason)
             except Exception as e:
                 logging.error(f"timer_loop tick failed: {e}", exc_info=True)
+
+    def _reset_defer_grace(self):
+        """Clear the fullscreen/mic/active hysteresis counters (#46/#84) — done on
+        Start and on session restore so a new session starts with no carried grace."""
+        self._fullscreen_grace = 0
+        self._meeting_grace = 0
+        self._active_grace = 0
+
+    def _log_break_fired(self, name, source, *, raw_idle, raw_active_idle,
+                         raw_meeting, raw_fullscreen, pause, away, held_reason):
+        """Record the fire-time context (#52/#84) so an intermittent mid-activity
+        fire is diagnosable — the RAW (pre-hysteresis) sensor values plus the
+        thresholds in force, tagged by which path fired it (scheduled/snooze_return)."""
+        self._record_event(
+            BREAK_FIRED, name=name, source=source,
+            idle_seconds=round(raw_idle, 1),
+            active_idle_seconds=(None if raw_active_idle is None
+                                 else round(raw_active_idle, 1)),
+            is_meeting=raw_meeting, is_fullscreen=raw_fullscreen,
+            pause_threshold=pause, away_threshold=away, held_reason=held_reason)
 
     def _scheduler_thresholds(self):
         """Coordinated (pause, away, natural) idle thresholds from prefs — the one
@@ -2543,12 +2590,21 @@ class BreakApp:
             count_mouse_move=self.count_mouse_move.get(),
         )
         pause, away, _natural = self._scheduler_thresholds()
-        if should_hold_snooze(self.paused,
-                              decide(ctx, away_threshold=away,
-                                     pause_threshold=pause) == DEFER):
-            # Not a good moment (paused or context-deferred) — wait and re-check.
-            logging.info("snoozed break held (paused=%s fullscreen=%s meeting=%s), re-checking",
-                         self.paused, ctx.is_fullscreen, ctx.is_meeting)
+        context_defers = should_hold_snooze(
+            self.paused,
+            decide(ctx, away_threshold=away, pause_threshold=pause) == DEFER)
+        # Require consecutive clear polls before returning, so a single mic/activity
+        # blip at the return moment doesn't pop the break mid-work (#84).
+        prev_streak = entry.get("clear_polls", 0) if entry is not None else 0
+        streak, should_return = next_clear_streak(
+            prev_streak, context_defers, SNOOZE_CLEAR_POLLS_REQUIRED)
+        if entry is not None:
+            entry["clear_polls"] = streak
+        if not should_return:
+            # Paused, context-deferred, or not yet enough clear polls — wait & re-check.
+            logging.info("snoozed break held (paused=%s fs=%s meeting=%s clear=%d/%d), re-checking",
+                         self.paused, ctx.is_fullscreen, ctx.is_meeting,
+                         streak, SNOOZE_CLEAR_POLLS_REQUIRED)
             after_id = self.root.after(SNOOZE_RECHECK_MS,
                                        lambda: self._requeue_break(break_data, entry))
             if entry is not None:
@@ -2557,6 +2613,12 @@ class BreakApp:
         if entry is not None and entry in self._pending_snoozes:
             self._pending_snoozes.remove(entry)
         self._record_event(BREAK_SNOOZE_RETURNED, name=break_data['name'])
+        self._log_break_fired(
+            break_data['name'], "snooze_return", raw_idle=ctx.idle_seconds,
+            raw_active_idle=(ctx.idle_seconds if ctx.active_idle_seconds is None
+                             else ctx.active_idle_seconds),
+            raw_meeting=ctx.is_meeting, raw_fullscreen=ctx.is_fullscreen,
+            pause=pause, away=away, held_reason=None)
         name = break_data['name']
         queued = [b['name'] for b in self.break_queue]
         if break_in_play(name, self._active_break_name, queued, []):
@@ -2959,12 +3021,30 @@ class BreakApp:
     def update_ui(self):
         """Refresh the cockpit hero, per-break timers, holding cues, and snooze rows."""
         now = time.time()
+        if self._countdown_color is None and self._timer_labels:
+            self._countdown_color = self._timer_labels[0].cget("text_color")  # theme default
+        # Soonest pending snooze per break name — that break is frozen (#84).
+        pending_by_name = {}
+        for e in self._pending_snoozes:
+            cur = pending_by_name.get(e['name'])
+            if cur is None or e['fire_time'] < cur['fire_time']:
+                pending_by_name[e['name']] = e
         for i, config in enumerate(self.breaks):
-            time_text = self._format_time(config.remaining)
+            snooze_entry = pending_by_name.get(config.name.get())
+            if snooze_entry is not None:
+                # Frozen while snoozed: the row shows the RETURN countdown, greyed,
+                # instead of a ticking interval — the snooze IS its next occurrence.
+                time_text = self._format_time(snooze_remaining(snooze_entry['fire_time'], now))
+                timer_color = COLORS['text_tertiary']
+                subtitle = ROW_SNOOZED_SUBTITLE
+            else:
+                time_text = self._format_time(config.remaining)
+                timer_color = self._countdown_color or COLORS['text_tertiary']
+                subtitle = self._row_subtitle(config)
             if i < len(self._timer_labels):
-                self._timer_labels[i].configure(text=time_text)
+                self._timer_labels[i].configure(text=time_text, text_color=timer_color)
             if i < len(self._interval_labels):
-                self._interval_labels[i].configure(text=self._row_subtitle(config))
+                self._interval_labels[i].configure(text=subtitle)
             # Update settings panel header timer if settings window is open
             if hasattr(self, '_settings_panels') and i < len(self._settings_panels):
                 try:
