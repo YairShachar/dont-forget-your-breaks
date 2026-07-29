@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Don't Forget Your Breaks — Project Report</title>
+<style>
+  :root{
+    --bg:#f5f5f7; --panel:#ffffff; --panel-2:#f0f0f3; --ink:#1c1c1e; --ink-2:#5b5b60;
+    --ink-3:#8a8a90; --line:#e2e2e7; --line-2:#d1d1d6;
+    --accent:#007aff; --accent-soft:#e7f0ff;
+    --good:#249c46; --good-soft:#e3f6e9; --warn:#c77700; --warn-soft:#fdefda;
+    --bug:#d1332a; --bug-soft:#fbe6e4; --vision:#7c3aed; --vision-soft:#efe8fd;
+    --shadow:0 1px 2px rgba(0,0,0,.04),0 8px 24px rgba(0,0,0,.06);
+    --radius:16px;
+    --mono:ui-monospace,"SF Mono",Menlo,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#161618; --panel:#1f1f22; --panel-2:#26262a; --ink:#f2f2f5; --ink-2:#a8a8b0;
+      --ink-3:#77777f; --line:#2e2e33; --line-2:#3a3a40;
+      --accent:#0a84ff; --accent-soft:#122a44;
+      --good:#30d158; --good-soft:#12341d; --warn:#ff9f0a; --warn-soft:#3a2a0d;
+      --bug:#ff453a; --bug-soft:#3a1614; --vision:#bf9bff; --vision-soft:#241a3a;
+      --shadow:0 1px 2px rgba(0,0,0,.3),0 10px 30px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="light"]{
+    --bg:#f5f5f7; --panel:#ffffff; --panel-2:#f0f0f3; --ink:#1c1c1e; --ink-2:#5b5b60;
+    --ink-3:#8a8a90; --line:#e2e2e7; --line-2:#d1d1d6; --accent:#007aff; --accent-soft:#e7f0ff;
+    --good:#249c46; --good-soft:#e3f6e9; --warn:#c77700; --warn-soft:#fdefda;
+    --bug:#d1332a; --bug-soft:#fbe6e4; --vision:#7c3aed; --vision-soft:#efe8fd;
+    --shadow:0 1px 2px rgba(0,0,0,.04),0 8px 24px rgba(0,0,0,.06);
+  }
+  :root[data-theme="dark"]{
+    --bg:#161618; --panel:#1f1f22; --panel-2:#26262a; --ink:#f2f2f5; --ink-2:#a8a8b0;
+    --ink-3:#77777f; --line:#2e2e33; --line-2:#3a3a40; --accent:#0a84ff; --accent-soft:#122a44;
+    --good:#30d158; --good-soft:#12341d; --warn:#ff9f0a; --warn-soft:#3a2a0d;
+    --bug:#ff453a; --bug-soft:#3a1614; --vision:#bf9bff; --vision-soft:#241a3a;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 10px 30px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+    line-height:1.5;-webkit-font-smoothing:antialiased;padding:32px 20px 64px}
+  .wrap{max-width:1080px;margin:0 auto}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  h1{font-size:31px;font-weight:700;letter-spacing:-.02em;margin:0 0 4px;text-wrap:balance}
+  h2{font-size:13px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;
+    color:var(--ink-3);margin:40px 0 14px}
+  .sub{color:var(--ink-2);font-size:15px;margin:0}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--good);
+    margin-right:8px;vertical-align:middle;box-shadow:0 0 0 4px var(--good-soft)}
+  header .row{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+  .ver{font-family:var(--mono);font-size:13px;background:var(--panel);border:1px solid var(--line);
+    padding:3px 9px;border-radius:8px;color:var(--ink-2)}
+
+  /* stat cards */
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-top:22px}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:16px 18px;box-shadow:var(--shadow)}
+  .stat .n{font-size:28px;font-weight:700;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+  .stat .l{font-size:12.5px;color:var(--ink-3);margin-top:2px}
+  .stat .n.accent{color:var(--accent)} .stat .n.good{color:var(--good)} .stat .n.warn{color:var(--warn)}
+
+  /* north star */
+  .north{background:linear-gradient(135deg,var(--accent-soft),var(--panel));
+    border:1px solid var(--line);border-radius:var(--radius);padding:20px 22px;margin-top:12px;box-shadow:var(--shadow)}
+  .north p{margin:0 0 12px;font-size:16.5px}
+  .north strong{color:var(--accent)}
+  .chips{display:flex;flex-wrap:wrap;gap:7px}
+  .chip{font-size:12px;background:var(--panel);border:1px solid var(--line-2);border-radius:999px;
+    padding:4px 11px;color:var(--ink-2)}
+
+  /* theme grid */
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:16px 18px 8px;box-shadow:var(--shadow)}
+  .card > .head{display:flex;align-items:center;gap:9px;margin-bottom:10px}
+  .card .ico{font-size:17px}
+  .card .ttl{font-weight:650;font-size:15px;flex:1}
+  .count{font-family:var(--mono);font-size:12px;color:var(--ink-3);
+    background:var(--panel-2);border-radius:7px;padding:2px 8px}
+  ul.iss{list-style:none;margin:0;padding:0}
+  ul.iss li{display:flex;gap:9px;align-items:baseline;padding:6px 0;border-top:1px solid var(--line);font-size:13.5px}
+  ul.iss li:first-child{border-top:none}
+  .num{font-family:var(--mono);font-size:12px;color:var(--ink-3);min-width:34px}
+  .it{flex:1;color:var(--ink)}
+  .pill{font-size:10.5px;font-weight:600;letter-spacing:.02em;border-radius:6px;padding:2px 6px;white-space:nowrap;text-transform:uppercase}
+  .p-bug{background:var(--bug-soft);color:var(--bug)}
+  .p-fix{background:var(--good-soft);color:var(--good)}
+  .p-now{background:var(--warn-soft);color:var(--warn)}
+  .p-bet{background:var(--accent-soft);color:var(--accent)}
+  .p-vis{background:var(--vision-soft);color:var(--vision)}
+
+  /* roadmap */
+  .road{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px}
+  .lane{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;box-shadow:var(--shadow)}
+  .lane h3{margin:0 0 3px;font-size:15px}
+  .lane .when{font-size:12px;color:var(--ink-3);margin-bottom:11px}
+  .lane ul{margin:0;padding-left:0;list-style:none}
+  .lane li{font-size:13px;padding:5px 0;border-top:1px solid var(--line);color:var(--ink-2)}
+  .lane li:first-child{border-top:none}
+  .lane li b{color:var(--ink);font-weight:600}
+  .lane.now{border-top:3px solid var(--warn)} .lane.next{border-top:3px solid var(--accent)}
+  .lane.then{border-top:3px solid var(--good)} .lane.vision{border-top:3px solid var(--vision)}
+
+  /* priorities + health */
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:720px){.two{grid-template-columns:1fr}}
+  .block{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:18px 20px;box-shadow:var(--shadow)}
+  ol.pri{margin:0;padding-left:20px}
+  ol.pri li{padding:6px 0;font-size:14px}
+  ol.pri li b{color:var(--ink)}
+  .health li{list-style:none;position:relative;padding:8px 0 8px 24px;font-size:13.5px;border-top:1px solid var(--line);color:var(--ink-2)}
+  .health{margin:0;padding:0}
+  .health li:first-child{border-top:none}
+  .health li::before{content:"";position:absolute;left:2px;top:14px;width:8px;height:8px;border-radius:50%}
+  .health li.r::before{background:var(--bug)} .health li.y::before{background:var(--warn)} .health li.g::before{background:var(--good)}
+  .health li b{color:var(--ink)}
+  footer{margin-top:40px;color:var(--ink-3);font-size:12.5px;text-align:center}
+</style>
+</head>
+<body>
+
+
+<div class="wrap">
+  <header>
+    <div class="row">
+      <h1>Don't Forget Your Breaks</h1>
+      <span class="ver">v1.8.3</span>
+    </div>
+    <p class="sub"><span class="dot"></span>Project report &middot; birds-eye view &middot; 20 Jul 2026 &middot; macOS-first break &amp; focus app (Python + CustomTkinter)</p>
+
+    <div class="stats">
+      <div class="stat"><div class="n accent">1.8.3</div><div class="l">Current release · 7 tags (v1.6.0 → v1.8.3)</div></div>
+      <div class="stat"><div class="n good">233</div><div class="l">Tests passing · pure logic in <code>dfyb/</code></div></div>
+      <div class="stat"><div class="n">49</div><div class="l">Open issues</div></div>
+      <div class="stat"><div class="n">17</div><div class="l">Closed / shipped</div></div>
+      <div class="stat"><div class="n warn">1</div><div class="l">Fix on <code>main</code>, unreleased (#69)</div></div>
+    </div>
+  </header>
+
+  <h2>North star</h2>
+  <div class="north">
+    <p>From a break <em>reminder</em> → <strong>an "Attention Sanctuary" / adaptive rhythm companion</strong>: the calm layer that protects your attention, makes rest a moment you <em>arrive at</em>, and mirrors your rhythm back as something beautiful. The moat is the <strong>local, sensor-driven event log</strong> + a genuinely calm, kind design sensibility. <span style="color:var(--ink-3)">(Full backlog: <code>docs/vision.md</code>)</span></p>
+    <div class="chips">
+      <span class="chip">Kind, never naggy</span><span class="chip">Autonomy-first (offer, don't force)</span>
+      <span class="chip">Absence = rest, not failure</span><span class="chip">The rest is sacred</span>
+      <span class="chip">Local-first &amp; private</span><span class="chip">Everything configurable</span>
+    </div>
+  </div>
+
+  <h2>Recently shipped (momentum)</h2>
+  <div class="north" style="background:var(--panel)">
+    <p style="font-size:15px;margin-bottom:10px"><b>v1.8.x</b> — the <b>settings makeover</b>: collapsible categories (Breaks / Smart pausing / Break popup / App), real nested sub-options with grey-out, scrollable + screen-relative auto-resize, trackpad scroll, translucency. Plus the <b>cockpit main-window redesign</b> (hero, colored tiles, progress ring popup, "Break now").</p>
+    <div class="chips">
+      <span class="chip">#50 break dedup</span><span class="chip">#45/#46/#47 scheduling bugs</span>
+      <span class="chip">#51 snooze countdown</span><span class="chip">#43 double-click to configure</span>
+      <span class="chip">#21 popup focus/Space</span><span class="chip">#34 defer-while-typing</span>
+      <span class="chip">#4 Start/Pause toggle</span><span class="chip">#69 stale-snooze fix ✓ (unreleased)</span>
+    </div>
+  </div>
+
+  <h2>Issue landscape by theme · 49 open</h2>
+  <div class="grid">
+
+    <div class="card">
+      <div class="head"><span class="ico">🐞</span><span class="ttl">Bugs &amp; correctness</span><span class="count">6</span></div>
+      <ul class="iss">
+        <li><span class="num">#69</span><span class="it">Stale snooze fires after a long gap</span><span class="pill p-fix">core fixed</span></li>
+        <li><span class="num">#54</span><span class="it">"Test" silently resets a break's schedule</span><span class="pill p-bug">bug</span></li>
+        <li><span class="num">#70</span><span class="it">Reset button reads as always-grey</span><span class="pill p-bug">bug</span></li>
+        <li><span class="num">#40</span><span class="it">Mic/meeting detection accuracy</span><span class="pill p-bug">bug</span></li>
+        <li><span class="num">#25</span><span class="it">Popup focus grab / hidden-behind-fullscreen</span><span class="pill p-bug">bug</span></li>
+        <li><span class="num">#2</span><span class="it">Window focus disruption (legacy — triage)</span><span class="pill p-bug">triage</span></li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <div class="head"><span class="ico">🎨</span><span class="ttl">Design &amp; UX polish</span><span class="count">11</span></div>
+      <ul class="iss">
+        <li><span class="num">#49</span><span class="it">Visual design polish pass (umbrella)</span><span class="pill p-now">now</span></li>
+        <li><span class="num">#65</span><span class="it">Break ritual — "arrive at the break"</span><span class="pill p-now">top pick</span></li>
+        <li><span class="num">#56</span><span class="it">Reactive design: hover micro-interactions</span><span class="pill p-bet">bet</span></li>
+        <li><span class="num">#57</span><span class="it">"Start" hero moment / animation</span><span class="pill p-bet">bet</span></li>
+        <li><span class="num">#71</span><span class="it">App icon &amp; Dock/switcher identity</span><span class="pill p-now">now</span></li>
+        <li><span class="num">#48</span><span class="it">Show each break's duration on its card</span><span class="pill p-now">now</span></li>
+        <li><span class="num">#35</span><span class="it">Distinct Skip/Stop break action</span><span class="pill p-now">now</span></li>
+        <li><span class="num">#37</span><span class="it">Snooze count + deferred duration on popup</span><span class="pill p-now">now</span></li>
+        <li><span class="num">#33</span><span class="it">Over-breaking overage counter</span><span class="pill p-bet">bet</span></li>
+        <li><span class="num">#31</span><span class="it">Rotate gentle prompts mid-break (fades)</span><span class="pill p-bet">bet</span></li>
+        <li><span class="num">#29</span><span class="it">Long-press Snooze → dial for duration</span><span class="pill p-bet">bet</span></li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <div class="head"><span class="ico">🧠</span><span class="ttl">Adaptive intelligence &amp; insights</span><span class="count">8</span></div>
+      <ul class="iss">
+        <li><span class="num">#61</span><span class="it">Weekly Recap — kind focus letter</span><span class="pill p-bet">top pick</span></li>
+        <li><span class="num">#62</span><span class="it">Adaptive rhythm (Golden Hours + Flow Shield)</span><span class="pill p-bet">bet</span></li>
+        <li><span class="num">#63</span><span class="it">Break Inbox — capture → do in a break (GTD)</span><span class="pill p-bet">bet</span></li>
+        <li><span class="num">#64</span><span class="it">Daily Start ritual + Fresh-Start re-entry</span><span class="pill p-now">now</span></li>
+        <li><span class="num">#52</span><span class="it">Logging completeness audit (the spine)</span><span class="pill p-now">enabler</span></li>
+        <li><span class="num">#9</span><span class="it">Dashboard: breaks taken + % of break used</span><span class="pill p-bet">bet</span></li>
+        <li><span class="num">#6</span><span class="it">Break statistics &amp; history</span><span class="pill p-bet">bet</span></li>
+        <li><span class="num">#36</span><span class="it">Detect activity during a break ("didn't rest")</span><span class="pill p-bet">bet</span></li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <div class="head"><span class="ico">⚙️</span><span class="ttl">Breaks: content &amp; config</span><span class="count">7</span></div>
+      <ul class="iss">
+        <li><span class="num">#53</span><span class="it">Manage breaks: add / remove / enable–disable</span><span class="pill p-now">now</span></li>
+        <li><span class="num">#68</span><span class="it">Break presets + cyclic patterns (Pomodoro)</span><span class="pill p-now">part 1 now</span></li>
+        <li><span class="num">#32</span><span class="it">Evidence-based per-kind defaults + presets</span><span class="pill p-bet">bet</span></li>
+        <li><span class="num">#55</span><span class="it">Custom sounds for break start/end</span><span class="pill p-now">now</span></li>
+        <li><span class="num">#8</span><span class="it">Break activities (stretch/eye/breathing)</span><span class="pill p-bet">bet</span></li>
+        <li><span class="num">#30</span><span class="it">Extensible per-break "kind" model</span><span class="pill p-bet">foundation</span></li>
+        <li><span class="num">#7</span><span class="it">Inspirational quotes during breaks</span><span class="pill p-bet">bet</span></li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <div class="head"><span class="ico">🎯</span><span class="ttl">Focus &amp; OS integration</span><span class="count">6</span></div>
+      <ul class="iss">
+        <li><span class="num">#72</span><span class="it">Take the next break now (one action)</span><span class="pill p-now">now</span></li>
+        <li><span class="num">#73</span><span class="it">Global hotkey to summon/focus window</span><span class="pill p-bet">bet</span></li>
+        <li><span class="num">#60</span><span class="it">macOS/iOS Focus (DND) integration</span><span class="pill p-bet">bet</span></li>
+        <li><span class="num">#59</span><span class="it">Remove distractions in focus mode</span><span class="pill p-vis">needs design</span></li>
+        <li><span class="num">#28</span><span class="it">Per-app break/defer rules</span><span class="pill p-bet">bet</span></li>
+        <li><span class="num">#57</span><span class="it">"Start focus" ritual (see design)</span><span class="pill p-bet">bet</span></li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <div class="head"><span class="ico">❤️</span><span class="ttl">Health, mobile &amp; ecosystem</span><span class="count">4</span></div>
+      <ul class="iss">
+        <li><span class="num">#66</span><span class="it">Apple Health + habits-in-breaks sync</span><span class="pill p-vis">vision</span></li>
+        <li><span class="num">#58</span><span class="it">iPhone (iOS) companion app</span><span class="pill p-vis">epic</span></li>
+        <li><span class="num">#39</span><span class="it">iPhone + Android companion with sync</span><span class="pill p-vis">someday</span></li>
+        <li><span class="num">#38</span><span class="it">Count steps taken during breaks</span><span class="pill p-vis">vision</span></li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <div class="head"><span class="ico">🖥️</span><span class="ttl">Platform &amp; windowing</span><span class="count">3</span></div>
+      <ul class="iss">
+        <li><span class="num">#67</span><span class="it">Launch centered on the focused screen</span><span class="pill p-now">now</span></li>
+        <li><span class="num">#25</span><span class="it">Popup presentation follow-ups (NSPanel)</span><span class="pill p-bet">bet</span></li>
+        <li><span class="num">#27</span><span class="it">Revisit UI stack — SwiftUI at Phase 4</span><span class="pill p-vis">phase 4</span></li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <div class="head"><span class="ico">🏗️</span><span class="ttl">Engineering &amp; foundations</span><span class="count">4</span></div>
+      <ul class="iss">
+        <li><span class="num">#13</span><span class="it">pytest + GitHub Actions CI (headless)</span><span class="pill p-now">do soon</span></li>
+        <li><span class="num">#14</span><span class="it">requirements.txt / requirements-dev.txt</span><span class="pill p-now">do soon</span></li>
+        <li><span class="num">#11</span><span class="it">Modularize launch.py into core modules</span><span class="pill p-bet">ongoing</span></li>
+        <li><span class="num">#12</span><span class="it">Event-log abstraction (largely built — verify)</span><span class="pill p-fix">near done</span></li>
+      </ul>
+    </div>
+
+  </div>
+
+  <h2>Roadmap</h2>
+  <div class="road">
+    <div class="lane now">
+      <h3>Now</h3><div class="when">Bugs &amp; small wins</div>
+      <ul>
+        <li>Finish <b>#69</b> — sleep/wake re-anchor (part 2)</li>
+        <li><b>#54</b> Test-resets-schedule bug</li>
+        <li><b>#70</b> Reset button state · <b>#48</b> duration on card</li>
+        <li><b>#13/#14</b> CI + requirements (before growth)</li>
+      </ul>
+    </div>
+    <div class="lane next">
+      <h3>Next</h3><div class="when">High-impact, mostly Tk-now</div>
+      <ul>
+        <li><b>#65</b> The break ritual — "arrive at the break"</li>
+        <li><b>#61</b> Weekly Recap (uses the event-log moat)</li>
+        <li><b>#53 / #68</b> Manage breaks + snapshot presets</li>
+        <li><b>#71</b> App icon &amp; identity · <b>#56</b> reactive hover</li>
+      </ul>
+    </div>
+    <div class="lane then">
+      <h3>Then</h3><div class="when">The adaptive companion</div>
+      <ul>
+        <li><b>#62</b> Adaptive rhythm (Golden Hours + Flow Shield)</li>
+        <li><b>#63</b> Break Inbox (GTD) · <b>#64</b> daily ritual</li>
+        <li><b>#57</b> Start hero · <b>#59/#60</b> focus &amp; DND</li>
+        <li><b>#9/#6/#52</b> insights &amp; dashboards</li>
+      </ul>
+    </div>
+    <div class="lane vision">
+      <h3>Vision</h3><div class="when">Big bets &amp; Phase 4</div>
+      <ul>
+        <li><b>#58/#66/#38</b> iOS + Watch + Health</li>
+        <li><b>#27</b> SwiftUI rewrite (smooth motion ceiling)</li>
+        <li>Moonshots: generative keepsake, blink/HRV camera,</li>
+        <li>physical desk companion, kind body-doubling</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="two" style="margin-top:14px">
+    <div class="block">
+      <h2 style="margin-top:0">Recommended next 5</h2>
+      <ol class="pri">
+        <li><b>Close #69</b> — add macOS sleep/wake re-anchoring so the overnight-overdue break can't fire ancient.</li>
+        <li><b>#65 — the break ritual.</b> Highest delight-per-effort, Tk-now, the creative panel's #1 idea; transforms the moment every user touches.</li>
+        <li><b>#13 — CI.</b> 233 tests run only locally; wire GitHub Actions before the codebase grows.</li>
+        <li><b>#61 — Weekly Recap.</b> Turns the local event log into a reason to keep the app — the differentiator.</li>
+        <li><b>#53 + #68(part 1)</b> — manage breaks + saved snapshot presets: user-requested config power, fits today's model.</li>
+      </ol>
+    </div>
+    <div class="block">
+      <h2 style="margin-top:0">Engineering health &amp; risks</h2>
+      <ul class="health">
+        <li class="r"><b>No CI (#13).</b> Tests are green (233) but run only on your machine — no gate on push/PR.</li>
+        <li class="y"><b>Single-file UI.</b> <code>launch.py</code> is large; logic is cleanly factored into <code>dfyb/</code>, UI modularization (#11) is ongoing.</li>
+        <li class="y"><b>Motion ceiling.</b> Tk can't do smooth resize/accordion animation — documented; SwiftUI reconsideration is #27.</li>
+        <li class="y"><b>Implicit deps (#14).</b> No requirements file yet; <code>customtkinter</code>/<code>pyobjc</code>/<code>pillow</code> are assumed.</li>
+        <li class="g"><b>Strong test base &amp; clean core.</b> Pure logic (scheduler, sensors, event log, insights) is framework-agnostic and portable to a future native UI.</li>
+        <li class="g"><b>Release pipeline works.</b> <code>release.sh</code> → DMG + Homebrew tap; shipping steadily (v1.6 → v1.8.3).</li>
+      </ul>
+    </div>
+  </div>
+
+  <footer>
+    Generated from live GitHub issues + repo state · 20 Jul 2026 · 66 issues total (49 open / 17 closed) · full idea backlog in <code>docs/vision.md</code>
+  </footer>
+</div>
+
+</body>
+</html>
