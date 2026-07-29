@@ -30,6 +30,23 @@ def events_for_tick(result, ctx, episode):
     return [], None
 
 
+def apply_snooze_freeze(new_remaining, fire_index, prev_remaining,
+                        names, pending_names):
+    """Freeze breaks that have a pending snooze — the snooze IS their next
+    occurrence (#84). A frozen break neither counts down nor fires:
+
+    - restore each pending break's pre-tick `remaining` (undo this tick's decrement),
+    - drop a `fire_index` that points at a pending break (it must not pop while snoozed).
+
+    Pure; returns a NEW (new_remaining, fire_index) and never mutates the input list.
+    """
+    frozen = [prev if names[i] in pending_names else cur
+              for i, (cur, prev) in enumerate(zip(new_remaining, prev_remaining))]
+    if fire_index is not None and names[fire_index] in pending_names:
+        fire_index = None
+    return frozen, fire_index
+
+
 def advance(states, ctx, episode, pause_threshold=0,
             away_threshold=AWAY_IDLE_THRESHOLD_SECONDS,
             natural_threshold=NATURAL_BREAK_IDLE_THRESHOLD_SECONDS):

@@ -123,3 +123,48 @@ def test_advance_forwards_natural_threshold():
     c = Context(idle_seconds=200, is_fullscreen=False, active_idle_seconds=200)
     _, _, _, ep = advance(_due_states(), c, None, natural_threshold=180)
     assert ep == IDLE_EPISODE    # 200 >= 180 -> natural break episode
+
+
+# --- apply_snooze_freeze: a pending-snoozed break is frozen, never fires (#84) ---
+from dfyb.scheduler.tick import apply_snooze_freeze
+
+
+def test_freeze_restores_pending_break_remaining():
+    # Micro decremented 100->99, Normal (snoozed) 3000->2999; Normal freezes back to 3000.
+    new_rem, fire = apply_snooze_freeze(
+        new_remaining=[99, 2999], fire_index=None, prev_remaining=[100, 3000],
+        names=["Micro", "Normal"], pending_names={"Normal"})
+    assert new_rem == [99, 3000]
+    assert fire is None
+
+
+def test_freeze_drops_a_fire_that_points_at_a_snoozed_break():
+    # Normal is due (fire_index=1) but it's pending-snoozed -> drop the fire, freeze it.
+    new_rem, fire = apply_snooze_freeze(
+        new_remaining=[99, 0], fire_index=1, prev_remaining=[100, 3000],
+        names=["Micro", "Normal"], pending_names={"Normal"})
+    assert new_rem == [99, 3000]
+    assert fire is None
+
+
+def test_freeze_keeps_a_fire_for_a_non_snoozed_break():
+    # Micro is due and NOT snoozed -> fire stands; Normal still frozen.
+    new_rem, fire = apply_snooze_freeze(
+        new_remaining=[0, 2999], fire_index=0, prev_remaining=[1, 3000],
+        names=["Micro", "Normal"], pending_names={"Normal"})
+    assert new_rem == [0, 3000]
+    assert fire == 0
+
+
+def test_freeze_noop_without_pending():
+    new_rem, fire = apply_snooze_freeze(
+        new_remaining=[99, 2999], fire_index=1, prev_remaining=[100, 3000],
+        names=["Micro", "Normal"], pending_names=set())
+    assert new_rem == [99, 2999]
+    assert fire == 1
+
+
+def test_freeze_does_not_mutate_inputs():
+    new_remaining = [99, 2999]
+    apply_snooze_freeze(new_remaining, None, [100, 3000], ["Micro", "Normal"], {"Normal"})
+    assert new_remaining == [99, 2999]   # caller's list untouched
