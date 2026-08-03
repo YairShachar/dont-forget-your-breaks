@@ -55,6 +55,11 @@ def test_phase1_event_constants_exist():
     assert NATURAL_BREAK == "natural_break"
 
 
+def test_break_fired_constant_exists():
+    from dfyb.activity.event_log import BREAK_FIRED
+    assert BREAK_FIRED == "break_fired"
+
+
 def test_append_stamps_schema_version(tmp_path):
     from dfyb.activity.event_log import EventLog, SCHEMA_VERSION
     log = EventLog(tmp_path / "e.jsonl", clock=lambda: 1.0)

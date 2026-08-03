@@ -10,6 +10,7 @@ from pathlib import Path
 
 # Event type constants (extended as later phases need them).
 BREAK_DUE = "break_due"
+BREAK_FIRED = "break_fired"       # a due/returning break was shown — records the fire-time context
 BREAK_TAKEN = "break_taken"
 BREAK_SKIPPED = "break_skipped"
 BREAK_SNOOZED = "break_snoozed"

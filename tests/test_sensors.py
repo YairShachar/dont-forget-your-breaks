@@ -252,43 +252,48 @@ def test_active_idle_non_darwin_falls_back(monkeypatch):
     assert sensors.active_idle_seconds() == 0.0  # idle_seconds() on non-darwin
 
 
-# --- smooth_fullscreen: hysteresis over transient detection gaps (#46) ---
+# --- smooth_signal: hysteresis over transient dropouts of any defer signal (#46/#84) ---
 
-def test_smooth_fullscreen_true_arms_full_grace():
-    # a real fullscreen observation resets the grace to the full window
-    assert sensors.smooth_fullscreen(True, 0, 3) == (True, 3)
-    assert sensors.smooth_fullscreen(True, 1, 3) == (True, 3)
-
-
-def test_smooth_fullscreen_false_within_grace_holds_true():
-    # transient False (e.g. a Space-to-Space swipe) stays fullscreen, decrementing
-    assert sensors.smooth_fullscreen(False, 3, 3) == (True, 2)
-    assert sensors.smooth_fullscreen(False, 1, 3) == (True, 0)
+def test_smooth_signal_true_arms_full_grace():
+    # a real observation resets the grace to the full window
+    assert sensors.smooth_signal(True, 0, 3) == (True, 3)
+    assert sensors.smooth_signal(True, 1, 3) == (True, 3)
 
 
-def test_smooth_fullscreen_false_after_grace_is_false():
-    assert sensors.smooth_fullscreen(False, 0, 3) == (False, 0)
+def test_smooth_signal_false_within_grace_holds_true():
+    # transient False (e.g. a Space-to-Space swipe, a mic-device blip) stays on
+    assert sensors.smooth_signal(False, 3, 3) == (True, 2)
+    assert sensors.smooth_signal(False, 1, 3) == (True, 0)
 
 
-def test_smooth_fullscreen_bridges_a_one_tick_gap():
-    # sequence: fullscreen, then one transient dropout, then fullscreen again
-    eff, grace = sensors.smooth_fullscreen(True, 0, 3)
+def test_smooth_signal_false_after_grace_is_false():
+    assert sensors.smooth_signal(False, 0, 3) == (False, 0)
+
+
+def test_smooth_signal_bridges_a_one_tick_gap():
+    # sequence: on, then one transient dropout, then on again
+    eff, grace = sensors.smooth_signal(True, 0, 3)
     assert eff is True
-    eff, grace = sensors.smooth_fullscreen(False, grace, 3)   # the swipe tick
-    assert eff is True                                        # bridged, not fired
-    eff, grace = sensors.smooth_fullscreen(True, grace, 3)    # arrived in new Space
+    eff, grace = sensors.smooth_signal(False, grace, 3)   # the dropout tick
+    assert eff is True                                    # bridged, not fired
+    eff, grace = sensors.smooth_signal(True, grace, 3)    # signal back
     assert eff is True and grace == 3
 
 
-def test_smooth_fullscreen_expires_after_grace_ticks():
+def test_smooth_signal_expires_after_grace_ticks():
     # after the last True, exactly grace_ticks of False stay True, then False
-    _, grace = sensors.smooth_fullscreen(True, 0, 2)
-    eff, grace = sensors.smooth_fullscreen(False, grace, 2)
+    _, grace = sensors.smooth_signal(True, 0, 2)
+    eff, grace = sensors.smooth_signal(False, grace, 2)
     assert eff is True and grace == 1
-    eff, grace = sensors.smooth_fullscreen(False, grace, 2)
+    eff, grace = sensors.smooth_signal(False, grace, 2)
     assert eff is True and grace == 0
-    eff, grace = sensors.smooth_fullscreen(False, grace, 2)
+    eff, grace = sensors.smooth_signal(False, grace, 2)
     assert eff is False and grace == 0
+
+
+def test_smooth_signal_default_grace_is_defer_grace_ticks():
+    # default grace_ticks comes from the shared DEFER_GRACE_TICKS constant
+    assert sensors.smooth_signal(True, 0) == (True, sensors.DEFER_GRACE_TICKS)
 
 
 def test_read_context_fullscreen_gated_off(monkeypatch):
