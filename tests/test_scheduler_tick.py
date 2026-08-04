@@ -214,3 +214,39 @@ def test_deferral_at_fire_falls_back_to_now_if_unrecorded():
 def test_deferral_at_fire_never_negative():
     _, deferred = deferral_at_fire({"X": 400.0}, "X", now=390.0)   # clock skew
     assert deferred == 0.0
+
+
+def test_deferred_duration_end_to_end():
+    # A due break held by a meeting for 3 ticks then fires -> deferred == 3s (#85).
+    name = "Normal"
+
+    def tick(remaining, due_since, now, meeting):
+        states = [BreakState(remaining=remaining, interval_seconds=3000, duration_seconds=600)]
+        c = Context(idle_seconds=0.0, is_fullscreen=False, is_meeting=meeting,
+                    active_idle_seconds=0.0)
+        prev = [remaining]
+        new_remaining, fire_index, _, _ = advance(states, c, None)
+        due_since = track_due_since(due_since, [name], prev, now)
+        return new_remaining[0], fire_index, due_since
+
+    remaining, due = 1, {}
+    remaining, fire, due = tick(remaining, due, 1000.0, meeting=True)    # becomes due, held
+    assert fire is None and due == {name: 1000.0}
+    remaining, fire, due = tick(remaining, due, 1001.0, meeting=True)    # held
+    assert fire is None and due == {name: 1000.0}
+    remaining, fire, due = tick(remaining, due, 1002.0, meeting=True)    # held
+    assert fire is None
+    remaining, fire, due = tick(remaining, due, 1003.0, meeting=False)   # good moment -> fire
+    assert fire == 0
+    scheduled_ts, deferred = deferral_at_fire(due, name, 1003.0)
+    assert scheduled_ts == 1000.0 and deferred == 3.0
+
+
+def test_deferred_duration_zero_when_fires_immediately():
+    # due and fires the same tick (no hold) -> deferred 0.
+    states = [BreakState(remaining=1, interval_seconds=3000, duration_seconds=600)]
+    c = Context(idle_seconds=0.0, is_fullscreen=False, is_meeting=False, active_idle_seconds=0.0)
+    _, fire_index, _, _ = advance(states, c, None)
+    due = track_due_since({}, ["Normal"], [1], now=500.0)
+    assert fire_index == 0
+    assert deferral_at_fire(due, "Normal", 500.0) == (500.0, 0.0)
