@@ -53,6 +53,11 @@ The unfair advantage is the **local, sensor-driven event log** + a genuinely
   peak-end on return). → **#65**
 - **Weekly Recap** (kind focus letter from the event log). → **#61**
 - **Break Inbox** (GTD capture → surface one item on longer breaks). → **#63**
+- **Annotate your time** — a lightweight "Work on…" focus label (**#88**) + tag what
+  a break was ("lunch"/"walk", **#89**), both event-sourced (feeds #52). Two sides of
+  one idea: label the *work*, label the *rest*, so the Recap/dashboard mirrors *what*
+  you worked on and *how* you rested. Free-text, generic-by-default, project-capable
+  for free.
 - **Daily "Start" ritual + Fresh-Start re-entry**. → **#64**
 - **If-then break recipes** — you pre-write, in your own words, what a break is
   *for* ("Normal Break → water + window"); the popup echoes *your* plan back.
@@ -119,3 +124,4 @@ Design makeover #49 · event-log audit #52 · manage breaks #53 · custom sounds
 · reactive design #56 · start hero #57 · iPhone app #58 · distraction removal #59
 · Focus/DND #60 · **Weekly Recap #61 · Adaptive rhythm #62 · Break Inbox #63 ·
 Start ritual + Fresh-Start #64 · Break ritual (arrive-at) #65 · Health & Habits #66**
+· Work-on label #88 · Break tag #89
