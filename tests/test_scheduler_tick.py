@@ -168,3 +168,49 @@ def test_freeze_does_not_mutate_inputs():
     new_remaining = [99, 2999]
     apply_snooze_freeze(new_remaining, None, [100, 3000], ["Micro", "Normal"], {"Normal"})
     assert new_remaining == [99, 2999]   # caller's list untouched
+
+
+# --- #85: due-since tracking + deferral-at-fire (how long a break was held) ---
+from dfyb.scheduler.tick import track_due_since, deferral_at_fire
+
+
+def test_track_due_since_sets_on_first_due_tick():
+    # prev remaining 1 -> hits 0 this tick -> stamped at `now`
+    assert track_due_since({}, ["Micro"], [1], now=100.0) == {"Micro": 100.0}
+
+
+def test_track_due_since_keeps_first_timestamp_while_held():
+    # still held (prev 0) later -> timestamp NOT re-stamped
+    assert track_due_since({"Micro": 100.0}, ["Micro"], [0], now=105.0) == {"Micro": 100.0}
+
+
+def test_track_due_since_clears_when_not_due():
+    # break got reset (prev remaining large) -> cleared
+    assert track_due_since({"Micro": 100.0}, ["Micro"], [1500], now=110.0) == {}
+
+
+def test_track_due_since_is_pure():
+    d = {"Micro": 100.0}
+    track_due_since(d, ["Micro"], [1500], now=110.0)
+    assert d == {"Micro": 100.0}   # input untouched
+
+
+def test_track_due_since_only_the_due_break():
+    assert track_due_since({}, ["Micro", "Normal"], [1, 900], now=50.0) == {"Micro": 50.0}
+
+
+def test_deferral_at_fire_zero_when_just_due():
+    assert deferral_at_fire({"Micro": 200.0}, "Micro", now=200.0) == (200.0, 0.0)
+
+
+def test_deferral_at_fire_measures_hold():
+    assert deferral_at_fire({"Normal": 200.0}, "Normal", now=260.0) == (200.0, 60.0)
+
+
+def test_deferral_at_fire_falls_back_to_now_if_unrecorded():
+    assert deferral_at_fire({}, "Ghost", now=300.0) == (300.0, 0.0)
+
+
+def test_deferral_at_fire_never_negative():
+    _, deferred = deferral_at_fire({"X": 400.0}, "X", now=390.0)   # clock skew
+    assert deferred == 0.0
