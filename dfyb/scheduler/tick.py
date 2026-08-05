@@ -30,6 +30,29 @@ def events_for_tick(result, ctx, episode):
     return [], None
 
 
+def track_due_since(due_since, names, prev_remaining, now, due_threshold=1):
+    """Per-break 'first became due' timestamps, for measuring how long a break was
+    held before it fired (#85). A break is due when its PRE-tick remaining is
+    <= due_threshold (it hits 0 this tick, or is already held at 0). `setdefault`
+    keeps the FIRST due tick's timestamp; a break above the threshold (reset /
+    rescheduled / counting down) is cleared. Pure — returns a NEW dict."""
+    updated = dict(due_since)
+    for name, prev in zip(names, prev_remaining):
+        if prev <= due_threshold:
+            updated.setdefault(name, now)
+        else:
+            updated.pop(name, None)
+    return updated
+
+
+def deferral_at_fire(due_since, name, now):
+    """(scheduled_ts, deferred_seconds) for a firing break: `scheduled_ts` is when
+    it first became due, `deferred_seconds` how long it was then held (never
+    negative). Falls back to `now` (deferred 0) if it was never recorded."""
+    scheduled_ts = due_since.get(name, now)
+    return scheduled_ts, max(0.0, now - scheduled_ts)
+
+
 def apply_snooze_freeze(new_remaining, fire_index, prev_remaining,
                         names, pending_names):
     """Freeze breaks that have a pending snooze — the snooze IS their next

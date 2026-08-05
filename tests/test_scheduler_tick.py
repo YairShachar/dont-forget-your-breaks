@@ -168,3 +168,85 @@ def test_freeze_does_not_mutate_inputs():
     new_remaining = [99, 2999]
     apply_snooze_freeze(new_remaining, None, [100, 3000], ["Micro", "Normal"], {"Normal"})
     assert new_remaining == [99, 2999]   # caller's list untouched
+
+
+# --- #85: due-since tracking + deferral-at-fire (how long a break was held) ---
+from dfyb.scheduler.tick import track_due_since, deferral_at_fire
+
+
+def test_track_due_since_sets_on_first_due_tick():
+    # prev remaining 1 -> hits 0 this tick -> stamped at `now`
+    assert track_due_since({}, ["Micro"], [1], now=100.0) == {"Micro": 100.0}
+
+
+def test_track_due_since_keeps_first_timestamp_while_held():
+    # still held (prev 0) later -> timestamp NOT re-stamped
+    assert track_due_since({"Micro": 100.0}, ["Micro"], [0], now=105.0) == {"Micro": 100.0}
+
+
+def test_track_due_since_clears_when_not_due():
+    # break got reset (prev remaining large) -> cleared
+    assert track_due_since({"Micro": 100.0}, ["Micro"], [1500], now=110.0) == {}
+
+
+def test_track_due_since_is_pure():
+    d = {"Micro": 100.0}
+    track_due_since(d, ["Micro"], [1500], now=110.0)
+    assert d == {"Micro": 100.0}   # input untouched
+
+
+def test_track_due_since_only_the_due_break():
+    assert track_due_since({}, ["Micro", "Normal"], [1, 900], now=50.0) == {"Micro": 50.0}
+
+
+def test_deferral_at_fire_zero_when_just_due():
+    assert deferral_at_fire({"Micro": 200.0}, "Micro", now=200.0) == (200.0, 0.0)
+
+
+def test_deferral_at_fire_measures_hold():
+    assert deferral_at_fire({"Normal": 200.0}, "Normal", now=260.0) == (200.0, 60.0)
+
+
+def test_deferral_at_fire_falls_back_to_now_if_unrecorded():
+    assert deferral_at_fire({}, "Ghost", now=300.0) == (300.0, 0.0)
+
+
+def test_deferral_at_fire_never_negative():
+    _, deferred = deferral_at_fire({"X": 400.0}, "X", now=390.0)   # clock skew
+    assert deferred == 0.0
+
+
+def test_deferred_duration_end_to_end():
+    # A due break held by a meeting for 3 ticks then fires -> deferred == 3s (#85).
+    name = "Normal"
+
+    def tick(remaining, due_since, now, meeting):
+        states = [BreakState(remaining=remaining, interval_seconds=3000, duration_seconds=600)]
+        c = Context(idle_seconds=0.0, is_fullscreen=False, is_meeting=meeting,
+                    active_idle_seconds=0.0)
+        prev = [remaining]
+        new_remaining, fire_index, _, _ = advance(states, c, None)
+        due_since = track_due_since(due_since, [name], prev, now)
+        return new_remaining[0], fire_index, due_since
+
+    remaining, due = 1, {}
+    remaining, fire, due = tick(remaining, due, 1000.0, meeting=True)    # becomes due, held
+    assert fire is None and due == {name: 1000.0}
+    remaining, fire, due = tick(remaining, due, 1001.0, meeting=True)    # held
+    assert fire is None and due == {name: 1000.0}
+    remaining, fire, due = tick(remaining, due, 1002.0, meeting=True)    # held
+    assert fire is None
+    remaining, fire, due = tick(remaining, due, 1003.0, meeting=False)   # good moment -> fire
+    assert fire == 0
+    scheduled_ts, deferred = deferral_at_fire(due, name, 1003.0)
+    assert scheduled_ts == 1000.0 and deferred == 3.0
+
+
+def test_deferred_duration_zero_when_fires_immediately():
+    # due and fires the same tick (no hold) -> deferred 0.
+    states = [BreakState(remaining=1, interval_seconds=3000, duration_seconds=600)]
+    c = Context(idle_seconds=0.0, is_fullscreen=False, is_meeting=False, active_idle_seconds=0.0)
+    _, fire_index, _, _ = advance(states, c, None)
+    due = track_due_since({}, ["Normal"], [1], now=500.0)
+    assert fire_index == 0
+    assert deferral_at_fire(due, "Normal", 500.0) == (500.0, 0.0)

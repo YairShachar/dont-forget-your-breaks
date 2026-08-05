@@ -45,7 +45,8 @@ from dfyb.activity.event_log import (
 from dfyb.activity.sensors import read_context, frontmost_window_rect, smooth_signal
 from dfyb.popup_placement import screen_for_point, center_on_screen, clamp_onscreen
 from dfyb.scheduler.adapter import states_from_configs
-from dfyb.scheduler.tick import advance, apply_snooze_freeze, IDLE_EPISODE
+from dfyb.scheduler.tick import (advance, apply_snooze_freeze,
+                                 track_due_since, deferral_at_fire, IDLE_EPISODE)
 from dfyb.scheduler.reschedule import reschedule_step, reschedule_bounds, nudged_remaining
 from dfyb.scheduler.engine import (decide, DEFER, coordinate_thresholds,
                                    AWAY_IDLE_THRESHOLD_SECONDS,
@@ -1197,6 +1198,7 @@ class BreakApp:
         self.break_start_time = None
         self.event_log = EventLog(EVENTS_FILE)
         self._episode = None  # idle/deferred dedup marker for the smart-timing loop
+        self._due_since = {}   # break name -> ts it first became due (deferred-duration, #85)
         self._held = None      # reason the due break is currently held (transparency)
         self._rested_ack_until = None  # time.time() until which to show "welcome back"
         self._fullscreen_grace = 0  # ticks of fullscreen hysteresis left (#46)
@@ -1687,6 +1689,7 @@ class BreakApp:
             self.paused = False
             self.stop_event.clear()
             self._episode = None
+            self._due_since = {}
             self._held = None
             self._reset_defer_grace()
             self._render_status()
@@ -1940,6 +1943,7 @@ class BreakApp:
         self.paused = False
         self.stop_event.clear()
         self._episode = None  # fresh idle/deferred dedup marker each session
+        self._due_since = {}   # fresh deferred-duration tracking each session (#85)
         self._held = None      # reset the held-reason each session
         self._reset_defer_grace()  # reset fullscreen/mic/active hysteresis each session (#46/#84)
 
@@ -2379,7 +2383,9 @@ class BreakApp:
                     ctx, is_fullscreen=eff_fullscreen, is_meeting=eff_meeting,
                     active_idle_seconds=(0.0 if eff_active else ctx.active_idle_seconds))
                 states = states_from_configs(self.breaks)
+                names = [c.name.get() for c in self.breaks]
                 prev_remaining = [c.remaining for c in self.breaks]
+                now = time.time()
                 prev_episode = self._episode
                 new_remaining, fire_index, events, self._episode = advance(
                     states, ctx, self._episode, pause_threshold=pause,
@@ -2390,7 +2396,11 @@ class BreakApp:
                 if pending_names:
                     new_remaining, fire_index = apply_snooze_freeze(
                         new_remaining, fire_index, prev_remaining,
-                        [c.name.get() for c in self.breaks], pending_names)
+                        names, pending_names)
+                # Stamp when each break first became due, to log how long a held
+                # break waited before it fired (#85).
+                self._due_since = track_due_since(
+                    self._due_since, names, prev_remaining, now)
                 if prev_episode == IDLE_EPISODE and self._episode != IDLE_EPISODE:
                     # user just returned from a rest that reset the timers
                     self._rested_ack_until = time.time() + NATURAL_BREAK_ACK_SECONDS
@@ -2402,11 +2412,15 @@ class BreakApp:
                     events, fire_index is not None, self._held)
                 if fire_index is not None:
                     name = self.breaks[fire_index].name.get()
+                    scheduled_ts, deferred_seconds = deferral_at_fire(
+                        self._due_since, name, now)
+                    self._due_since.pop(name, None)   # cycle done — restart next time it's due
                     self._log_break_fired(
                         name, "scheduled", raw_idle=ctx.idle_seconds,
                         raw_active_idle=raw_active_idle, raw_meeting=raw_meeting,
                         raw_fullscreen=raw_fullscreen, pause=pause, away=away,
-                        held_reason=held_reason)
+                        held_reason=held_reason, scheduled_ts=scheduled_ts,
+                        deferred_seconds=deferred_seconds)
                     logging.info(
                         "break due, firing: %s (idle=%.0fs raw_meeting=%s raw_fs=%s held=%s)",
                         name, ctx.idle_seconds, raw_meeting, raw_fullscreen, held_reason)
@@ -2422,17 +2436,22 @@ class BreakApp:
         self._active_grace = 0
 
     def _log_break_fired(self, name, source, *, raw_idle, raw_active_idle,
-                         raw_meeting, raw_fullscreen, pause, away, held_reason):
+                         raw_meeting, raw_fullscreen, pause, away, held_reason,
+                         scheduled_ts, deferred_seconds):
         """Record the fire-time context (#52/#84) so an intermittent mid-activity
         fire is diagnosable — the RAW (pre-hysteresis) sensor values plus the
-        thresholds in force, tagged by which path fired it (scheduled/snooze_return)."""
+        thresholds in force, tagged by which path fired it (scheduled/snooze_return).
+        Also records when the break first became due (`scheduled_ts`) and how long it
+        was then held (`deferred_seconds`), so the dashboard can see push-back (#85)."""
         self._record_event(
             BREAK_FIRED, name=name, source=source,
             idle_seconds=round(raw_idle, 1),
             active_idle_seconds=(None if raw_active_idle is None
                                  else round(raw_active_idle, 1)),
             is_meeting=raw_meeting, is_fullscreen=raw_fullscreen,
-            pause_threshold=pause, away_threshold=away, held_reason=held_reason)
+            pause_threshold=pause, away_threshold=away, held_reason=held_reason,
+            scheduled_ts=round(scheduled_ts, 1),
+            deferred_seconds=round(deferred_seconds, 1))
 
     def _scheduler_thresholds(self):
         """Coordinated (pause, away, natural) idle thresholds from prefs — the one
@@ -2613,12 +2632,18 @@ class BreakApp:
         if entry is not None and entry in self._pending_snoozes:
             self._pending_snoozes.remove(entry)
         self._record_event(BREAK_SNOOZE_RETURNED, name=break_data['name'])
+        # A snoozed break's "scheduled" moment is its snooze fire_time; held time is
+        # how far past that it waited for a good moment to return (#85).
+        now = time.time()
+        scheduled_ts = entry['fire_time'] if entry is not None else now
         self._log_break_fired(
             break_data['name'], "snooze_return", raw_idle=ctx.idle_seconds,
             raw_active_idle=(ctx.idle_seconds if ctx.active_idle_seconds is None
                              else ctx.active_idle_seconds),
             raw_meeting=ctx.is_meeting, raw_fullscreen=ctx.is_fullscreen,
-            pause=pause, away=away, held_reason=None)
+            pause=pause, away=away, held_reason=None,
+            scheduled_ts=scheduled_ts,
+            deferred_seconds=max(0.0, now - scheduled_ts))
         name = break_data['name']
         queued = [b['name'] for b in self.break_queue]
         if break_in_play(name, self._active_break_name, queued, []):
