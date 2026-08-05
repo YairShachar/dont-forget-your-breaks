@@ -52,6 +52,7 @@ from dfyb.scheduler.engine import (decide, DEFER, coordinate_thresholds,
                                    AWAY_IDLE_THRESHOLD_SECONDS,
                                    NATURAL_BREAK_IDLE_THRESHOLD_SECONDS)
 from dfyb.scheduler.dedup import break_in_play
+from dfyb.ui_controls import reset_button_style
 from dfyb.timer_lifecycle import timer_should_continue
 from dfyb.macos_window import pin_to_active_space
 from dfyb.insights.transparency import track_held, held_message, holding_cue
@@ -1396,14 +1397,14 @@ class BreakApp:
             font=make_font('subheading', weight="bold"))
         self.toggle_btn.pack(side="left", padx=(0, SPACE_XXS), expand=True, fill="x")
 
-        # Filled-grey secondary (not a bordered ghost) so enabled/disabled reads
-        # consistently in both themes — the dark border was near-invisible.
+        # Secondary to the primary Start/Pause. Its enabled vs disabled look is
+        # driven by reset_button_style() so the affordance visibly changes with
+        # state instead of reading "always grey" (#70).
         self.reset_btn = ctk.CTkButton(
             controls, text="Reset", command=self.reset,
             height=BUTTON_HEIGHT_LARGE, corner_radius=CORNER_RADIUS_BUTTON,
-            fg_color=COLORS['surface_hover'], hover_color=COLORS['border'],
-            text_color=COLORS['text_secondary'], font=make_font('subheading'),
-            state="disabled")
+            font=make_font('subheading'))
+        self._set_reset_enabled(False)   # idle → nothing to reset yet
         self.reset_btn.pack(side="left", padx=(SPACE_XXS, 0), expand=True, fill="x")
 
         # ---- Break rows: icon · name/interval · countdown/Break now ----
@@ -1695,7 +1696,7 @@ class BreakApp:
             self._render_status()
             self.toggle_btn.configure(text="Pause", fg_color=COLORS['accent_warning'],
                                       hover_color=COLORS['accent_warning_hover'])
-            self.reset_btn.configure(state="normal")
+            self._set_reset_enabled(True)
             self._spin_timer_loop()
             if snapshot["paused"]:
                 self.toggle_pause()   # flip to paused (Resume button + paused visual)
@@ -1969,7 +1970,7 @@ class BreakApp:
             fg_color=COLORS['accent_warning'],
             hover_color=COLORS['accent_warning_hover']
         )
-        self.reset_btn.configure(state="normal")
+        self._set_reset_enabled(True)
         self._spin_timer_loop()
 
     def _spin_timer_loop(self):
@@ -2023,7 +2024,7 @@ class BreakApp:
             fg_color=COLORS['accent_primary'],
             hover_color=COLORS['accent_primary_hover']
         )
-        self.reset_btn.configure(state="disabled")
+        self._set_reset_enabled(False)
 
     def _apply_always_on_top(self, *args):
         """Apply the always-on-top setting and save preferences."""
@@ -2434,6 +2435,11 @@ class BreakApp:
         self._fullscreen_grace = 0
         self._meeting_grace = 0
         self._active_grace = 0
+
+    def _set_reset_enabled(self, enabled):
+        """Enable/disable the Reset button with a visibly distinct look (#70) —
+        raised & readable when usable, recessed & faded when there's nothing to reset."""
+        self.reset_btn.configure(**reset_button_style(enabled, COLORS))
 
     def _log_break_fired(self, name, source, *, raw_idle, raw_active_idle,
                          raw_meeting, raw_fullscreen, pause, away, held_reason,
