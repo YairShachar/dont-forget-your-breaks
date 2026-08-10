@@ -81,3 +81,11 @@ def test_new_analyzable_events_defined():
     assert el.BREAK_RESCHEDULED == "break_rescheduled"
     assert el.SESSION_RESUMED == "session_resumed"
     assert el.APP_UPDATED == "app_updated"
+
+
+def test_resume_prompt_constants_exist():
+    from dfyb.activity.event_log import (
+        RESUME_PROMPTED, RESUME_ACCEPTED, RESUME_DISMISSED)
+    assert RESUME_PROMPTED == "resume_prompted"
+    assert RESUME_ACCEPTED == "resume_accepted"
+    assert RESUME_DISMISSED == "resume_dismissed"

@@ -41,7 +41,8 @@ from dfyb.ring import ring_image
 from dfyb.activity.event_log import (
     EventLog, BREAK_TAKEN, BREAK_FIRED, BREAK_SNOOZED, BREAK_SKIPPED,
     BREAK_SNOOZE_CANCELLED, BREAK_SNOOZE_RETURNED, SESSION_STARTED,
-    BREAK_RESCHEDULED, SESSION_RESUMED, APP_UPDATED)
+    BREAK_RESCHEDULED, SESSION_RESUMED, APP_UPDATED,
+    RESUME_PROMPTED, RESUME_ACCEPTED, RESUME_DISMISSED)
 from dfyb.activity.sensors import read_context, frontmost_window_rect, smooth_signal
 from dfyb.popup_placement import screen_for_point, center_on_screen, clamp_onscreen
 from dfyb.scheduler.adapter import states_from_configs
@@ -61,6 +62,7 @@ from dfyb.insights.over_break import format_over_time
 from dfyb.snooze import (
     snooze_delay_ms, format_snooze_short, format_snooze_long, custom_snooze_seconds,
     should_hold_snooze, snooze_remaining, next_clear_streak)
+from dfyb.resume import resume_prompt_step
 from dfyb.insights.counts import (
     snooze_count_since_taken, first_snooze_seconds_ago, snooze_summary_label)
 
@@ -300,6 +302,14 @@ NATURAL_BREAK_ACK_SECONDS = 6   # how long the "welcome back" cue lingers
 SNOOZE_RECHECK_MS = 5000     # while a snoozed break is context-deferred, re-check this often
 SNOOZE_CLEAR_POLLS_REQUIRED = 2  # consecutive clear polls before a snooze returns (debounces a mic/activity blip, #84)
 ROW_SNOOZED_SUBTITLE = "Snoozed"  # break-row subtitle while a snooze is pending (its countdown shows the return time)
+# Resume-prompt while paused (#77): nudge to resume when you clearly return.
+RESUME_ACTIVE_THRESHOLD_SECONDS = 2   # active-idle below this = recently typing/clicking
+RESUME_PROMPT_DEFAULT_SAMPLES = 3     # consecutive ~1s "back" samples before prompting (adjustable)
+RESUME_PROMPT_MIN_SAMPLES = 2         # sensitivity slider bounds
+RESUME_PROMPT_MAX_SAMPLES = 10
+RESUME_CARD_TIMEOUT_MS = 30000        # auto-dismiss the resume card (treated as "stay paused")
+RESUME_CARD_HEADLINE = "Breaks are paused"       # leads with what you forgot
+RESUME_CARD_SUBTEXT = "Welcome back — resume them?"
 CONFIG_COMMIT_DEBOUNCE_MS = 800  # wait this long after the last keystroke before applying a typed interval/duration
 OVER_BREAK_SUFFIX = "over your break"  # trails the +MM:SS over-breaking count-up
 SNOOZE_OPTIONS_SECONDS = [30, 60, 120, 300, 600, 900, 1800]  # ▾ menu presets
@@ -1200,6 +1210,10 @@ class BreakApp:
         self.event_log = EventLog(EVENTS_FILE)
         self._episode = None  # idle/deferred dedup marker for the smart-timing loop
         self._due_since = {}   # break name -> ts it first became due (deferred-duration, #85)
+        self._resume_streak = 0       # consecutive "user is back" samples while paused (#77)
+        self._resume_prompted = False # already offered to resume this pause episode (#77)
+        self._resume_card = None      # the floating "resume?" card, or None
+        self._resume_card_after = None  # auto-dismiss timer id for the resume card
         self._held = None      # reason the due break is currently held (transparency)
         self._rested_ack_until = None  # time.time() until which to show "welcome back"
         self._fullscreen_grace = 0  # ticks of fullscreen hysteresis left (#46)
@@ -1270,6 +1284,14 @@ class BreakApp:
         self.count_mouse_move = ctk.BooleanVar(
             value=self.saved_prefs.get("count_mouse_move", False))
         self.count_mouse_move.trace_add('write', self._save_preferences)
+        # While paused, offer to resume when you clearly return (#77). Toggle +
+        # adjustable sensitivity (consecutive ~1s "back" samples before prompting).
+        self.prompt_resume_when_back = ctk.BooleanVar(
+            value=self.saved_prefs.get("prompt_resume_when_back", True))
+        self.prompt_resume_when_back.trace_add('write', self._save_preferences)
+        self.resume_prompt_samples = ctk.IntVar(
+            value=self.saved_prefs.get("resume_prompt_samples", RESUME_PROMPT_DEFAULT_SAMPLES))
+        self.resume_prompt_samples.trace_add('write', self._save_preferences)
 
         # Default snooze length (seconds), remembered from the ▾ picker.
         # Migrates an old minutes-based pref (×60) so existing configs still load.
@@ -1605,6 +1627,8 @@ class BreakApp:
             "away_idle_seconds": self.away_idle_seconds.get(),
             "natural_break_seconds": self.natural_break_seconds.get(),
             "count_mouse_move": self.count_mouse_move.get(),
+            "prompt_resume_when_back": self.prompt_resume_when_back.get(),
+            "resume_prompt_samples": self.resume_prompt_samples.get(),
             "snooze_seconds": self.snooze_seconds.get(),
             "last_update_check": self.saved_prefs.get("last_update_check", 0),
             "sections_expanded": self._sections_expanded,
@@ -1987,6 +2011,7 @@ class BreakApp:
             return
         if self.paused:
             self.paused = False
+            self._reset_resume_prompt()   # pause episode ended (#77)
             self.toggle_btn.configure(
                 text="Pause",
                 fg_color=COLORS['accent_warning'],
@@ -1995,6 +2020,7 @@ class BreakApp:
             self._render_status()
         else:
             self.paused = True
+            self._reset_resume_prompt()   # fresh pause episode → eligible for one prompt (#77)
             self.toggle_btn.configure(
                 text="Resume",
                 fg_color=COLORS['accent_primary'],
@@ -2163,6 +2189,16 @@ class BreakApp:
             timing, self.natural_break_seconds,
             lambda v: f"Count as a rest after: {v // 60} min",
             NATURAL_BREAK_MIN_SECONDS, NATURAL_BREAK_MAX_SECONDS, NATURAL_BREAK_STEP_SECONDS)
+
+        # Resume prompt while paused (#77): toggle + adjustable sensitivity.
+        _checkbox(smart.body, "When paused, offer to resume when you return",
+                  self.prompt_resume_when_back)
+        resume_timing = ctk.CTkFrame(smart.body, fg_color="transparent")
+        resume_timing.pack(fill="x", anchor="w", padx=PADDING_PANEL_X, pady=(0, PADDING_PANEL_Y))
+        self._build_timing_slider(
+            resume_timing, self.resume_prompt_samples,
+            lambda v: f"Prompt after you're back for: {v} sec",
+            RESUME_PROMPT_MIN_SAMPLES, RESUME_PROMPT_MAX_SAMPLES, 1)
         smart.finalize()
 
         # Grey out the sub-options live when "Wait until you pause" is off.
@@ -2355,7 +2391,10 @@ class BreakApp:
             self._timer_generation, generation,
         ):
             time.sleep(1)
-            if self.paused or self.active_popup:
+            if self.active_popup:
+                continue
+            if self.paused:
+                self._maybe_prompt_resume()   # #77: offer to resume if you're clearly back
                 continue
 
             try:
@@ -2435,6 +2474,107 @@ class BreakApp:
         self._fullscreen_grace = 0
         self._meeting_grace = 0
         self._active_grace = 0
+
+    # --- Resume-while-paused prompt (#77) ---
+    def _maybe_prompt_resume(self):
+        """Runs each tick WHILE PAUSED (on the timer thread). Samples activity and,
+        once you've clearly returned (sustained typing/clicks, or a meeting), offers to
+        resume — once per pause episode. Shows the card on the main thread."""
+        if not self.prompt_resume_when_back.get():
+            return
+        if self._resume_card is not None or self._resume_prompted:
+            return
+        ctx = read_context(
+            check_meeting=self.defer_during_meetings.get(),
+            check_fullscreen=False,   # fullscreen isn't a "you're back" signal
+            count_mouse_move=self.count_mouse_move.get(),
+        )
+        active_idle = (ctx.idle_seconds if ctx.active_idle_seconds is None
+                       else ctx.active_idle_seconds)
+        self._resume_streak, should_prompt = resume_prompt_step(
+            self._resume_streak, active_idle, ctx.is_meeting,
+            RESUME_ACTIVE_THRESHOLD_SECONDS, self.resume_prompt_samples.get(),
+            self._resume_prompted)
+        if should_prompt:
+            self._resume_prompted = True
+            self.root.after(0, self._show_resume_card)
+
+    def _reset_resume_prompt(self):
+        """Start a fresh pause episode (or end one): clear the streak/flag and close
+        any open card so each pause gets at most one resume prompt (#77)."""
+        self._resume_streak = 0
+        self._resume_prompted = False
+        self._close_resume_card()
+
+    def _close_resume_card(self):
+        if self._resume_card_after is not None:
+            try:
+                self.root.after_cancel(self._resume_card_after)
+            except Exception:
+                pass
+            self._resume_card_after = None
+        if self._resume_card is not None:
+            self._resume_card.destroy()
+            self._resume_card = None
+
+    def _accept_resume(self):
+        self._record_event(RESUME_ACCEPTED)
+        self._close_resume_card()
+        if self.paused:
+            self.toggle_pause()   # un-pause (also resets the resume state)
+
+    def _dismiss_resume(self):
+        # "Stay paused" (or auto-dismissed): leave _resume_prompted=True so we don't re-nag.
+        self._record_event(RESUME_DISMISSED)
+        self._close_resume_card()
+
+    def _show_resume_card(self):
+        """Small non-intrusive floating card offering to resume (#77). Main thread."""
+        if self._resume_card is not None or not self.paused:
+            return   # already showing, or un-paused before this fired
+        self._record_event(RESUME_PROMPTED)
+        card = ctk.CTkToplevel(self.root)
+        card.title(APP_NAME)
+        card.resizable(False, False)
+        card.configure(fg_color=COLORS['surface_card'])
+        pin_to_active_space(card)
+        card.attributes('-topmost', True)
+        self._resume_card = card
+
+        wrap = ctk.CTkFrame(card, fg_color="transparent")
+        wrap.pack(padx=SPACE_LG, pady=SPACE_LG)
+        ctk.CTkLabel(wrap, text=RESUME_CARD_HEADLINE,
+                     font=make_font('subheading', weight="bold")).pack(anchor="w")
+        ctk.CTkLabel(wrap, text=RESUME_CARD_SUBTEXT, font=make_font('label'),
+                     text_color=COLORS['text_secondary']).pack(anchor="w", pady=(0, SPACE_MD))
+        btns = ctk.CTkFrame(wrap, fg_color="transparent")
+        btns.pack(fill="x")
+        ctk.CTkButton(
+            btns, text="Resume", command=self._accept_resume,
+            height=BUTTON_HEIGHT_SMALL, corner_radius=CORNER_RADIUS_BUTTON,
+            fg_color=COLORS['accent_primary'], hover_color=COLORS['accent_primary_hover'],
+            font=make_font('label', weight="bold")).pack(
+                side="left", expand=True, fill="x", padx=(0, SPACE_XXS))
+        ctk.CTkButton(
+            btns, text="Stay paused", command=self._dismiss_resume,
+            height=BUTTON_HEIGHT_SMALL, corner_radius=CORNER_RADIUS_BUTTON,
+            fg_color=COLORS['surface_hover'], hover_color=COLORS['border'],
+            text_color=COLORS['text_secondary'], font=make_font('label')).pack(
+                side="left", expand=True, fill="x", padx=(SPACE_XXS, 0))
+
+        # Center on the active screen. Mirror the popup: use the REQUESTED size
+        # (winfo_width is 1 before the window maps) and set raw Tk `wm geometry`
+        # (CTk's .geometry() mislocates cross-monitor +x+y).
+        card.update_idletasks()
+        w, h = card.winfo_reqwidth(), card.winfo_reqheight()
+        screen = self._capture_active_screen() or (
+            0, 0, card.winfo_screenwidth(), card.winfo_screenheight())
+        x, y = center_on_screen(screen, w, h)
+        x, y = clamp_onscreen(x, y, w, h, screen)
+        card.tk.call("wm", "geometry", card, f"{w}x{h}+{int(x)}+{int(y)}")
+        card.protocol("WM_DELETE_WINDOW", self._dismiss_resume)
+        self._resume_card_after = self.root.after(
+            RESUME_CARD_TIMEOUT_MS, self._dismiss_resume)
 
     def _set_reset_enabled(self, enabled):
         """Enable/disable the Reset button with a visibly distinct look (#70) —
