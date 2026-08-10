@@ -23,6 +23,9 @@ SESSION_STARTED = "session_started"   # user pressed Start — begins a fresh br
 BREAK_RESCHEDULED = "break_rescheduled"   # one-time nudge of the next break sooner/later
 SESSION_RESUMED = "session_resumed"       # timers/snoozes restored after a crash/update relaunch
 APP_UPDATED = "app_updated"               # a self-update applied a new version
+RESUME_PROMPTED = "resume_prompted"       # while paused, user seemed back -> offered to resume (#77)
+RESUME_ACCEPTED = "resume_accepted"       # user accepted the resume prompt
+RESUME_DISMISSED = "resume_dismissed"     # user chose "stay paused" (or the prompt auto-dismissed)
 
 # Event record schema version. Bump when the event shape changes; readers may
 # branch on it. Old records lacking "v" are treated as unversioned.
