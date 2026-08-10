@@ -308,6 +308,8 @@ RESUME_PROMPT_DEFAULT_SAMPLES = 3     # consecutive ~1s "back" samples before pr
 RESUME_PROMPT_MIN_SAMPLES = 2         # sensitivity slider bounds
 RESUME_PROMPT_MAX_SAMPLES = 10
 RESUME_CARD_TIMEOUT_MS = 30000        # auto-dismiss the resume card (treated as "stay paused")
+RESUME_CARD_HEADLINE = "Breaks are paused"       # leads with what you forgot
+RESUME_CARD_SUBTEXT = "Welcome back — resume them?"
 CONFIG_COMMIT_DEBOUNCE_MS = 800  # wait this long after the last keystroke before applying a typed interval/duration
 OVER_BREAK_SUFFIX = "over your break"  # trails the +MM:SS over-breaking count-up
 SNOOZE_OPTIONS_SECONDS = [30, 60, 120, 300, 600, 900, 1800]  # ▾ menu presets
@@ -2532,7 +2534,7 @@ class BreakApp:
             return   # already showing, or un-paused before this fired
         self._record_event(RESUME_PROMPTED)
         card = ctk.CTkToplevel(self.root)
-        card.title("Resume breaks?")
+        card.title(APP_NAME)
         card.resizable(False, False)
         card.configure(fg_color=COLORS['surface_card'])
         pin_to_active_space(card)
@@ -2541,9 +2543,9 @@ class BreakApp:
 
         wrap = ctk.CTkFrame(card, fg_color="transparent")
         wrap.pack(padx=SPACE_LG, pady=SPACE_LG)
-        ctk.CTkLabel(wrap, text="You seem to be back",
+        ctk.CTkLabel(wrap, text=RESUME_CARD_HEADLINE,
                      font=make_font('subheading', weight="bold")).pack(anchor="w")
-        ctk.CTkLabel(wrap, text="Resume your breaks?", font=make_font('label'),
+        ctk.CTkLabel(wrap, text=RESUME_CARD_SUBTEXT, font=make_font('label'),
                      text_color=COLORS['text_secondary']).pack(anchor="w", pady=(0, SPACE_MD))
         btns = ctk.CTkFrame(wrap, fg_color="transparent")
         btns.pack(fill="x")
@@ -2560,11 +2562,16 @@ class BreakApp:
             text_color=COLORS['text_secondary'], font=make_font('label')).pack(
                 side="left", expand=True, fill="x", padx=(SPACE_XXS, 0))
 
+        # Center on the active screen. Mirror the popup: use the REQUESTED size
+        # (winfo_width is 1 before the window maps) and set raw Tk `wm geometry`
+        # (CTk's .geometry() mislocates cross-monitor +x+y).
         card.update_idletasks()
-        screen = self._capture_active_screen()
-        if screen:
-            x, y = center_on_screen(screen, card.winfo_width(), card.winfo_height())
-            card.geometry(f"+{x}+{y}")
+        w, h = card.winfo_reqwidth(), card.winfo_reqheight()
+        screen = self._capture_active_screen() or (
+            0, 0, card.winfo_screenwidth(), card.winfo_screenheight())
+        x, y = center_on_screen(screen, w, h)
+        x, y = clamp_onscreen(x, y, w, h, screen)
+        card.tk.call("wm", "geometry", card, f"{w}x{h}+{int(x)}+{int(y)}")
         card.protocol("WM_DELETE_WINDOW", self._dismiss_resume)
         self._resume_card_after = self.root.after(
             RESUME_CARD_TIMEOUT_MS, self._dismiss_resume)
