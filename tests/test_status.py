@@ -105,3 +105,37 @@ def test_default_just_rested_is_backward_compatible():
     v = compute_status(running=True, paused=False, held_reason=None,
                        break_active=False, **_BASE)
     assert v.state == "on_track" and v.headline.startswith("Next break")
+
+
+# --- #74: anticipated-deferral chip (proactive, before a break is due) ---
+from dfyb.insights.status import compute_status as _cs, ANTICIPATED_CHIPS
+
+
+def _ontrack(**kw):
+    base = dict(running=True, paused=False, held_reason=None, next_name="Micro",
+                next_remaining=500, next_interval=1500, break_active=False)
+    base.update(kw)
+    return _cs(**base)
+
+
+def test_anticipated_chip_shows_on_track():
+    v = _ontrack(anticipated_reason="meeting")
+    assert v.state == "on_track"
+    assert v.chip == ANTICIPATED_CHIPS["meeting"]
+    assert "call" in v.chip.lower()
+
+
+def test_anticipated_none_has_no_chip():
+    assert _ontrack(anticipated_reason=None).chip is None
+
+
+def test_held_wins_over_anticipated():
+    # a due+held break (reactive #44) takes precedence over the anticipatory chip
+    v = _ontrack(held_reason="meeting", anticipated_reason="fullscreen")
+    assert v.state == "holding"
+    assert "Breaks pause" in v.chip
+
+
+def test_paused_ignores_anticipated():
+    v = _ontrack(paused=True, anticipated_reason="meeting")
+    assert v.state == "paused"
