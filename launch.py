@@ -44,7 +44,8 @@ from dfyb.activity.event_log import (
     BREAK_RESCHEDULED, SESSION_RESUMED, APP_UPDATED,
     RESUME_PROMPTED, RESUME_ACCEPTED, RESUME_DISMISSED)
 from dfyb.activity.sensors import read_context, frontmost_window_rect, smooth_signal
-from dfyb.popup_placement import screen_for_point, center_on_screen, clamp_onscreen
+from dfyb.popup_placement import (screen_for_point, center_on_screen, clamp_onscreen,
+                                  main_window_geometry)
 from dfyb.scheduler.adapter import states_from_configs
 from dfyb.scheduler.tick import (advance, apply_snooze_freeze,
                                  track_due_since, deferral_at_fire, IDLE_EPISODE)
@@ -324,6 +325,13 @@ POPUP_PLACEMENT_LABELS = {
     "Primary screen": "primary",
     "Cursor's screen": "cursor",
 }
+# Where the MAIN window opens (#67): remember the last position, or center on the
+# screen you're currently using (multi-monitor). Default remembers (no surprise).
+MAIN_WINDOW_PLACEMENT_LABELS = {
+    "Remember last position": "remembered",
+    "Center on current screen": "active",
+}
+MAIN_WINDOW_PLACEMENT_DEFAULT = "remembered"
 
 # Gentle rotating messages for the break popup (generic for now; per-break-kind
 # copy comes with the break-kind model, #30).
@@ -1306,6 +1314,11 @@ class BreakApp:
         )
         self.popup_placement.trace_add('write', self._save_preferences)
 
+        self.main_window_placement = ctk.StringVar(
+            value=self.saved_prefs.get("main_window_placement", MAIN_WINDOW_PLACEMENT_DEFAULT)
+        )
+        self.main_window_placement.trace_add('write', self._save_preferences)
+
         # Update check preference (default True)
         self.check_for_updates = ctk.BooleanVar(
             value=self.saved_prefs.get("check_for_updates", True)
@@ -1588,10 +1601,15 @@ class BreakApp:
         self.root.update_idletasks()
         w = self.root.winfo_reqwidth()
         h = self.root.winfo_reqheight()
-        if self._saved_position:
-            self.root.geometry(f"{w}x{h}{self._saved_position}")
-        else:
-            self.root.geometry(f"{w}x{h}")
+        mode = self.main_window_placement.get()
+        if mode == "active":
+            # Center on the screen you're using (#67). Raw Tk `wm geometry` — CTk's
+            # .geometry() mislocates cross-monitor +x+y (same reason as the popup).
+            geo = main_window_geometry(w, h, mode, self._saved_position,
+                                       self._capture_active_screen())
+            self.root.tk.call("wm", "geometry", self.root, geo)
+        else:   # "remembered" (default): restore the saved position, unchanged
+            self.root.geometry(main_window_geometry(w, h, mode, self._saved_position, None))
 
     def _refit_window(self):
         """Re-grow/shrink the (otherwise size-locked) window to fit content when
@@ -1622,6 +1640,7 @@ class BreakApp:
             "defer_during_meetings": self.defer_during_meetings.get(),
             "defer_during_fullscreen": self.defer_during_fullscreen.get(),
             "popup_placement": self.popup_placement.get(),
+            "main_window_placement": self.main_window_placement.get(),
             "defer_while_active": self.defer_while_active.get(),
             "activity_pause_seconds": self.activity_pause_seconds.get(),
             "away_idle_seconds": self.away_idle_seconds.get(),
@@ -2229,6 +2248,25 @@ class BreakApp:
         appsec = _add_section("app", "App")
         _checkbox(appsec.body, "Always on top", self.always_on_top)
         _checkbox(appsec.body, "Check for updates automatically", self.check_for_updates)
+
+        # Main-window placement on launch (#67): remember position vs center on the
+        # current screen (multi-monitor). Mirrors the break-popup "Appears on" row.
+        mw_row = ctk.CTkFrame(appsec.body, fg_color="transparent")
+        mw_row.pack(padx=PADDING_PANEL_X, pady=(SPACE_XXS, PADDING_PANEL_Y),
+                    anchor="w", fill="x")
+        ctk.CTkLabel(mw_row, text="Main window",
+                     font=make_font('label')).pack(side="left")
+        mw_value_to_label = {v: k for k, v in MAIN_WINDOW_PLACEMENT_LABELS.items()}
+
+        def _on_main_placement(label):
+            self.main_window_placement.set(MAIN_WINDOW_PLACEMENT_LABELS[label])
+
+        mw_menu = ctk.CTkOptionMenu(
+            mw_row, values=list(MAIN_WINDOW_PLACEMENT_LABELS.keys()),
+            command=_on_main_placement, font=make_font('label'))
+        mw_menu.set(mw_value_to_label.get(self.main_window_placement.get(),
+                                          "Remember last position"))
+        mw_menu.pack(side="right")
         appsec.finalize()
 
         # Trackpad/wheel scrolling over the whole content (not just the scrollbar).
