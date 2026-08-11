@@ -35,6 +35,15 @@ HELD_LABELS = {
 RESTED_HEADLINE = "Welcome back"
 RESTED_SUBTEXT = "That counted as a break — timers reset"
 
+# Proactive chip shown while a deferral context is active but nothing is due yet,
+# so you know the upcoming break is being held and why (#74). Reactive holding
+# (#44) takes precedence once a break is actually due.
+ANTICIPATED_CHIPS = {
+    "meeting": "In a call — your break will wait",
+    "fullscreen": "Full screen — your break will wait",
+    "active": "You're busy — your break will wait",
+}
+
 
 @dataclass
 class StatusView:
@@ -48,7 +57,8 @@ class StatusView:
 
 
 def compute_status(*, running, paused, held_reason, next_name,
-                   next_remaining, next_interval, break_active, just_rested=False):
+                   next_remaining, next_interval, break_active, just_rested=False,
+                   anticipated_reason=None):
     """Derive the hero view from app state. Order matters: idle → paused →
     holding → break → on-track. Paused keeps the countdown visible (the pill
     carries the 'Paused' state) and freezes the bar in grey; on-track/holding
@@ -77,4 +87,5 @@ def compute_status(*, running, paused, held_reason, next_name,
     return StatusView(
         "on_track", "good", f"Next break in {format_countdown(next_remaining)}",
         next_name, progress_fraction(next_remaining, next_interval),
+        chip=(ANTICIPATED_CHIPS.get(anticipated_reason) if anticipated_reason else None),
         progress_style="live")

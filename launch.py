@@ -1223,6 +1223,7 @@ class BreakApp:
         self._resume_card = None      # the floating "resume?" card, or None
         self._resume_card_after = None  # auto-dismiss timer id for the resume card
         self._held = None      # reason the due break is currently held (transparency)
+        self._anticipated = None  # deferral context active but nothing due yet (#74)
         self._rested_ack_until = None  # time.time() until which to show "welcome back"
         self._fullscreen_grace = 0  # ticks of fullscreen hysteresis left (#46)
         self._meeting_grace = 0     # ticks of mic-in-use hysteresis left (#84)
@@ -1300,6 +1301,10 @@ class BreakApp:
         self.resume_prompt_samples = ctk.IntVar(
             value=self.saved_prefs.get("resume_prompt_samples", RESUME_PROMPT_DEFAULT_SAMPLES))
         self.resume_prompt_samples.trace_add('write', self._save_preferences)
+        # Proactively show "your break will wait" while in a call / fullscreen (#74).
+        self.show_anticipated_defer = ctk.BooleanVar(
+            value=self.saved_prefs.get("show_anticipated_defer", True))
+        self.show_anticipated_defer.trace_add('write', self._save_preferences)
 
         # Default snooze length (seconds), remembered from the ▾ picker.
         # Migrates an old minutes-based pref (×60) so existing configs still load.
@@ -1648,6 +1653,7 @@ class BreakApp:
             "count_mouse_move": self.count_mouse_move.get(),
             "prompt_resume_when_back": self.prompt_resume_when_back.get(),
             "resume_prompt_samples": self.resume_prompt_samples.get(),
+            "show_anticipated_defer": self.show_anticipated_defer.get(),
             "snooze_seconds": self.snooze_seconds.get(),
             "last_update_check": self.saved_prefs.get("last_update_check", 0),
             "sections_expanded": self._sections_expanded,
@@ -2209,6 +2215,9 @@ class BreakApp:
             lambda v: f"Count as a rest after: {v // 60} min",
             NATURAL_BREAK_MIN_SECONDS, NATURAL_BREAK_MAX_SECONDS, NATURAL_BREAK_STEP_SECONDS)
 
+        _checkbox(smart.body, "Show “your break will wait” while in a call / full screen",
+                  self.show_anticipated_defer)
+
         # Resume prompt while paused (#77): toggle + adjustable sensitivity.
         _checkbox(smart.body, "When paused, offer to resume when you return",
                   self.prompt_resume_when_back)
@@ -2432,6 +2441,7 @@ class BreakApp:
             if self.active_popup:
                 continue
             if self.paused:
+                self._anticipated = None      # no anticipatory chip while paused (#74)
                 self._maybe_prompt_resume()   # #77: offer to resume if you're clearly back
                 continue
 
@@ -2460,6 +2470,13 @@ class BreakApp:
                 ctx = dataclass_replace(
                     ctx, is_fullscreen=eff_fullscreen, is_meeting=eff_meeting,
                     active_idle_seconds=(0.0 if eff_active else ctx.active_idle_seconds))
+                # Proactively note a sustained deferral context (call / fullscreen) so
+                # the hero can say "your break will wait" before anything is due (#74).
+                # Active-typing is excluded — it's transient and would flicker.
+                self._anticipated = None
+                if self.show_anticipated_defer.get():
+                    self._anticipated = ("meeting" if eff_meeting else
+                                         "fullscreen" if eff_fullscreen else None)
                 states = states_from_configs(self.breaks)
                 names = [c.name.get() for c in self.breaks]
                 prev_remaining = [c.remaining for c in self.breaks]
@@ -3204,7 +3221,7 @@ class BreakApp:
             running=self.running, paused=self.paused, held_reason=self._held,
             next_name=next_name, next_remaining=next_remaining,
             next_interval=next_interval, break_active=self.active_popup is not None,
-            just_rested=just_rested)
+            just_rested=just_rested, anticipated_reason=self._anticipated)
         self.status_dot.configure(fg_color=STATUS_DOT_COLORS[view.dot])
         self.status.configure(text=STATUS_STATE_LABELS[view.state],
                               text_color=COLORS['text_secondary'])
