@@ -10,6 +10,7 @@ import json
 import os
 import atexit
 import random
+import re
 import webbrowser
 import platform
 from dataclasses import replace as dataclass_replace
@@ -57,7 +58,10 @@ from dfyb.scheduler.dedup import break_in_play
 from dfyb.ui_controls import reset_button_style
 from dfyb.timer_lifecycle import timer_should_continue
 from dfyb.macos_window import pin_to_active_space
-from dfyb.checkins.model import SCALE, CHOICES, NOTE
+from dfyb.checkins.model import (
+    SCALE, CHOICES, NOTE, TIMES_PER_DAY, PER_DAY, PER_WEEK,
+    DEFAULT_SCALE_MIN, DEFAULT_SCALE_MAX,
+)
 from dfyb.insights.transparency import track_held, held_message, holding_cue
 from dfyb.insights.status import compute_status
 from dfyb.insights.over_break import format_over_time
@@ -227,7 +231,8 @@ SETTINGS_SUBOPTION_INDENT = 12   # left inset for a nested sub-option block
 SETTINGS_SUBOPTION_RULE_W = 2    # width of the hairline marking a nested sub-block
 # Which settings categories open on first ever launch (persisted thereafter).
 SECTION_DEFAULT_EXPANDED = {"breaks": True, "smart_pausing": True,
-                            "break_popup": False, "app": False}
+                            "break_popup": False, "app": False,
+                            "check_ins": True}
 
 # Corner radii
 CORNER_RADIUS_PANEL = 10
@@ -355,6 +360,57 @@ CHECK_IN_NOTE_PLACEHOLDER = "Add a note (optional)"   # optional note entry (sca
 CHECK_IN_ANSWER_PLACEHOLDER = "Type your answer…"     # note-type question's primary entry
 CHECK_IN_SAVE_LABEL = "Save"
 CHECK_IN_SKIP_LABEL = "Skip"
+
+# --- Settings > Check-ins section (card list + add/edit/delete question form) ---
+# All labels/sizes are tokens here; the widget code never inlines literals.
+CHECK_IN_SECTION_TITLE = "Check-ins"
+CHECK_IN_ENABLE_LABEL = "Enable check-ins"
+CHECK_IN_ADD_LABEL = "+ Add question"
+CHECK_IN_EDIT_LABEL = "Edit"
+CHECK_IN_DELETE_LABEL = "Delete"
+CHECK_IN_NEW_QUESTION_TEXT = "New question"       # default text for a freshly added card
+CHECK_IN_ID_FALLBACK = "question"                 # slug base when the text has no word chars
+CHECK_IN_ID_SEP = "-"                             # joins slug + a disambiguating counter
+CHECK_IN_DEFAULT_CHOICES = ["Yes", "No"]          # fallback if a Choices question has no options
+CHECK_IN_OPTIONS_SPLIT = ","                      # options may be comma- OR newline-separated
+# Card layout
+CHECK_IN_CARD_BORDER_WIDTH = 1
+CHECK_IN_CARD_TEXT_WRAP = 360                     # px; wrap long question text inside a card
+CHECK_IN_TOGGLE_WIDTH = 28                        # bare per-question enable checkbox
+CHECK_IN_ACTION_BTN_WIDTH = 62                    # Edit / Delete buttons
+CHECK_IN_SUMMARY_INDENT = 28                      # align the summary caption under the text
+# One-line answer + cadence summary (e.g. "Scale 1–5 · 2×/day")
+CHECK_IN_SUMMARY_SEP = " · "                 # " · " between the answer + cadence parts
+CHECK_IN_ANSWER_TYPE_LABELS = {SCALE: "Scale", CHOICES: "Choices", NOTE: "Note"}
+CHECK_IN_SCALE_RANGE_FMT = "{label} {min}–{max}"   # e.g. "Scale 1–5"
+CHECK_IN_CHOICES_FMT = "{label}: {opts}"
+CHECK_IN_CHOICES_JOIN = "/"
+CHECK_IN_CADENCE_DAILY_LABEL = "daily"
+CHECK_IN_CADENCE_WEEKLY_LABEL = "weekly"
+CHECK_IN_CADENCE_PER_DAY_FMT = "{count}×/day"      # e.g. "2×/day"
+CHECK_IN_CADENCE_PER_WEEK_FMT = "{count}×/week"
+# Edit modal
+CHECK_IN_EDIT_TITLE = "Edit check-in"
+CHECK_IN_EDIT_TEXT_LABEL = "Question"
+CHECK_IN_EDIT_TYPE_LABEL = "Answer type"
+CHECK_IN_EDIT_MIN_LABEL = "Min"
+CHECK_IN_EDIT_MAX_LABEL = "Max"
+CHECK_IN_EDIT_LOW_LABEL = "Low label"
+CHECK_IN_EDIT_HIGH_LABEL = "High label"
+CHECK_IN_EDIT_OPTIONS_LABEL = "Options (one per line or comma-separated)"
+CHECK_IN_EDIT_NOTE_HINT = "A free-text note is the answer — nothing else to set."
+CHECK_IN_EDIT_ALLOW_NOTE_LABEL = "Allow an optional note"
+CHECK_IN_EDIT_CADENCE_LABEL = "How often"
+CHECK_IN_EDIT_COUNT_LABEL = "Count"
+CHECK_IN_EDIT_SAVE_LABEL = "Save"
+CHECK_IN_EDIT_CANCEL_LABEL = "Cancel"
+CHECK_IN_CADENCE_LABELS = {TIMES_PER_DAY: "Times per day",
+                           PER_DAY: "Per day", PER_WEEK: "Per week"}
+CHECK_IN_EDIT_TEXT_WIDTH = 340                    # question / options field width
+CHECK_IN_EDIT_INT_WIDTH = 64                      # min / max / count entries
+CHECK_IN_EDIT_LABEL_WIDTH = 150                   # scale end-label entries
+CHECK_IN_EDIT_OPTIONS_HEIGHT = 96                 # options textbox height
+
 DEFAULT_CHECK_INS = {
     "enabled": True,
     "questions": [
@@ -384,6 +440,61 @@ def check_in_event_payload(question, value, note):
     return {"question_id": question.id, "question": question.text,
             "answer_type": question.answer.type, "value": value,
             "note": (note or None)}
+
+
+def _ci_int(value, default):
+    """Parse an int, falling back to `default` for blank/garbage entry text."""
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _check_in_cadence_summary(cad_type, count):
+    """Human phrase for a cadence: 'daily', 'weekly', '2×/day', '3×/week'."""
+    if cad_type == PER_WEEK:
+        return (CHECK_IN_CADENCE_WEEKLY_LABEL if count == 1
+                else CHECK_IN_CADENCE_PER_WEEK_FMT.format(count=count))
+    if cad_type == PER_DAY and count == 1:
+        return CHECK_IN_CADENCE_DAILY_LABEL
+    return CHECK_IN_CADENCE_PER_DAY_FMT.format(count=count)
+
+
+def check_in_summary(question):
+    """A one-line 'answer-type + range/options · cadence' summary for a raw question
+    dict (e.g. 'Scale 1–5 · 2×/day', 'Choices: Great/OK/Rough · daily')."""
+    answer = question.get("answer") or {}
+    atype = answer.get("type")
+    label = CHECK_IN_ANSWER_TYPE_LABELS.get(atype, CHECK_IN_ANSWER_TYPE_LABELS[NOTE])
+    if atype == SCALE:
+        answer_part = CHECK_IN_SCALE_RANGE_FMT.format(
+            label=label, min=answer.get("min", DEFAULT_SCALE_MIN),
+            max=answer.get("max", DEFAULT_SCALE_MAX))
+    elif atype == CHOICES:
+        opts = CHECK_IN_CHOICES_JOIN.join(str(o) for o in (answer.get("options") or ()))
+        answer_part = CHECK_IN_CHOICES_FMT.format(label=label, opts=opts)
+    else:
+        answer_part = label
+    cadence = question.get("cadence") or {}
+    cadence_part = _check_in_cadence_summary(
+        cadence.get("type", PER_DAY), _ci_int(cadence.get("count", 1), 1))
+    return CHECK_IN_SUMMARY_SEP.join((answer_part, cadence_part))
+
+
+def _slugify_check_in(text):
+    """A lowercase hyphen slug from question text (word chars only)."""
+    return re.sub(r"[^a-z0-9]+", CHECK_IN_ID_SEP, str(text).lower()).strip(CHECK_IN_ID_SEP)
+
+
+def _parse_options_text(text):
+    """Options entered one-per-line or comma-separated → a clean list (no blanks)."""
+    normalized = (text or "").replace(CHECK_IN_OPTIONS_SPLIT, "\n")
+    return [line.strip() for line in normalized.splitlines() if line.strip()]
+
+
+def _options_to_text(options):
+    """Options list → newline-joined text for the edit box."""
+    return "\n".join(str(o) for o in (options or ()))
 
 
 def _display_rects():
@@ -2514,6 +2625,21 @@ class BreakApp:
         mw_menu.pack(side="right")
         appsec.finalize()
 
+        # -- Check-ins: master toggle + one card per configurable question --
+        cisec = _add_section("check_ins", CHECK_IN_SECTION_TITLE)
+        _checkbox(cisec.body, CHECK_IN_ENABLE_LABEL, self.check_ins_enabled)
+        self._check_in_cards_frame = ctk.CTkFrame(cisec.body, fg_color="transparent")
+        self._check_in_cards_frame.pack(fill="x")
+        self._render_check_in_cards()
+        ctk.CTkButton(
+            cisec.body, text=CHECK_IN_ADD_LABEL, command=self._add_check_in_question,
+            height=BUTTON_HEIGHT_SMALL, corner_radius=CORNER_RADIUS_BUTTON,
+            fg_color="transparent", border_width=1, border_color=COLORS['border'],
+            hover_color=COLORS['surface_hover'], text_color=COLORS['text_secondary'],
+            font=make_font('label')).pack(
+                anchor="w", padx=PADDING_PANEL_X, pady=(SPACE_XS, PADDING_PANEL_Y))
+        cisec.finalize()
+
         # Trackpad/wheel scrolling over the whole content (not just the scrollbar).
         self._enable_trackpad_scroll(container)
 
@@ -2547,6 +2673,296 @@ class BreakApp:
             if panel.config is config:
                 panel.focus_config()
                 break
+
+    # ------------------ CHECK-INS SETTINGS ------------------
+
+    def _render_check_in_cards(self):
+        """Clear + rebuild the per-question card list so add/edit/delete refresh
+        live. Safe to call whenever `self.check_in_questions` changes."""
+        frame = getattr(self, '_check_in_cards_frame', None)
+        if frame is None or not frame.winfo_exists():
+            return
+        for child in frame.winfo_children():
+            child.destroy()
+        for question in self.check_in_questions:
+            self._build_check_in_card(frame, question)
+
+    def _build_check_in_card(self, parent, question):
+        """One card: enable toggle + question text + summary + Edit/Delete."""
+        card = ctk.CTkFrame(
+            parent, corner_radius=CORNER_RADIUS_PANEL, fg_color=COLORS['surface_card'],
+            border_width=CHECK_IN_CARD_BORDER_WIDTH, border_color=COLORS['border'])
+        card.pack(fill="x", padx=PADDING_PANEL_X, pady=(0, ROW_SPACING))
+
+        top = ctk.CTkFrame(card, fg_color="transparent")
+        top.pack(fill="x", padx=PADDING_PANEL_X, pady=(PADDING_PANEL_Y // 2, 0))
+
+        enabled_var = ctk.BooleanVar(value=bool(question.get("enabled", True)))
+
+        def _on_toggle(*_a, q=question, var=enabled_var):
+            q["enabled"] = var.get()
+            self._save_preferences()
+
+        enabled_var.trace_add('write', _on_toggle)
+        ctk.CTkCheckBox(top, text="", width=CHECK_IN_TOGGLE_WIDTH,
+                        variable=enabled_var).pack(side="left")
+
+        ctk.CTkButton(
+            top, text=CHECK_IN_DELETE_LABEL, width=CHECK_IN_ACTION_BTN_WIDTH,
+            height=BUTTON_HEIGHT_SMALL, corner_radius=CORNER_RADIUS_INPUT,
+            fg_color="transparent", border_width=1, border_color=COLORS['border'],
+            hover_color=COLORS['surface_hover'], text_color=COLORS['text_secondary'],
+            font=make_font('label'),
+            command=lambda q=question: self._delete_check_in_question(q)).pack(
+                side="right", padx=(SPACE_XS, 0))
+        ctk.CTkButton(
+            top, text=CHECK_IN_EDIT_LABEL, width=CHECK_IN_ACTION_BTN_WIDTH,
+            height=BUTTON_HEIGHT_SMALL, corner_radius=CORNER_RADIUS_INPUT,
+            fg_color="transparent", border_width=1, border_color=COLORS['border'],
+            hover_color=COLORS['surface_hover'], text_color=COLORS['text_secondary'],
+            font=make_font('label'),
+            command=lambda q=question: self._edit_check_in_question(q)).pack(side="right")
+
+        ctk.CTkLabel(
+            top, text=question.get("text", ""), font=make_font('body', weight="bold"),
+            anchor="w", justify="left", wraplength=CHECK_IN_CARD_TEXT_WRAP).pack(
+                side="left", padx=(SPACE_XS, SPACE_SM), fill="x", expand=True)
+
+        ctk.CTkLabel(
+            card, text=check_in_summary(question), font=make_font('caption'),
+            text_color=COLORS['text_secondary'], anchor="w", justify="left").pack(
+                anchor="w", padx=(PADDING_PANEL_X + CHECK_IN_SUMMARY_INDENT, PADDING_PANEL_X),
+                pady=(0, PADDING_PANEL_Y // 2))
+
+    def _refresh_check_in_section(self):
+        """Persist, rebuild the cards, and resize the settings window to fit."""
+        self._save_preferences()
+        self._render_check_in_cards()
+        self._resize_settings_to_content()
+
+    def _add_check_in_question(self):
+        """Append a blank question (unique stable id) and open its edit form."""
+        question = {
+            "id": self._unique_check_in_id(CHECK_IN_NEW_QUESTION_TEXT),
+            "text": CHECK_IN_NEW_QUESTION_TEXT, "enabled": True,
+            "answer": {"type": SCALE, "min": DEFAULT_SCALE_MIN, "max": DEFAULT_SCALE_MAX,
+                       "min_label": "", "max_label": "", "allow_note": True},
+            "cadence": {"type": TIMES_PER_DAY, "count": 1},
+        }
+        self.check_in_questions.append(question)
+        self._refresh_check_in_section()
+        self._edit_check_in_question(question)   # let the user name it right away
+
+    def _delete_check_in_question(self, question):
+        """Remove a question (by identity, so duplicate-valued dicts are safe)."""
+        self.check_in_questions[:] = [
+            q for q in self.check_in_questions if q is not question]
+        self._refresh_check_in_section()
+
+    def _unique_check_in_id(self, text):
+        """A stable slug id from `text`, disambiguated so it never collides."""
+        existing = {q.get("id") for q in self.check_in_questions}
+        base = _slugify_check_in(text) or CHECK_IN_ID_FALLBACK
+        candidate, n = base, 2
+        while candidate in existing:
+            candidate = f"{base}{CHECK_IN_ID_SEP}{n}"
+            n += 1
+        return candidate
+
+    def _edit_check_in_question(self, question):
+        """Modal form editing one question in place: text, answer type + type-specific
+        fields (scale range/labels, choices options, note), and cadence + count."""
+        answer = question.get("answer") or {}
+        cadence = question.get("cadence") or {}
+        type_by_label = {v: k for k, v in CHECK_IN_ANSWER_TYPE_LABELS.items()}
+        cadence_by_label = {v: k for k, v in CHECK_IN_CADENCE_LABELS.items()}
+
+        modal = ctk.CTkToplevel(self.root)
+        modal.title(CHECK_IN_EDIT_TITLE)
+        modal.resizable(False, False)
+        modal.configure(fg_color=COLORS['surface_card'])
+        pin_to_active_space(modal)
+        modal.transient(self._settings_window)
+        body = ctk.CTkFrame(modal, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=PADDING_PANEL_X, pady=PADDING_PANEL_Y)
+
+        def _caption(text):
+            ctk.CTkLabel(body, text=text, font=make_font('label'),
+                         text_color=COLORS['text_secondary']).pack(
+                             anchor="w", pady=(SPACE_SM, SPACE_XXS))
+
+        # Question text
+        _caption(CHECK_IN_EDIT_TEXT_LABEL)
+        text_entry = ctk.CTkEntry(body, width=CHECK_IN_EDIT_TEXT_WIDTH,
+                                  font=make_font('body'), corner_radius=CORNER_RADIUS_INPUT)
+        text_entry.insert(0, question.get("text", ""))
+        text_entry.pack(fill="x")
+
+        # Answer type
+        _caption(CHECK_IN_EDIT_TYPE_LABEL)
+        type_var = ctk.StringVar(value=CHECK_IN_ANSWER_TYPE_LABELS.get(
+            answer.get("type"), CHECK_IN_ANSWER_TYPE_LABELS[SCALE]))
+        type_fields = ctk.CTkFrame(body, fg_color="transparent")
+        widgets = {}
+
+        def _on_type_change(label):
+            self._build_check_in_type_fields(type_fields, type_by_label[label],
+                                             answer, widgets)
+            self._place_check_in_modal(modal)
+
+        ctk.CTkOptionMenu(
+            body, values=list(CHECK_IN_ANSWER_TYPE_LABELS.values()), variable=type_var,
+            command=_on_type_change, font=make_font('body'),
+            corner_radius=CORNER_RADIUS_INPUT).pack(anchor="w")
+        type_fields.pack(fill="x")
+        self._build_check_in_type_fields(
+            type_fields, type_by_label[type_var.get()], answer, widgets)
+
+        # Cadence + count
+        _caption(CHECK_IN_EDIT_CADENCE_LABEL)
+        cadence_row = ctk.CTkFrame(body, fg_color="transparent")
+        cadence_row.pack(fill="x")
+        cadence_var = ctk.StringVar(value=CHECK_IN_CADENCE_LABELS.get(
+            cadence.get("type"), CHECK_IN_CADENCE_LABELS[TIMES_PER_DAY]))
+        ctk.CTkOptionMenu(
+            cadence_row, values=list(CHECK_IN_CADENCE_LABELS.values()),
+            variable=cadence_var, font=make_font('body'),
+            corner_radius=CORNER_RADIUS_INPUT).pack(side="left")
+        ctk.CTkLabel(cadence_row, text=CHECK_IN_EDIT_COUNT_LABEL,
+                     font=make_font('label')).pack(side="left", padx=(SPACE_MD, SPACE_XS))
+        count_entry = ctk.CTkEntry(cadence_row, width=CHECK_IN_EDIT_INT_WIDTH,
+                                   font=make_font('body'), corner_radius=CORNER_RADIUS_INPUT)
+        count_entry.insert(0, str(_ci_int(cadence.get("count", 1), 1)))
+        count_entry.pack(side="left")
+
+        def _close():
+            try:
+                modal.grab_release()
+            except Exception:
+                pass
+            modal.destroy()
+
+        def _save():
+            atype = type_by_label[type_var.get()]
+            new_answer = {"type": atype}
+            if atype == SCALE:
+                low = _ci_int(widgets['min'].get(), DEFAULT_SCALE_MIN)
+                high = _ci_int(widgets['max'].get(), DEFAULT_SCALE_MAX)
+                if high < low:
+                    low, high = high, low
+                new_answer.update(
+                    min=low, max=high,
+                    min_label=widgets['min_label'].get().strip(),
+                    max_label=widgets['max_label'].get().strip(),
+                    allow_note=bool(widgets['allow_note'].get()))
+            elif atype == CHOICES:
+                options = _parse_options_text(widgets['options'].get("1.0", "end"))
+                new_answer.update(
+                    options=options or list(CHECK_IN_DEFAULT_CHOICES),
+                    allow_note=bool(widgets['allow_note'].get()))
+            else:                                    # NOTE: the free text IS the answer
+                new_answer.update(allow_note=True)
+            question["text"] = text_entry.get().strip() or CHECK_IN_NEW_QUESTION_TEXT
+            question["answer"] = new_answer
+            question["cadence"] = {"type": cadence_by_label[cadence_var.get()],
+                                   "count": max(1, _ci_int(count_entry.get(), 1))}
+            _close()
+            self._refresh_check_in_section()
+
+        buttons = ctk.CTkFrame(body, fg_color="transparent")
+        buttons.pack(fill="x", pady=(PADDING_PANEL_Y, 0))
+        ctk.CTkButton(
+            buttons, text=CHECK_IN_EDIT_SAVE_LABEL, command=_save,
+            height=BUTTON_HEIGHT_SMALL, corner_radius=CORNER_RADIUS_BUTTON,
+            fg_color=COLORS['accent_primary'], hover_color=COLORS['accent_primary_hover'],
+            font=make_font('label', weight="bold")).pack(
+                side="right", padx=(SPACE_XS, 0))
+        ctk.CTkButton(
+            buttons, text=CHECK_IN_EDIT_CANCEL_LABEL, command=_close,
+            height=BUTTON_HEIGHT_SMALL, corner_radius=CORNER_RADIUS_BUTTON,
+            fg_color="transparent", border_width=1, border_color=COLORS['border'],
+            hover_color=COLORS['surface_hover'], text_color=COLORS['text_secondary'],
+            font=make_font('label')).pack(side="right")
+
+        modal.protocol("WM_DELETE_WINDOW", _close)
+        self._place_check_in_modal(modal)
+        modal.lift()
+        modal.focus_force()
+        try:
+            modal.grab_set()
+        except Exception:
+            pass
+
+    def _build_check_in_type_fields(self, container, atype, answer, widgets):
+        """(Re)build the answer-type-specific fields inside the edit modal. Prefills
+        from `answer` when it matches the type, else uses sensible defaults."""
+        for child in container.winfo_children():
+            child.destroy()
+        widgets.clear()
+        src = answer if answer.get("type") == atype else {}
+
+        def _labeled_entry(parent, label, value, width):
+            ctk.CTkLabel(parent, text=label, font=make_font('label')).pack(
+                side="left", padx=(0, SPACE_XS))
+            entry = ctk.CTkEntry(parent, width=width, font=make_font('body'),
+                                 corner_radius=CORNER_RADIUS_INPUT)
+            entry.insert(0, str(value))
+            entry.pack(side="left", padx=(0, SPACE_MD))
+            return entry
+
+        if atype == SCALE:
+            row = ctk.CTkFrame(container, fg_color="transparent")
+            row.pack(fill="x", pady=(SPACE_XS, 0))
+            widgets['min'] = _labeled_entry(
+                row, CHECK_IN_EDIT_MIN_LABEL,
+                src.get("min", DEFAULT_SCALE_MIN), CHECK_IN_EDIT_INT_WIDTH)
+            widgets['max'] = _labeled_entry(
+                row, CHECK_IN_EDIT_MAX_LABEL,
+                src.get("max", DEFAULT_SCALE_MAX), CHECK_IN_EDIT_INT_WIDTH)
+            labels_row = ctk.CTkFrame(container, fg_color="transparent")
+            labels_row.pack(fill="x", pady=(SPACE_XS, 0))
+            widgets['min_label'] = _labeled_entry(
+                labels_row, CHECK_IN_EDIT_LOW_LABEL,
+                src.get("min_label", ""), CHECK_IN_EDIT_LABEL_WIDTH)
+            widgets['max_label'] = _labeled_entry(
+                labels_row, CHECK_IN_EDIT_HIGH_LABEL,
+                src.get("max_label", ""), CHECK_IN_EDIT_LABEL_WIDTH)
+            self._build_check_in_allow_note(container, src, widgets)
+        elif atype == CHOICES:
+            ctk.CTkLabel(container, text=CHECK_IN_EDIT_OPTIONS_LABEL,
+                         font=make_font('label')).pack(anchor="w", pady=(SPACE_XS, SPACE_XXS))
+            box = ctk.CTkTextbox(container, width=CHECK_IN_EDIT_TEXT_WIDTH,
+                                 height=CHECK_IN_EDIT_OPTIONS_HEIGHT, font=make_font('body'),
+                                 corner_radius=CORNER_RADIUS_INPUT)
+            box.insert("1.0", _options_to_text(src.get("options", CHECK_IN_DEFAULT_CHOICES)))
+            box.pack(fill="x")
+            widgets['options'] = box
+            self._build_check_in_allow_note(container, src, widgets)
+        else:                                        # NOTE
+            ctk.CTkLabel(container, text=CHECK_IN_EDIT_NOTE_HINT, font=make_font('caption'),
+                         text_color=COLORS['text_secondary']).pack(
+                             anchor="w", pady=(SPACE_XS, 0))
+
+    def _build_check_in_allow_note(self, container, src, widgets):
+        """The 'allow an optional note' checkbox shared by scale/choices editors."""
+        allow_note = ctk.BooleanVar(value=bool(src.get("allow_note", True)))
+        ctk.CTkCheckBox(container, text=CHECK_IN_EDIT_ALLOW_NOTE_LABEL,
+                        variable=allow_note, font=make_font('label')).pack(
+                            anchor="w", pady=(SPACE_SM, 0))
+        widgets['allow_note'] = allow_note
+
+    def _place_check_in_modal(self, modal):
+        """Center the edit modal over the settings window (re-run after it resizes)."""
+        win = getattr(self, '_settings_window', None)
+        modal.update_idletasks()
+        w, h = modal.winfo_reqwidth(), modal.winfo_reqheight()
+        if win is not None and win.winfo_exists():
+            x = win.winfo_x() + (win.winfo_width() - w) // 2
+            y = win.winfo_y() + (win.winfo_height() - h) // 2
+        else:
+            x = (modal.winfo_screenwidth() - w) // 2
+            y = (modal.winfo_screenheight() - h) // 2
+        modal.tk.call("wm", "geometry", modal, f"{w}x{h}+{int(x)}+{int(y)}")
 
     def _build_timing_slider(self, parent, var, label_fn, lo, hi, step):
         """A labeled slider row (label left, slider right) that writes `var` and
