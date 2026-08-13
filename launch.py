@@ -343,6 +343,33 @@ BREAK_MESSAGES = [
     "A gentle pause.",
 ]
 
+# --- Check-ins (user-configurable periodic questions; #9 habits foundation) ---
+MIN_CHECK_IN_GAP_SECONDS = 20 * 60          # never two check-in prompts closer than this
+CHECK_IN_ACTIVE_START_HOUR = 8              # only surface within this local-time window
+CHECK_IN_ACTIVE_END_HOUR = 22
+CHECK_IN_POPUP_W, CHECK_IN_POPUP_H = 340, 200
+DEFAULT_CHECK_INS = {
+    "enabled": True,
+    "questions": [
+        {"id": "refreshed", "text": "How refreshed do you feel?", "enabled": True,
+         "answer": {"type": "scale", "min": 1, "max": 5,
+                    "min_label": "groggy", "max_label": "refreshed", "allow_note": True},
+         "cadence": {"type": "times_per_day", "count": 2}},
+        {"id": "sleep", "text": "How did you sleep?", "enabled": True,
+         "answer": {"type": "choices", "options": ["Great", "OK", "Rough"], "allow_note": True},
+         "cadence": {"type": "per_day", "count": 1}},
+    ],
+}
+
+
+def merge_check_ins(saved_prefs):
+    """(enabled, questions) from saved prefs, falling back to DEFAULT_CHECK_INS so
+    older config files (no 'check_ins' key) load unchanged."""
+    block = saved_prefs.get("check_ins") or {}
+    enabled = block.get("enabled", DEFAULT_CHECK_INS["enabled"])
+    questions = block.get("questions", DEFAULT_CHECK_INS["questions"])
+    return enabled, questions
+
 
 def _display_rects():
     """Active display rects (x, y, w, h) in global top-left points; [] off-macOS
@@ -1314,6 +1341,15 @@ class BreakApp:
                 self.saved_prefs.get("snooze_minutes", DEFAULT_SNOOZE_SECONDS // 60) * 60)
         )
 
+        # Check-ins (#9 habits): master toggle + editable question list + prompt-timing
+        # state cache. Merged from saved prefs so older configs load unchanged.
+        _ci_enabled, _ci_questions = merge_check_ins(self.saved_prefs)
+        self.check_ins_enabled = ctk.BooleanVar(value=_ci_enabled)
+        self.check_ins_enabled.trace_add('write', self._save_preferences)
+        self.check_in_questions = [dict(q) for q in _ci_questions]     # editable working copy
+        self.check_in_state = self.saved_prefs.get(
+            "check_in_state", {"last_prompted": {}, "last_prompt_ts": 0.0})
+
         self.popup_placement = ctk.StringVar(
             value=self.saved_prefs.get("popup_placement", "active")
         )
@@ -1655,6 +1691,9 @@ class BreakApp:
             "resume_prompt_samples": self.resume_prompt_samples.get(),
             "show_anticipated_defer": self.show_anticipated_defer.get(),
             "snooze_seconds": self.snooze_seconds.get(),
+            "check_ins": {"enabled": self.check_ins_enabled.get(),
+                          "questions": self.check_in_questions},
+            "check_in_state": self.check_in_state,
             "last_update_check": self.saved_prefs.get("last_update_check", 0),
             "sections_expanded": self._sections_expanded,
         }
