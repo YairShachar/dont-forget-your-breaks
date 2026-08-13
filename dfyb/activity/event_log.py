@@ -26,6 +26,7 @@ APP_UPDATED = "app_updated"               # a self-update applied a new version
 RESUME_PROMPTED = "resume_prompted"       # while paused, user seemed back -> offered to resume (#77)
 RESUME_ACCEPTED = "resume_accepted"       # user accepted the resume prompt
 RESUME_DISMISSED = "resume_dismissed"     # user chose "stay paused" (or the prompt auto-dismissed)
+CHECK_IN = "check_in"                      # a user-configurable check-in was answered (#9 habits)
 
 # Event record schema version. Bump when the event shape changes; readers may
 # branch on it. Old records lacking "v" are treated as unversioned.
