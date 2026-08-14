@@ -40,3 +40,12 @@ def test_answer_is_valid():
     assert m.answer_is_valid(choices, "OK") and not m.answer_is_valid(choices, "Nope")
     note = m.AnswerSpec(m.NOTE)
     assert m.answer_is_valid(note, None)               # note-only: value is always None
+
+
+def test_parse_reads_trigger_with_default():
+    [a] = m.parse_questions([q()])                      # default -> break
+    assert a.trigger == m.TRIGGER_BREAK
+    [b] = m.parse_questions([q(trigger="on_demand")])
+    assert b.trigger == m.TRIGGER_ON_DEMAND
+    [c] = m.parse_questions([q(trigger="nonsense")])    # invalid -> default break
+    assert c.trigger == m.TRIGGER_BREAK

@@ -18,6 +18,11 @@ PER_DAY = "per_day"
 PER_WEEK = "per_week"
 CADENCE_TYPES = (TIMES_PER_DAY, PER_DAY, PER_WEEK)
 
+# When to ask a question
+TRIGGER_BREAK = "break"          # asked when a break finishes (cadence-gated)
+TRIGGER_ON_DEMAND = "on_demand"  # only when the user taps "Check in"
+TRIGGERS = (TRIGGER_BREAK, TRIGGER_ON_DEMAND)
+
 SECONDS_PER_DAY = 86400
 DEFAULT_SCALE_MIN, DEFAULT_SCALE_MAX = 1, 5
 
@@ -46,6 +51,7 @@ class Question:
     answer: AnswerSpec
     cadence: Cadence
     enabled: bool = True
+    trigger: str = TRIGGER_BREAK
 
 
 def _parse_answer(raw):
@@ -75,6 +81,10 @@ def _parse_cadence(raw):
     return Cadence(type=t, count=int(raw.get("count", 1)))
 
 
+def _parse_trigger(raw):
+    return raw if raw in TRIGGERS else TRIGGER_BREAK
+
+
 def parse_questions(raw_list):
     """Turn the stored config list into typed Questions, dropping malformed entries."""
     out = []
@@ -87,7 +97,8 @@ def parse_questions(raw_list):
         out.append(Question(
             id=str(raw["id"]), text=str(raw["text"]), answer=answer,
             cadence=_parse_cadence(raw.get("cadence")),
-            enabled=bool(raw.get("enabled", True))))
+            enabled=bool(raw.get("enabled", True)),
+            trigger=_parse_trigger(raw.get("trigger"))))
     return out
 
 
