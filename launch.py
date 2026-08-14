@@ -351,9 +351,9 @@ BREAK_MESSAGES = [
 
 # --- Check-ins (user-configurable periodic questions; #9 habits foundation) ---
 MIN_CHECK_IN_GAP_SECONDS = 20 * 60          # never two check-in prompts closer than this
-CHECK_IN_ACTIVE_START_HOUR = 8              # only surface within this local-time window
-CHECK_IN_ACTIVE_END_HOUR = 22
-SECONDS_PER_HOUR = 3600                      # active-window hours → seconds (check-ins)
+SECONDS_PER_HOUR = 3600                      # waking-window hours → seconds (check-ins)
+CHECK_IN_WAKING_WINDOW_HOURS = 14                                  # assumed waking span
+CHECK_IN_WAKING_WINDOW_SECONDS = CHECK_IN_WAKING_WINDOW_HOURS * SECONDS_PER_HOUR
 CHECK_IN_POPUP_W, CHECK_IN_POPUP_H = 340, 200
 CHECK_IN_SCALE_BTN_WIDTH = 44               # compact square-ish button per scale value
 CHECK_IN_NOTE_PLACEHOLDER = "Add a note (optional)"   # optional note entry (scale/choices)
@@ -1656,7 +1656,6 @@ class BreakApp:
         self.check_in_questions = [dict(q) for q in _ci_questions]     # editable working copy
         self.check_in_state = self.saved_prefs.get(
             "check_in_state", {"last_prompted": {}, "last_prompt_ts": 0.0})
-        self._check_in_rng = random.Random()   # per-tick surface probability (#9)
 
         self.popup_placement = ctk.StringVar(
             value=self.saved_prefs.get("popup_placement", "active")
@@ -3172,43 +3171,35 @@ class BreakApp:
                         "break due, firing: %s (idle=%.0fs raw_meeting=%s raw_fs=%s held=%s)",
                         name, ctx.idle_seconds, raw_meeting, raw_fullscreen, held_reason)
                     self.trigger_break(self.breaks[fire_index], held_reason=held_reason)
-                # Check-ins: when nothing is firing this tick, maybe surface a gentle
-                # question — reuses the deferral guardrails (#9 habits foundation).
-                if self.check_ins_enabled.get() and fire_index is None:
-                    self._maybe_surface_check_in(
-                        now, eff_fullscreen or eff_meeting or eff_active)
             except Exception as e:
                 logging.error(f"timer_loop tick failed: {e}", exc_info=True)
 
-    def _active_window_seconds(self):
-        return (CHECK_IN_ACTIVE_END_HOUR - CHECK_IN_ACTIVE_START_HOUR) * SECONDS_PER_HOUR
-
-    def _in_check_in_window(self, now):
-        hour = time.localtime(now).tm_hour
-        return CHECK_IN_ACTIVE_START_HOUR <= hour < CHECK_IN_ACTIVE_END_HOUR
-
-    def _maybe_surface_check_in(self, now, deferring):
+    def _maybe_check_in_after_break(self):
+        """After a real break finishes, maybe surface a break-coupled check-in — cadence-
+        gated, and only when nothing else is queued/snoozed/showing so it never stacks (#9)."""
+        if self.active_popup or self.break_queue or self._pending_snoozes:
+            return
+        if not self.check_ins_enabled.get():
+            return
         from dfyb.checkins.model import parse_questions
-        from dfyb.checkins.scheduler import due_question
+        from dfyb.checkins.scheduler import due_break_check_in
         questions = parse_questions(self.check_in_questions)
         state = self.check_in_state
-        q = due_question(
-            questions, now, state.get("last_prompted", {}),
-            state.get("last_prompt_ts", 0.0), self._active_window_seconds(),
-            self._in_check_in_window(now), deferring, MIN_CHECK_IN_GAP_SECONDS,
-            self._check_in_rng)
-        if q is None:
-            return
-        # Stamp the prompt time NOW (answer OR skip both count for spacing).
-        state.setdefault("last_prompted", {})[q.id] = now
-        state["last_prompt_ts"] = now
-        self._save_preferences()
-        # Open on the Tk main thread (timer_loop runs off-thread, like break popups).
-        self.root.after(0, lambda qq=q: self._show_check_in(qq))
+        q = due_break_check_in(
+            questions, time.time(), state.get("last_prompted", {}),
+            state.get("last_prompt_ts", 0.0),
+            CHECK_IN_WAKING_WINDOW_SECONDS, MIN_CHECK_IN_GAP_SECONDS)
+        if q is not None:
+            self._show_check_in(q)
 
     def _show_check_in(self, question):
-        if self.active_popup:                 # a break won the race — skip this cycle
+        if self.active_popup:                 # something else is showing — skip
             return
+        now = time.time()
+        state = self.check_in_state
+        state.setdefault("last_prompted", {})[question.id] = now
+        state["last_prompt_ts"] = now
+        self._save_preferences()
         self.active_popup = CheckInPopup(
             self.root, question,
             on_answer=lambda value, note: self._on_check_in_done(question, value, note),
@@ -3449,6 +3440,8 @@ class BreakApp:
                 self._render_status()
             elif not self.running:
                 self._render_status()
+            if not break_data.get('preview'):
+                self.root.after(0, self._maybe_check_in_after_break)
             self.root.after(0, self._process_break_queue)
 
         def on_snooze(snooze_seconds):
