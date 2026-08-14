@@ -23,3 +23,10 @@ def test_merge_respects_saved_config():
                                           "cadence": {"type": "per_day", "count": 1}}]}}
     enabled, questions = launch.merge_check_ins(saved)
     assert enabled is False and questions[0]["id"] == "mood"
+
+
+def test_default_triggers():
+    from dfyb.checkins.model import parse_questions, TRIGGER_BREAK, TRIGGER_ON_DEMAND
+    qs = {q.id: q for q in parse_questions(launch.DEFAULT_CHECK_INS["questions"])}
+    assert qs["refreshed"].trigger == TRIGGER_BREAK
+    assert qs["sleep"].trigger == TRIGGER_ON_DEMAND

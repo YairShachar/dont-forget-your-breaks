@@ -61,6 +61,7 @@ from dfyb.macos_window import pin_to_active_space
 from dfyb.checkins.model import (
     SCALE, CHOICES, NOTE, TIMES_PER_DAY, PER_DAY, PER_WEEK,
     DEFAULT_SCALE_MIN, DEFAULT_SCALE_MAX,
+    TRIGGER_BREAK, TRIGGER_ON_DEMAND,
 )
 from dfyb.insights.transparency import track_held, held_message, holding_cue
 from dfyb.insights.status import compute_status
@@ -243,6 +244,7 @@ CORNER_RADIUS_INPUT = 6
 BUTTON_HEIGHT_LARGE = 38    # Control buttons (Start/Reset/Pause)
 BUTTON_HEIGHT_SMALL = 28    # Test, play buttons
 BUTTON_HEIGHT_XLARGE = 40   # Popup actions (Snooze / ▾ / Done / Set)
+BUTTON_HEIGHT_BOTTOM_BAR = 22   # modest bottom-bar text buttons (Feedback / Check in / version)
 
 # Cockpit status hero
 DOT_SIZE = 11            # status dot diameter
@@ -361,6 +363,15 @@ CHECK_IN_ANSWER_PLACEHOLDER = "Type your answer…"     # note-type question's p
 CHECK_IN_SAVE_LABEL = "Save"
 CHECK_IN_SKIP_LABEL = "Skip"
 
+# --- On-demand "Check in" (main-window affordance + question chooser) ---
+CHECK_IN_NOW_LABEL = "Check in"                      # modest main-window button
+CHECK_IN_NOW_TOOLTIP = "Answer a check-in now"
+CHECK_IN_CHOOSER_TITLE = "Check in"                  # chooser window title
+CHECK_IN_CHOOSER_PROMPT = "What would you like to check in on?"
+CHECK_IN_NONE_CONFIGURED_TEXT = "No check-ins configured"   # calm empty-state note
+CHECK_IN_CHOOSER_CLOSE_LABEL = "Close"
+CHECK_IN_CHOOSER_BTN_WIDTH = 300                     # px; per-question chooser buttons
+
 # --- Settings > Check-ins section (card list + add/edit/delete question form) ---
 # All labels/sizes are tokens here; the widget code never inlines literals.
 CHECK_IN_SECTION_TITLE = "Check-ins"
@@ -389,6 +400,9 @@ CHECK_IN_CADENCE_DAILY_LABEL = "daily"
 CHECK_IN_CADENCE_WEEKLY_LABEL = "weekly"
 CHECK_IN_CADENCE_PER_DAY_FMT = "{count}×/day"      # e.g. "2×/day"
 CHECK_IN_CADENCE_PER_WEEK_FMT = "{count}×/week"
+# Trigger ("When") summary suffixes appended to a card caption (e.g. "… · on demand")
+CHECK_IN_TRIGGER_BREAK_SUFFIX = "with a break"
+CHECK_IN_TRIGGER_ON_DEMAND_SUFFIX = "on demand"
 # Edit modal
 CHECK_IN_EDIT_TITLE = "Edit check-in"
 CHECK_IN_EDIT_TEXT_LABEL = "Question"
@@ -402,10 +416,13 @@ CHECK_IN_EDIT_NOTE_HINT = "A free-text note is the answer — nothing else to se
 CHECK_IN_EDIT_ALLOW_NOTE_LABEL = "Allow an optional note"
 CHECK_IN_EDIT_CADENCE_LABEL = "How often"
 CHECK_IN_EDIT_COUNT_LABEL = "Count"
+CHECK_IN_EDIT_TRIGGER_LABEL = "When"
 CHECK_IN_EDIT_SAVE_LABEL = "Save"
 CHECK_IN_EDIT_CANCEL_LABEL = "Cancel"
 CHECK_IN_CADENCE_LABELS = {TIMES_PER_DAY: "Times per day",
                            PER_DAY: "Per day", PER_WEEK: "Per week"}
+CHECK_IN_TRIGGER_LABELS = {TRIGGER_BREAK: "With a break",
+                           TRIGGER_ON_DEMAND: "On demand only"}
 CHECK_IN_EDIT_TEXT_WIDTH = 340                    # question / options field width
 CHECK_IN_EDIT_INT_WIDTH = 64                      # min / max / count entries
 CHECK_IN_EDIT_LABEL_WIDTH = 150                   # scale end-label entries
@@ -417,10 +434,10 @@ DEFAULT_CHECK_INS = {
         {"id": "refreshed", "text": "How refreshed do you feel?", "enabled": True,
          "answer": {"type": "scale", "min": 1, "max": 5,
                     "min_label": "groggy", "max_label": "refreshed", "allow_note": True},
-         "cadence": {"type": "times_per_day", "count": 2}},
+         "cadence": {"type": "times_per_day", "count": 2}, "trigger": "break"},
         {"id": "sleep", "text": "How did you sleep?", "enabled": True,
          "answer": {"type": "choices", "options": ["Great", "OK", "Rough"], "allow_note": True},
-         "cadence": {"type": "per_day", "count": 1}},
+         "cadence": {"type": "per_day", "count": 1}, "trigger": "on_demand"},
     ],
 }
 
@@ -460,9 +477,15 @@ def _check_in_cadence_summary(cad_type, count):
     return CHECK_IN_CADENCE_PER_DAY_FMT.format(count=count)
 
 
+def _check_in_trigger_summary(trigger):
+    """Human 'When' suffix for a trigger: 'with a break' or 'on demand'."""
+    return (CHECK_IN_TRIGGER_ON_DEMAND_SUFFIX if trigger == TRIGGER_ON_DEMAND
+            else CHECK_IN_TRIGGER_BREAK_SUFFIX)
+
+
 def check_in_summary(question):
-    """A one-line 'answer-type + range/options · cadence' summary for a raw question
-    dict (e.g. 'Scale 1–5 · 2×/day', 'Choices: Great/OK/Rough · daily')."""
+    """A one-line 'answer-type + range/options · cadence · when' summary for a raw
+    question dict (e.g. 'Scale 1–5 · 2×/day · with a break')."""
     answer = question.get("answer") or {}
     atype = answer.get("type")
     label = CHECK_IN_ANSWER_TYPE_LABELS.get(atype, CHECK_IN_ANSWER_TYPE_LABELS[NOTE])
@@ -478,7 +501,8 @@ def check_in_summary(question):
     cadence = question.get("cadence") or {}
     cadence_part = _check_in_cadence_summary(
         cadence.get("type", PER_DAY), _ci_int(cadence.get("count", 1), 1))
-    return CHECK_IN_SUMMARY_SEP.join((answer_part, cadence_part))
+    trigger_part = _check_in_trigger_summary(question.get("trigger"))
+    return CHECK_IN_SUMMARY_SEP.join((answer_part, cadence_part, trigger_part))
 
 
 def _slugify_check_in(text):
@@ -1933,6 +1957,18 @@ class BreakApp:
         self.version_btn.pack(side="right", padx=(0, SPACE_XXS))
         self._register_tooltip(self.version_btn, "Check for updates")
 
+        # On-demand "Check in": answer any configured question now (either trigger).
+        # Modest bottom-bar text button, matching the Feedback/version affordances.
+        check_in_font = make_font('caption')
+        self.check_in_now_btn = ctk.CTkButton(
+            bottom_frame, text=CHECK_IN_NOW_LABEL, command=self._open_check_in_now,
+            width=check_in_font.measure(CHECK_IN_NOW_LABEL) + 2 * SPACE_SM,
+            height=BUTTON_HEIGHT_BOTTOM_BAR, corner_radius=CORNER_RADIUS_INPUT,
+            fg_color="transparent", hover_color=COLORS['surface_hover'],
+            text_color=COLORS['text_tertiary'], font=check_in_font)
+        self.check_in_now_btn.pack(side="left")
+        self._register_tooltip(self.check_in_now_btn, CHECK_IN_NOW_TOOLTIP)
+
         # Bind keyboard shortcuts
         self.root.bind('<Command-s>', lambda e: self._handle_toggle())
         self.root.bind('<Command-comma>', lambda e: self._open_settings())
@@ -2747,6 +2783,7 @@ class BreakApp:
             "answer": {"type": SCALE, "min": DEFAULT_SCALE_MIN, "max": DEFAULT_SCALE_MAX,
                        "min_label": "", "max_label": "", "allow_note": True},
             "cadence": {"type": TIMES_PER_DAY, "count": 1},
+            "trigger": TRIGGER_BREAK,
         }
         self.check_in_questions.append(question)
         self._refresh_check_in_section()
@@ -2775,6 +2812,7 @@ class BreakApp:
         cadence = question.get("cadence") or {}
         type_by_label = {v: k for k, v in CHECK_IN_ANSWER_TYPE_LABELS.items()}
         cadence_by_label = {v: k for k, v in CHECK_IN_CADENCE_LABELS.items()}
+        trigger_by_label = {v: k for k, v in CHECK_IN_TRIGGER_LABELS.items()}
 
         modal = ctk.CTkToplevel(self.root)
         modal.title(CHECK_IN_EDIT_TITLE)
@@ -2834,6 +2872,15 @@ class BreakApp:
         count_entry.insert(0, str(_ci_int(cadence.get("count", 1), 1)))
         count_entry.pack(side="left")
 
+        # When: a break-coupled question is offered after a break (cadence-gated);
+        # an on-demand one only surfaces via the "Check in" button.
+        _caption(CHECK_IN_EDIT_TRIGGER_LABEL)
+        trigger_var = ctk.StringVar(value=CHECK_IN_TRIGGER_LABELS.get(
+            question.get("trigger"), CHECK_IN_TRIGGER_LABELS[TRIGGER_BREAK]))
+        ctk.CTkOptionMenu(
+            body, values=list(CHECK_IN_TRIGGER_LABELS.values()), variable=trigger_var,
+            font=make_font('body'), corner_radius=CORNER_RADIUS_INPUT).pack(anchor="w")
+
         def _close():
             try:
                 modal.grab_release()
@@ -2865,6 +2912,7 @@ class BreakApp:
             question["answer"] = new_answer
             question["cadence"] = {"type": cadence_by_label[cadence_var.get()],
                                    "count": max(1, _ci_int(count_entry.get(), 1))}
+            question["trigger"] = trigger_by_label[trigger_var.get()]
             _close()
             self._refresh_check_in_section()
 
@@ -2952,16 +3000,19 @@ class BreakApp:
 
     def _place_check_in_modal(self, modal):
         """Center the edit modal over the settings window (re-run after it resizes)."""
-        win = getattr(self, '_settings_window', None)
-        modal.update_idletasks()
-        w, h = modal.winfo_reqwidth(), modal.winfo_reqheight()
-        if win is not None and win.winfo_exists():
-            x = win.winfo_x() + (win.winfo_width() - w) // 2
-            y = win.winfo_y() + (win.winfo_height() - h) // 2
+        self._center_toplevel(modal, getattr(self, '_settings_window', None))
+
+    def _center_toplevel(self, top, over):
+        """Center a toplevel over the `over` window — or the screen when it's gone."""
+        top.update_idletasks()
+        w, h = top.winfo_reqwidth(), top.winfo_reqheight()
+        if over is not None and over.winfo_exists():
+            x = over.winfo_x() + (over.winfo_width() - w) // 2
+            y = over.winfo_y() + (over.winfo_height() - h) // 2
         else:
-            x = (modal.winfo_screenwidth() - w) // 2
-            y = (modal.winfo_screenheight() - h) // 2
-        modal.tk.call("wm", "geometry", modal, f"{w}x{h}+{int(x)}+{int(y)}")
+            x = (top.winfo_screenwidth() - w) // 2
+            y = (top.winfo_screenheight() - h) // 2
+        top.tk.call("wm", "geometry", top, f"{w}x{h}+{int(x)}+{int(y)}")
 
     def _build_timing_slider(self, parent, var, label_fn, lo, hi, step):
         """A labeled slider row (label left, slider right) that writes `var` and
@@ -3191,6 +3242,78 @@ class BreakApp:
             CHECK_IN_WAKING_WINDOW_SECONDS, MIN_CHECK_IN_GAP_SECONDS)
         if q is not None:
             self._show_check_in(q)
+
+    def _open_check_in_now(self):
+        """On-demand entry point (the "Check in" button): let the user answer any
+        enabled question now, regardless of its trigger. One enabled question opens
+        directly; several offer a chooser; none (or check-ins off) shows a calm note."""
+        from dfyb.checkins.model import parse_questions
+        questions = [q for q in parse_questions(self.check_in_questions) if q.enabled]
+        if not self.check_ins_enabled.get():
+            questions = []
+        if len(questions) == 1:
+            self._show_check_in(questions[0])
+        else:
+            self._open_check_in_chooser(questions)   # 0 → calm note, >1 → question list
+
+    def _open_check_in_chooser(self, questions):
+        """A small token-styled chooser: one button per enabled question (picking one
+        closes it and opens that check-in via _show_check_in), or a calm empty-state
+        note when nothing is configured. Pinned to the active Space (no Space switch)."""
+        chooser = ctk.CTkToplevel(self.root)
+        chooser.title(CHECK_IN_CHOOSER_TITLE)
+        chooser.resizable(False, False)
+        chooser.configure(fg_color=COLORS['surface_card'])
+        pin_to_active_space(chooser)
+        chooser.transient(self.root)
+        body = ctk.CTkFrame(chooser, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=PADDING_PANEL_X, pady=PADDING_PANEL_Y)
+
+        def _close():
+            try:
+                chooser.grab_release()
+            except Exception:
+                pass
+            chooser.destroy()
+
+        if questions:
+            ctk.CTkLabel(
+                body, text=CHECK_IN_CHOOSER_PROMPT, font=make_font('body', weight="bold"),
+                anchor="w", justify="left", wraplength=CHECK_IN_CHOOSER_BTN_WIDTH).pack(
+                    anchor="w", pady=(0, SPACE_SM))
+            for question in questions:
+                def _pick(q=question):
+                    _close()
+                    self._show_check_in(q)
+                ctk.CTkButton(
+                    body, text=question.text, command=_pick, anchor="w",
+                    width=CHECK_IN_CHOOSER_BTN_WIDTH, height=BUTTON_HEIGHT_SMALL,
+                    corner_radius=CORNER_RADIUS_BUTTON, fg_color="transparent",
+                    border_width=CHECK_IN_CARD_BORDER_WIDTH, border_color=COLORS['border'],
+                    hover_color=COLORS['surface_hover'], font=make_font('body')).pack(
+                        fill="x", pady=(0, SPACE_XS))
+        else:
+            ctk.CTkLabel(
+                body, text=CHECK_IN_NONE_CONFIGURED_TEXT, font=make_font('body'),
+                text_color=COLORS['text_secondary'], anchor="w", justify="left",
+                wraplength=CHECK_IN_CHOOSER_BTN_WIDTH).pack(anchor="w", pady=(0, SPACE_SM))
+
+        ctk.CTkButton(
+            body, text=CHECK_IN_CHOOSER_CLOSE_LABEL, command=_close,
+            height=BUTTON_HEIGHT_SMALL, corner_radius=CORNER_RADIUS_BUTTON,
+            fg_color="transparent", border_width=CHECK_IN_CARD_BORDER_WIDTH,
+            border_color=COLORS['border'], hover_color=COLORS['surface_hover'],
+            text_color=COLORS['text_secondary'], font=make_font('label')).pack(
+                anchor="e", pady=(SPACE_SM, 0))
+
+        chooser.protocol("WM_DELETE_WINDOW", _close)
+        self._center_toplevel(chooser, self.root)
+        chooser.lift()
+        chooser.focus_force()
+        try:
+            chooser.grab_set()
+        except Exception:
+            pass
 
     def _show_check_in(self, question):
         if self.active_popup:                 # something else is showing — skip
