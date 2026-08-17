@@ -49,3 +49,10 @@ def test_parse_reads_trigger_with_default():
     assert b.trigger == m.TRIGGER_ON_DEMAND
     [c] = m.parse_questions([q(trigger="nonsense")])    # invalid -> default break
     assert c.trigger == m.TRIGGER_BREAK
+
+
+def test_parse_reads_once_per_day():
+    [a] = m.parse_questions([q()])
+    assert a.once_per_day is False
+    [b] = m.parse_questions([q(once_per_day=True)])
+    assert b.once_per_day is True

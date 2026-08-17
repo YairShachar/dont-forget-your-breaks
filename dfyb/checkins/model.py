@@ -52,6 +52,7 @@ class Question:
     cadence: Cadence
     enabled: bool = True
     trigger: str = TRIGGER_BREAK
+    once_per_day: bool = False
 
 
 def _parse_answer(raw):
@@ -98,7 +99,8 @@ def parse_questions(raw_list):
             id=str(raw["id"]), text=str(raw["text"]), answer=answer,
             cadence=_parse_cadence(raw.get("cadence")),
             enabled=bool(raw.get("enabled", True)),
-            trigger=_parse_trigger(raw.get("trigger"))))
+            trigger=_parse_trigger(raw.get("trigger")),
+            once_per_day=bool(raw.get("once_per_day", False))))
     return out
 
 
