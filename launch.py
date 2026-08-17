@@ -2924,10 +2924,6 @@ class BreakApp:
             font=make_font('body'), corner_radius=CORNER_RADIUS_INPUT).pack(anchor="w")
 
         def _close():
-            try:
-                modal.grab_release()
-            except Exception:
-                pass
             modal.destroy()
 
         def _save():
@@ -2975,13 +2971,13 @@ class BreakApp:
             font=make_font('label')).pack(side="right")
 
         modal.protocol("WM_DELETE_WINDOW", _close)
+        # Topmost so it doesn't hide behind the settings window; NO grab_set — an
+        # app-modal grab orphans on macOS after close and locks the settings window
+        # (the popup "appears then can't reopen"). See the chooser for the same fix.
+        modal.attributes('-topmost', True)
         self._place_check_in_modal(modal)
         modal.lift()
         modal.focus_force()
-        try:
-            modal.grab_set()
-        except Exception:
-            pass
 
     def _build_check_in_type_fields(self, container, atype, answer, widgets):
         """(Re)build the answer-type-specific fields inside the edit modal. Prefills
@@ -3308,9 +3304,17 @@ class BreakApp:
         enabled question now, regardless of its trigger. One enabled question opens
         directly; several offer a chooser; none (or check-ins off) shows a calm note."""
         from dfyb.checkins.model import parse_questions
+        from dfyb.checkins.history import todays_check_ins
         questions = [q for q in parse_questions(self.check_in_questions) if q.enabled]
         if not self.check_ins_enabled.get():
             questions = []
+        else:
+            # A once-a-day question already answered today isn't offered again (it has
+            # its one answer). It reappears tomorrow. Multiple-per-day always stays.
+            answered = {r["question_id"]
+                        for r in todays_check_ins(self.event_log.read(), time.time())}
+            questions = [q for q in questions
+                         if not (q.once_per_day and q.id in answered)]
         if len(questions) == 1:
             self._show_check_in(questions[0])
         else:
