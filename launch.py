@@ -407,6 +407,8 @@ CHECK_IN_CADENCE_PER_WEEK_FMT = "{count}×/week"
 # Trigger ("When") summary suffixes appended to a card caption (e.g. "… · on demand")
 CHECK_IN_TRIGGER_BREAK_SUFFIX = "with a break"
 CHECK_IN_TRIGGER_ON_DEMAND_SUFFIX = "on demand"
+# Repeat summary suffix appended to a card caption when a question is once-per-day
+CHECK_IN_ONCE_A_DAY_SUFFIX = " · once a day"
 # Edit modal
 CHECK_IN_EDIT_TITLE = "Edit check-in"
 CHECK_IN_EDIT_TEXT_LABEL = "Question"
@@ -421,12 +423,14 @@ CHECK_IN_EDIT_ALLOW_NOTE_LABEL = "Allow an optional note"
 CHECK_IN_EDIT_CADENCE_LABEL = "How often"
 CHECK_IN_EDIT_COUNT_LABEL = "Count"
 CHECK_IN_EDIT_TRIGGER_LABEL = "When"
+CHECK_IN_EDIT_REPEAT_LABEL = "Repeat"
 CHECK_IN_EDIT_SAVE_LABEL = "Save"
 CHECK_IN_EDIT_CANCEL_LABEL = "Cancel"
 CHECK_IN_CADENCE_LABELS = {TIMES_PER_DAY: "Times per day",
                            PER_DAY: "Per day", PER_WEEK: "Per week"}
 CHECK_IN_TRIGGER_LABELS = {TRIGGER_BREAK: "With a break",
                            TRIGGER_ON_DEMAND: "On demand only"}
+CHECK_IN_REPEAT_LABELS = {"A few times a day": False, "Once a day": True}
 CHECK_IN_EDIT_TEXT_WIDTH = 340                    # question / options field width
 CHECK_IN_EDIT_INT_WIDTH = 64                      # min / max / count entries
 CHECK_IN_EDIT_LABEL_WIDTH = 150                   # scale end-label entries
@@ -441,7 +445,8 @@ DEFAULT_CHECK_INS = {
          "cadence": {"type": "times_per_day", "count": 2}, "trigger": "break"},
         {"id": "sleep", "text": "How did you sleep?", "enabled": True,
          "answer": {"type": "choices", "options": ["Great", "OK", "Rough"], "allow_note": True},
-         "cadence": {"type": "per_day", "count": 1}, "trigger": "on_demand"},
+         "cadence": {"type": "per_day", "count": 1}, "trigger": "on_demand",
+         "once_per_day": True},
     ],
 }
 
@@ -506,7 +511,10 @@ def check_in_summary(question):
     cadence_part = _check_in_cadence_summary(
         cadence.get("type", PER_DAY), _ci_int(cadence.get("count", 1), 1))
     trigger_part = _check_in_trigger_summary(question.get("trigger"))
-    return CHECK_IN_SUMMARY_SEP.join((answer_part, cadence_part, trigger_part))
+    summary = CHECK_IN_SUMMARY_SEP.join((answer_part, cadence_part, trigger_part))
+    if question.get("once_per_day"):
+        summary += CHECK_IN_ONCE_A_DAY_SUFFIX
+    return summary
 
 
 def _slugify_check_in(text):
@@ -2837,6 +2845,7 @@ class BreakApp:
         type_by_label = {v: k for k, v in CHECK_IN_ANSWER_TYPE_LABELS.items()}
         cadence_by_label = {v: k for k, v in CHECK_IN_CADENCE_LABELS.items()}
         trigger_by_label = {v: k for k, v in CHECK_IN_TRIGGER_LABELS.items()}
+        repeat_label_by_value = {v: k for k, v in CHECK_IN_REPEAT_LABELS.items()}
 
         modal = ctk.CTkToplevel(self.root)
         modal.title(CHECK_IN_EDIT_TITLE)
@@ -2905,6 +2914,15 @@ class BreakApp:
             body, values=list(CHECK_IN_TRIGGER_LABELS.values()), variable=trigger_var,
             font=make_font('body'), corner_radius=CORNER_RADIUS_INPUT).pack(anchor="w")
 
+        # Repeat: a once-a-day question, once answered today, isn't offered again after
+        # later breaks; a few-times-a-day one can recur (still cadence-gated).
+        _caption(CHECK_IN_EDIT_REPEAT_LABEL)
+        repeat_var = ctk.StringVar(
+            value=repeat_label_by_value[bool(question.get("once_per_day", False))])
+        ctk.CTkOptionMenu(
+            body, values=list(CHECK_IN_REPEAT_LABELS), variable=repeat_var,
+            font=make_font('body'), corner_radius=CORNER_RADIUS_INPUT).pack(anchor="w")
+
         def _close():
             try:
                 modal.grab_release()
@@ -2937,6 +2955,7 @@ class BreakApp:
             question["cadence"] = {"type": cadence_by_label[cadence_var.get()],
                                    "count": max(1, _ci_int(count_entry.get(), 1))}
             question["trigger"] = trigger_by_label[trigger_var.get()]
+            question["once_per_day"] = CHECK_IN_REPEAT_LABELS[repeat_var.get()]
             _close()
             self._refresh_check_in_section()
 
@@ -3271,12 +3290,16 @@ class BreakApp:
             return
         from dfyb.checkins.model import parse_questions
         from dfyb.checkins.scheduler import due_break_check_in
+        from dfyb.checkins.history import todays_check_ins
         questions = parse_questions(self.check_in_questions)
         state = self.check_in_state
+        answered_today = {r["question_id"]
+                          for r in todays_check_ins(self.event_log.read(), time.time())}
         q = due_break_check_in(
             questions, time.time(), state.get("last_prompted", {}),
             state.get("last_prompt_ts", 0.0),
-            CHECK_IN_WAKING_WINDOW_SECONDS, MIN_CHECK_IN_GAP_SECONDS)
+            CHECK_IN_WAKING_WINDOW_SECONDS, MIN_CHECK_IN_GAP_SECONDS,
+            answered_today=answered_today)
         if q is not None:
             self._show_check_in(q)
 
@@ -3352,8 +3375,11 @@ class BreakApp:
 
     def _build_check_in_today(self, parent):
         """A small recap of today's answered check-ins, shown in the chooser."""
-        from dfyb.checkins.history import todays_check_ins, format_check_in_value
-        rows = todays_check_ins(self.event_log.read(), time.time())
+        from dfyb.checkins.history import todays_check_ins, format_check_in_value, dedupe_once_per_day
+        from dfyb.checkins.model import parse_questions
+        once_ids = {q.id for q in parse_questions(self.check_in_questions) if q.once_per_day}
+        rows = dedupe_once_per_day(
+            todays_check_ins(self.event_log.read(), time.time()), once_ids)
         ctk.CTkLabel(parent, text=CHECK_IN_TODAY_HEADER,
                      font=make_font('label', weight="bold"), text_color=COLORS['text_primary'],
                      anchor="w").pack(anchor="w", pady=(SPACE_MD, SPACE_XXS))
