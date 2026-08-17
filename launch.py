@@ -372,6 +372,9 @@ CHECK_IN_CHOOSER_PROMPT = "What would you like to check in on?"
 CHECK_IN_NONE_CONFIGURED_TEXT = "No check-ins configured"   # calm empty-state note
 CHECK_IN_CHOOSER_CLOSE_LABEL = "Close"
 CHECK_IN_CHOOSER_BTN_WIDTH = 300                     # px; per-question chooser buttons
+CHECK_IN_TODAY_HEADER = "Today"
+CHECK_IN_TODAY_EMPTY = "Nothing logged today yet."
+CHECK_IN_TIME_FMT = "%-I:%M %p"        # e.g. "10:35 AM"
 
 # --- Settings > Check-ins section (card list + add/edit/delete question form) ---
 # All labels/sizes are tokens here; the widget code never inlines literals.
@@ -3315,6 +3318,8 @@ class BreakApp:
                 text_color=COLORS['text_secondary'], anchor="w", justify="left",
                 wraplength=CHECK_IN_CHOOSER_BTN_WIDTH).pack(anchor="w", pady=(0, SPACE_SM))
 
+        self._build_check_in_today(body)
+
         ctk.CTkButton(
             body, text=CHECK_IN_CHOOSER_CLOSE_LABEL, command=_close,
             height=BUTTON_HEIGHT_SMALL, corner_radius=CORNER_RADIUS_BUTTON,
@@ -3331,6 +3336,24 @@ class BreakApp:
             chooser.grab_set()
         except Exception:
             pass
+
+    def _build_check_in_today(self, parent):
+        """A small recap of today's answered check-ins, shown in the chooser."""
+        from dfyb.checkins.history import todays_check_ins, format_check_in_value
+        rows = todays_check_ins(self.event_log.read(), time.time())
+        ctk.CTkLabel(parent, text=CHECK_IN_TODAY_HEADER,
+                     font=make_font('label', weight="bold"), text_color=COLORS['text_primary'],
+                     anchor="w").pack(anchor="w", pady=(SPACE_MD, SPACE_XXS))
+        if not rows:
+            ctk.CTkLabel(parent, text=CHECK_IN_TODAY_EMPTY, font=make_font('caption'),
+                         text_color=COLORS['text_tertiary'], anchor="w").pack(anchor="w")
+            return
+        for r in rows:
+            t = time.strftime(CHECK_IN_TIME_FMT, time.localtime(r["ts"]))
+            ctk.CTkLabel(
+                parent, text=f"{t} · {r['question']} — {format_check_in_value(r)}",
+                font=make_font('caption'), text_color=COLORS['text_secondary'],
+                anchor="w", justify="left", wraplength=CHECK_IN_CHOOSER_BTN_WIDTH).pack(anchor="w")
 
     def _show_check_in(self, question):
         if self.active_popup:                 # something else is showing — skip
