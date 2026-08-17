@@ -1167,18 +1167,20 @@ class CheckInPopup:
                 text_color=COLORS['text_secondary']).pack(side="right")
 
     def _build_choices(self, parent, answer):
-        """One button per fixed option; each answers with its option string."""
-        row = ctk.CTkFrame(parent, fg_color="transparent")
-        row.pack(padx=PADDING_PANEL_X, pady=SPACE_XS)
+        """One full-width button per fixed option, STACKED vertically so any number or
+        length of options fits the popup width (laid out side-by-side they overflow and
+        clip off the right edge)."""
+        col = ctk.CTkFrame(parent, fg_color="transparent")
+        col.pack(fill="x", padx=PADDING_PANEL_X, pady=SPACE_XS)
         for option in answer.options:
             ctk.CTkButton(
-                row, text=str(option), height=BUTTON_HEIGHT_LARGE,
+                col, text=str(option), height=BUTTON_HEIGHT_LARGE,
                 corner_radius=CORNER_RADIUS_BUTTON,
                 fg_color=COLORS['accent_primary'],
                 hover_color=COLORS['accent_primary_hover'],
                 font=make_font('body'),
                 command=lambda o=option: self._answer(o)
-            ).pack(side="left", padx=SPACE_XXS)
+            ).pack(fill="x", pady=SPACE_XXS)
 
     def _build_note_entry(self, parent, placeholder, with_save=False):
         """A single-line note entry. When ``with_save`` (note-type question), a Save
