@@ -204,6 +204,7 @@ COLORS = {
     'surface_card':         ("#FFFFFF", "#2C2C2E"),
     'surface_hover':        ("#ECECEE", "#3A3A3C"),
     'border':               ("#D1D1D6", "#3A3A3C"),
+    'text_primary':         ("#1C1C1E", "#F2F2F7"),   # high-contrast label (iOS label)
     'text_secondary':       ("#8E8E93", "#999999"),   # dark ≡ old gray60
     'text_tertiary':        ("#AEAEB2", "#808080"),   # dark ≡ old gray50
     'accent_primary':       ("#007AFF", "#0A84FF"),   # systemBlue
@@ -1090,6 +1091,7 @@ class CheckInPopup:
         ctk.CTkLabel(
             container, text=question.text,
             font=make_font('heading', weight="bold"),
+            text_color=COLORS['text_primary'],
             wraplength=CHECK_IN_POPUP_W - 2 * PADDING_PANEL_X
         ).pack(padx=PADDING_PANEL_X, pady=(PADDING_PANEL_Y, ROW_SPACING))
 
@@ -1106,6 +1108,19 @@ class CheckInPopup:
             fg_color="transparent", hover_color=COLORS['surface_hover'],
             text_color=COLORS['text_secondary'], font=make_font('body')
         ).pack(pady=(SPACE_XS, PADDING_PANEL_Y))
+
+        # Center over the main window so it lands on the SAME screen the app is on
+        # (multi-monitor #1): a bare CTkToplevel would otherwise open on the primary
+        # display. Raw Tk `wm geometry` — CTk's .geometry() mislocates cross-monitor.
+        self.window.update_idletasks()
+        w, h = CHECK_IN_POPUP_W, CHECK_IN_POPUP_H
+        if root is not None and root.winfo_exists():
+            x = root.winfo_x() + (root.winfo_width() - w) // 2
+            y = root.winfo_y() + (root.winfo_height() - h) // 2
+        else:
+            x = (self.window.winfo_screenwidth() - w) // 2
+            y = (self.window.winfo_screenheight() - h) // 2
+        self.window.tk.call("wm", "geometry", self.window, f"{w}x{h}+{int(x)}+{int(y)}")
 
         self.window.lift()
 
@@ -2760,6 +2775,7 @@ class BreakApp:
 
         ctk.CTkLabel(
             top, text=question.get("text", ""), font=make_font('body', weight="bold"),
+            text_color=COLORS['text_primary'],
             anchor="w", justify="left", wraplength=CHECK_IN_CARD_TEXT_WRAP).pack(
                 side="left", padx=(SPACE_XS, SPACE_SM), fill="x", expand=True)
 
@@ -3290,7 +3306,8 @@ class BreakApp:
                     width=CHECK_IN_CHOOSER_BTN_WIDTH, height=BUTTON_HEIGHT_SMALL,
                     corner_radius=CORNER_RADIUS_BUTTON, fg_color="transparent",
                     border_width=CHECK_IN_CARD_BORDER_WIDTH, border_color=COLORS['border'],
-                    hover_color=COLORS['surface_hover'], font=make_font('body')).pack(
+                    hover_color=COLORS['surface_hover'], text_color=COLORS['text_primary'],
+                    font=make_font('body')).pack(
                         fill="x", pady=(0, SPACE_XS))
         else:
             ctk.CTkLabel(
