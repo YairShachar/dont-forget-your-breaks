@@ -3078,23 +3078,36 @@ class BreakApp:
     def _enable_trackpad_scroll(self, scroll_frame):
         """Make trackpad/wheel scrolling work ANYWHERE over the settings window.
 
-        CTk gates its own wheel handler on `check_if_master_is_canvas` and only
-        covers widgets inside the canvas — so the padding/edges don't scroll, and
-        small fractional trackpad deltas `int()`-truncate to 0 (two-finger drag
-        does nothing). Bind <MouseWheel> on every widget in the window and forward
-        to the canvas with a min step of 1; 'break' stops CTk's bind_all handler
-        from also firing (double speed)."""
+        On macOS with Tk 9 there are TWO scroll events: a mouse wheel fires
+        <MouseWheel> (whole ±120 deltas), while a trackpad two-finger scroll fires
+        <TouchpadScroll> (precise sub-pixel deltas decoded via tk::PreciseScrollDeltas).
+        The old handler bound only <MouseWheel>, so the trackpad silently did nothing.
+        We bind BOTH on every widget in the window and forward to the canvas; 'break'
+        stops CTk's own bind_all handler from also firing (double speed)."""
         canvas = scroll_frame._parent_canvas
 
-        def _on_wheel(event):
-            if canvas.yview() != (0.0, 1.0):          # only when there's overflow
+        def _has_overflow():
+            return canvas.yview() != (0.0, 1.0)
+
+        def _on_wheel(event):                      # mouse wheel (whole ±120 deltas)
+            if _has_overflow():
                 step = -event.delta
                 canvas.yview_scroll(
                     int(step) if abs(step) >= 1 else (1 if step > 0 else -1), "units")
             return "break"
 
+        def _on_touchpad(event):                   # trackpad two-finger (Tk 9 precise)
+            try:
+                _dx, dy = canvas.tk.call("tk::PreciseScrollDeltas", event.delta)
+            except Exception:
+                return "break"
+            if dy and _has_overflow():
+                canvas.yview_scroll(-int(dy), "units")
+            return "break"
+
         def _bind(widget):
             widget.bind("<MouseWheel>", _on_wheel, add="+")
+            widget.bind("<TouchpadScroll>", _on_touchpad, add="+")
             for child in widget.winfo_children():
                 _bind(child)
 
