@@ -369,7 +369,7 @@ CHECK_IN_NOW_LABEL = "Check in"                      # modest main-window button
 CHECK_IN_NOW_TOOLTIP = "Answer a check-in now"
 CHECK_IN_CHOOSER_TITLE = "Check in"                  # chooser window title
 CHECK_IN_CHOOSER_PROMPT = "What would you like to check in on?"
-CHECK_IN_NONE_CONFIGURED_TEXT = "No check-ins configured"   # calm empty-state note
+CHECK_IN_NONE_CONFIGURED_TEXT = "Nothing to check in on right now"   # calm empty-state note (also covers "all answered today")
 CHECK_IN_CHOOSER_CLOSE_LABEL = "Close"
 CHECK_IN_CHOOSER_BTN_WIDTH = 300                     # px; per-question chooser buttons
 CHECK_IN_TODAY_HEADER = "Today"
@@ -3315,10 +3315,9 @@ class BreakApp:
                         for r in todays_check_ins(self.event_log.read(), time.time())}
             questions = [q for q in questions
                          if not (q.once_per_day and q.id in answered)]
-        if len(questions) == 1:
-            self._show_check_in(questions[0])
-        else:
-            self._open_check_in_chooser(questions)   # 0 → calm note, >1 → question list
+        # Always via the chooser so the "Today" recap is visible even for one question
+        # (and the empty-state when everything's answered / nothing configured).
+        self._open_check_in_chooser(questions)
 
     def _open_check_in_chooser(self, questions):
         """A small token-styled chooser: one button per enabled question (picking one
