@@ -1116,7 +1116,10 @@ class CheckInPopup:
         # (multi-monitor #1): a bare CTkToplevel would otherwise open on the primary
         # display. Raw Tk `wm geometry` — CTk's .geometry() mislocates cross-monitor.
         self.window.update_idletasks()
-        w, h = CHECK_IN_POPUP_W, CHECK_IN_POPUP_H
+        # Grow to fit the content (min = the design height) so descenders on the
+        # scale end-labels ("groggy") aren't clipped by a too-short fixed window.
+        w = CHECK_IN_POPUP_W
+        h = max(CHECK_IN_POPUP_H, self.window.winfo_reqheight())
         if root is not None and root.winfo_exists():
             x = root.winfo_x() + (root.winfo_width() - w) // 2
             y = root.winfo_y() + (root.winfo_height() - h) // 2
@@ -1221,7 +1224,7 @@ class CheckInPopup:
         try:
             callback()
         except Exception:
-            pass
+            logging.exception("check-in callback failed")
         self._destroy()
 
     def _destroy(self):
@@ -3289,10 +3292,6 @@ class BreakApp:
         body.pack(fill="both", expand=True, padx=PADDING_PANEL_X, pady=PADDING_PANEL_Y)
 
         def _close():
-            try:
-                chooser.grab_release()
-            except Exception:
-                pass
             chooser.destroy()
 
         if questions:
@@ -3332,10 +3331,9 @@ class BreakApp:
         self._center_toplevel(chooser, self.root)
         chooser.lift()
         chooser.focus_force()
-        try:
-            chooser.grab_set()
-        except Exception:
-            pass
+        # No grab_set: an app-modal grab here can orphan on macOS after we
+        # release+destroy and open the answer popup, leaving the whole window
+        # unclickable ("can't press Check in again"). The picker doesn't need modality.
 
     def _build_check_in_today(self, parent):
         """A small recap of today's answered check-ins, shown in the chooser."""
@@ -3369,8 +3367,10 @@ class BreakApp:
             on_skip=self._on_check_in_skipped)
 
     def _on_check_in_done(self, question, value, note):
-        self._record_event(CHECK_IN, **check_in_event_payload(question, value, note))
-        self.active_popup = None
+        try:
+            self._record_event(CHECK_IN, **check_in_event_payload(question, value, note))
+        finally:
+            self.active_popup = None      # always clear, even if logging fails
 
     def _on_check_in_skipped(self):
         self.active_popup = None               # nothing logged
