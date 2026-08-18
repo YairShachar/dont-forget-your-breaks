@@ -11,6 +11,7 @@ import os
 import atexit
 import random
 import re
+import uuid
 import webbrowser
 import platform
 from dataclasses import replace as dataclass_replace
@@ -464,12 +465,21 @@ def merge_check_ins(saved_prefs):
     return enabled, questions
 
 
-def check_in_event_payload(question, value, note):
-    """The data dict for a CHECK_IN event. Denormalizes the question text so the
-    log is self-describing when read back later. `note` is None when unused."""
-    return {"question_id": question.id, "question": question.text,
-            "answer_type": question.answer.type, "value": value,
-            "note": (note or None)}
+def check_in_event_payload(question, value, note, event_id):
+    """The data dict for a CHECK_IN answer event. `event_id` is a stable id (uuid hex) so
+    the entry can later be edited/removed via correction events."""
+    return {"id": event_id, "question_id": question.id, "question": question.text,
+            "answer_type": question.answer.type, "value": value, "note": (note or None)}
+
+
+def check_in_edit_payload(event_id, target_id, value, note):
+    """A CHECK_IN correction that overrides the value/note of the entry `target_id`."""
+    return {"id": event_id, "edits": target_id, "value": value, "note": (note or None)}
+
+
+def check_in_remove_payload(event_id, target_id):
+    """A CHECK_IN correction that removes the entry `target_id` from views."""
+    return {"id": event_id, "removes": target_id}
 
 
 def _ci_int(value, default):
@@ -3457,11 +3467,19 @@ class BreakApp:
 
     def _on_check_in_done(self, question, value, note, after=None):
         try:
-            self._record_event(CHECK_IN, **check_in_event_payload(question, value, note))
+            self._record_event(CHECK_IN,
+                               **check_in_event_payload(question, value, note, uuid.uuid4().hex))
         finally:
             self.active_popup = None      # always clear, even if logging fails
         if after is not None:
             after()
+
+    def _record_check_in_edit(self, target_id, value, note):
+        self._record_event(CHECK_IN,
+                           **check_in_edit_payload(uuid.uuid4().hex, target_id, value, note))
+
+    def _record_check_in_remove(self, target_id):
+        self._record_event(CHECK_IN, **check_in_remove_payload(uuid.uuid4().hex, target_id))
 
     def _on_check_in_skipped(self, after=None):
         self.active_popup = None               # nothing logged
