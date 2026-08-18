@@ -381,6 +381,7 @@ CHECK_IN_TODAY_ROW_TEXT_WRAP = 210          # px; wrap a long today-row summary
 CHECK_IN_UPDATE_CONTEXT = "Update today's answer"        # once-a-day, already answered
 CHECK_IN_ADD_CONTEXT_FMT = "Add another · {n} today"     # recurring, already answered
 CHECK_IN_EDITING_CONTEXT = "Editing"        # context line while editing a past answer
+CHECK_IN_ANSWERING_NOW_FMT = "Answering now: {value}"    # status line while composing a new answer
 
 # --- On-demand "Check in" (main-window affordance + question chooser) ---
 CHECK_IN_NOW_LABEL = "Check in"                      # modest main-window button
@@ -1137,8 +1138,9 @@ class CheckInPopup:
         # tracked so edit mode can highlight a row and live-preview edits into it.
         self.today_widgets = {}
         self._armed_remove = None    # (button, entry) of a pending "Remove?" confirm, or None
-        self.new_answer_btn = None   # "＋ New answer" link (recurring only); shown while editing
+        self.new_answer_btn = None   # "＋ New answer"/"Answering now" status line (recurring only)
         self.actions_row = None      # Skip/Save row (anchor for placing the new-answer link)
+        self.screen = screen         # placement screen rect (re-clamp on-screen when re-fitting)
 
         # Window: pinned to the active Space (multi-monitor #21), topmost, fixed size.
         # No AppleScript activate/focus-restore here — that switched Spaces (#21).
@@ -1229,6 +1231,22 @@ class CheckInPopup:
             if self.context_label is not None:
                 self.context_label.configure(text=CHECK_IN_UPDATE_CONTEXT)
 
+    def _refit_height(self):
+        """Re-fit the window height to the current content in place, keeping x/y (the
+        window is sized ONCE in ``__init__`` while the status line is hidden; entering
+        edit / showing "Answering now" grows the content, so without this the bottom
+        Skip/Save row and the "Editing" descender get squeezed off). Re-clamps on the
+        placement screen so a taller window can't push off the top edge."""
+        if self.closed:
+            return
+        self.window.update_idletasks()
+        w = CHECK_IN_POPUP_W
+        h = max(CHECK_IN_POPUP_H, self.window.winfo_reqheight())
+        x, y = self.window.winfo_x(), self.window.winfo_y()
+        if self.screen is not None:
+            _x, y = clamp_onscreen(x, y, w, h, self.screen)
+        self.window.tk.call("wm", "geometry", self.window, f"{w}x{h}+{int(x)}+{int(y)}")
+
     # ---- answer controls -------------------------------------------------
 
     def _build_answer(self, parent, answer):
@@ -1265,6 +1283,8 @@ class CheckInPopup:
             self._style_select_button(btn, v == value)
         self._refresh_save_state()
         self._preview_edit()         # live-preview the new value into the edited row
+        self._update_status()        # composing: reflect the chosen value in the status line
+        self._refit_height()         # the status line may have appeared → re-fit height
 
     def _build_scale(self, parent, answer):
         """A button per integer in ``[min, max]``; ends labelled with min/max labels.
@@ -1337,9 +1357,12 @@ class CheckInPopup:
         self.note_entry.bind("<KeyRelease>", self._on_input_changed)
 
     def _on_input_changed(self, _event=None):
-        """Number/note keystroke: re-evaluate Save, then live-preview into the edited row."""
+        """Number/note keystroke: re-evaluate Save, live-preview into the edited row, and
+        keep the "Answering now" status line (and window height) in step with the input."""
         self._refresh_save_state()
         self._preview_edit()
+        self._update_status()        # composing: reflect the typed value in the status line
+        self._refit_height()         # the status line may have appeared/cleared → re-fit
 
     # ---- Today list (row-as-edit / remove past answers) ------------------
 
@@ -1522,13 +1545,61 @@ class CheckInPopup:
         self._enter_edit(entry)
 
     def _build_new_answer_affordance(self, parent):
-        """Create (hidden) the "＋ New answer" link, shown only while editing a recurring
-        question. Clicking it leaves edit mode to add a fresh answer. ``_enter_edit``
-        packs it before the actions row; ``_exit_edit`` hides it again."""
+        """Create (hidden) the mode-aware status line (recurring-answered only). ``_update_status``
+        drives it: while EDITING it is the clickable "＋ New answer" link (leaves edit to compose
+        a fresh answer); while COMPOSING a new answer it becomes a passive "Answering now: <value>"
+        readout, or hides when nothing is chosen. Packs before the actions row / hides itself."""
         self.new_answer_btn = ctk.CTkLabel(
             parent, text=CHECK_IN_NEW_ANSWER_LABEL, font=make_font('caption', weight="bold"),
             text_color=COLORS['accent_primary'], anchor="w", cursor="pointinghand")
-        self.new_answer_btn.bind("<Button-1>", lambda e: self._exit_edit())
+        self.new_answer_btn.bind("<Button-1>", lambda e: self._new_answer())
+
+    def _new_answer(self):
+        """Leave edit mode to compose a FRESH answer while KEEPING the current control
+        selection so it seeds the new answer (unlike ``_exit_edit``, which clears it).
+        Recurring-answered only; the status line flips to "Answering now: <value>"."""
+        self._disarm_remove()
+        target = self.edit_target_id
+        self.edit_target_id = None
+        # Restore the row we were previewing back to its saved value — we're no longer
+        # editing it; the kept selection now seeds a NEW answer, not an edit of that row.
+        if target is not None:
+            entry = next((e for e in self.entries if e["id"] == target), None)
+            if entry is not None:
+                self._set_row_text(target, entry.get("value"), entry.get("note"))
+        self._highlight_edit_row(None)
+        if self.context_label is not None:
+            self.context_label.configure(
+                text=CHECK_IN_ADD_CONTEXT_FMT.format(n=len(self.entries)))
+        self._update_status()
+        self._refresh_save_state()
+        self._refit_height()
+
+    def _update_status(self):
+        """Drive the mode-aware status line (recurring-answered only). Editing an existing
+        entry → the clickable "＋ New answer" link (click leaves edit to compose fresh);
+        composing a new answer with a value chosen → a passive "Answering now: <value>";
+        composing with nothing chosen yet → hidden. Cheap no-op when there is no line."""
+        if self.new_answer_btn is None:
+            return
+        if self.edit_target_id is not None:
+            self.new_answer_btn.unbind("<Button-1>")
+            self.new_answer_btn.bind("<Button-1>", lambda e: self._new_answer())
+            self.new_answer_btn.configure(
+                text=CHECK_IN_NEW_ANSWER_LABEL, text_color=COLORS['accent_primary'],
+                cursor="pointinghand")
+            self.new_answer_btn.pack(before=self.actions_row, fill="x",
+                                     padx=PADDING_PANEL_X, pady=(0, SPACE_XS))
+        elif self._has_valid_answer():
+            summary = self._value_summary(self._current_value(), self._read_note())
+            self.new_answer_btn.unbind("<Button-1>")
+            self.new_answer_btn.configure(
+                text=CHECK_IN_ANSWERING_NOW_FMT.format(value=summary),
+                text_color=COLORS['text_secondary'], cursor="")
+            self.new_answer_btn.pack(before=self.actions_row, fill="x",
+                                     padx=PADDING_PANEL_X, pady=(0, SPACE_XS))
+        else:
+            self.new_answer_btn.pack_forget()
 
     def _enter_edit(self, entry):
         """Enter EDIT MODE for a past answer: pre-fill the control + note with its value,
@@ -1552,11 +1623,10 @@ class CheckInPopup:
         if self.context_label is not None:
             self.context_label.configure(text=CHECK_IN_EDITING_CONTEXT)
         self._highlight_edit_row(entry["id"])
-        if self.new_answer_btn is not None:
-            self.new_answer_btn.pack(before=self.actions_row, fill="x",
-                                     padx=PADDING_PANEL_X, pady=(0, SPACE_XS))
         self._preview_edit()         # reconcile the row with the fully pre-filled controls
         self._refresh_save_state()
+        self._update_status()        # editing → show the clickable "＋ New answer" link
+        self._refit_height()         # the status line grew the content → re-fit height
 
     def _exit_edit(self):
         """Leave edit mode: clear the target, deselect the answer control + note, restore
@@ -1578,8 +1648,6 @@ class CheckInPopup:
             if entry is not None:
                 self._set_row_text(target, entry.get("value"), entry.get("note"))
         self._highlight_edit_row(None)
-        if self.new_answer_btn is not None:
-            self.new_answer_btn.pack_forget()
         if self.context_label is not None:
             if self.question.once_per_day:
                 self.context_label.configure(text=CHECK_IN_UPDATE_CONTEXT)
@@ -1587,6 +1655,8 @@ class CheckInPopup:
                 self.context_label.configure(
                     text=CHECK_IN_ADD_CONTEXT_FMT.format(n=len(self.entries)))
         self._refresh_save_state()
+        self._update_status()        # cleared controls → status line hides (nothing chosen)
+        self._refit_height()         # content shrank → re-fit height
 
     def _preview_edit(self):
         """While editing, mirror the current control state (value + note) into the edited
