@@ -369,11 +369,15 @@ CHECK_IN_NOW_LABEL = "Check in"                      # modest main-window button
 CHECK_IN_NOW_TOOLTIP = "Answer a check-in now"
 CHECK_IN_CHOOSER_TITLE = "Check in"                  # chooser window title
 CHECK_IN_CHOOSER_PROMPT = "What would you like to check in on?"
+CHECK_IN_ROW_BADGE = "☑"                             # box+tick, shown on answered rows
+CHECK_IN_ROW_CHEVRON = "›"                           # tappable affordance on every row
+CHECK_IN_ROW_TEXT_WRAP = 210                         # px; question text wrap in a compact row
+CHECK_IN_ROW_NOTE_MAX = 18                           # truncate a note shown as the row's value
+CHECK_IN_ONCE_CAPTION = "once a day"                 # cadence caption under a question
+CHECK_IN_MULTI_CAPTION = "a few times a day"
 CHECK_IN_NONE_CONFIGURED_TEXT = "Nothing to check in on right now"   # calm empty-state note (also covers "all answered today")
 CHECK_IN_CHOOSER_CLOSE_LABEL = "Close"
 CHECK_IN_CHOOSER_BTN_WIDTH = 300                     # px; per-question chooser buttons
-CHECK_IN_TODAY_HEADER = "Today"
-CHECK_IN_TODAY_EMPTY = "Nothing logged today yet."
 CHECK_IN_TIME_FMT = "%-I:%M %p"        # e.g. "10:35 AM"
 
 # --- Settings > Check-ins section (card list + add/edit/delete question form) ---
@@ -1075,7 +1079,7 @@ class CheckInPopup:
     ``on_skip()`` — closing the window via its OS control counts as a skip.
     """
 
-    def __init__(self, root, question, on_answer, on_skip):
+    def __init__(self, root, question, on_answer, on_skip, screen=None):
         self.root = root
         self.question = question
         self.on_answer = on_answer
@@ -1128,13 +1132,25 @@ class CheckInPopup:
         # scale end-labels ("groggy") aren't clipped by a too-short fixed window.
         w = CHECK_IN_POPUP_W
         h = max(CHECK_IN_POPUP_H, self.window.winfo_reqheight())
-        if root is not None and root.winfo_exists():
+        # Center on the active screen and CLAMP fully on-screen. Centering over the
+        # (possibly small / edge) main window could push a tall popup off the top, so it
+        # flashed and vanished. Mirrors the break popup's placement.
+        if screen is not None:
+            x, y = center_on_screen(screen, w, h)
+            x, y = clamp_onscreen(x, y, w, h, screen)
+        elif root is not None and root.winfo_exists():
             x = root.winfo_x() + (root.winfo_width() - w) // 2
             y = root.winfo_y() + (root.winfo_height() - h) // 2
         else:
             x = (self.window.winfo_screenwidth() - w) // 2
             y = (self.window.winfo_screenheight() - h) // 2
         self.window.tk.call("wm", "geometry", self.window, f"{w}x{h}+{int(x)}+{int(y)}")
+        if os.environ.get("DFYB_CHECKIN_DEBUG"):
+            logging.debug("checkin popup q=%s w=%s h=%s x=%s y=%s reqh=%s "
+                          "root=(x%s y%s w%s h%s) screen=(%s x %s)",
+                          question.id, w, h, int(x), int(y), self.window.winfo_reqheight(),
+                          root.winfo_x(), root.winfo_y(), root.winfo_width(), root.winfo_height(),
+                          self.window.winfo_screenwidth(), self.window.winfo_screenheight())
 
         self.window.lift()
 
@@ -1230,6 +1246,8 @@ class CheckInPopup:
         """Fire exactly one of on_answer/on_skip (guarded once), then tear down."""
         if self.closed:
             return
+        if os.environ.get("DFYB_CHECKIN_DEBUG"):
+            logging.debug("checkin _finish (already closed=%s)", self.closed)
         self.closed = True
         try:
             callback()
@@ -3300,29 +3318,12 @@ class BreakApp:
             self._show_check_in(q)
 
     def _open_check_in_now(self):
-        """On-demand entry point (the "Check in" button): let the user answer any
-        enabled question now, regardless of its trigger. One enabled question opens
-        directly; several offer a chooser; none (or check-ins off) shows a calm note."""
-        from dfyb.checkins.model import parse_questions
-        from dfyb.checkins.history import todays_check_ins
-        questions = [q for q in parse_questions(self.check_in_questions) if q.enabled]
-        if not self.check_ins_enabled.get():
-            questions = []
-        else:
-            # A once-a-day question already answered today isn't offered again (it has
-            # its one answer). It reappears tomorrow. Multiple-per-day always stays.
-            answered = {r["question_id"]
-                        for r in todays_check_ins(self.event_log.read(), time.time())}
-            questions = [q for q in questions
-                         if not (q.once_per_day and q.id in answered)]
-        # Always via the chooser so the "Today" recap is visible even for one question
-        # (and the empty-state when everything's answered / nothing configured).
-        self._open_check_in_chooser(questions)
+        """On-demand entry point (the "Check in" button): open the chooser listing every
+        enabled question as a card. Answering stays in the chooser (it refreshes in place)."""
+        self._open_check_in_chooser()
 
-    def _open_check_in_chooser(self, questions):
-        """A small token-styled chooser: one button per enabled question (picking one
-        closes it and opens that check-in via _show_check_in), or a calm empty-state
-        note when nothing is configured. Pinned to the active Space (no Space switch)."""
+    def _open_check_in_chooser(self):
+        """A small window of question cards. Pinned to the active Space (no Space switch)."""
         chooser = ctk.CTkToplevel(self.root)
         chooser.title(CHECK_IN_CHOOSER_TITLE)
         chooser.resizable(False, False)
@@ -3331,75 +3332,119 @@ class BreakApp:
         chooser.transient(self.root)
         body = ctk.CTkFrame(chooser, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=PADDING_PANEL_X, pady=PADDING_PANEL_Y)
+        chooser.protocol("WM_DELETE_WINDOW", chooser.destroy)
+        self._render_check_in_chooser(chooser, body)
+        self._center_toplevel(chooser, self.root)
+        chooser.lift()
+        chooser.focus_force()
+        # No grab_set: an app-modal grab orphans on macOS after we open the answer popup,
+        # leaving the window unclickable. The picker doesn't need modality.
 
-        def _close():
-            chooser.destroy()
-
+    def _render_check_in_chooser(self, chooser, body):
+        """(Re)build the chooser's cards — on open and after each answer, so they reflect
+        the newest state — then resize the window to fit."""
+        for child in body.winfo_children():
+            child.destroy()
+        from dfyb.checkins.model import parse_questions
+        from dfyb.checkins.history import todays_check_ins
+        questions = ([q for q in parse_questions(self.check_in_questions) if q.enabled]
+                     if self.check_ins_enabled.get() else [])
+        by_q = {}
+        for r in todays_check_ins(self.event_log.read(), time.time()):
+            by_q.setdefault(r["question_id"], []).append(r)   # oldest -> newest
         if questions:
             ctk.CTkLabel(
                 body, text=CHECK_IN_CHOOSER_PROMPT, font=make_font('body', weight="bold"),
                 anchor="w", justify="left", wraplength=CHECK_IN_CHOOSER_BTN_WIDTH).pack(
                     anchor="w", pady=(0, SPACE_SM))
             for question in questions:
-                def _pick(q=question):
-                    _close()
-                    self._show_check_in(q)
-                ctk.CTkButton(
-                    body, text=question.text, command=_pick, anchor="w",
-                    width=CHECK_IN_CHOOSER_BTN_WIDTH, height=BUTTON_HEIGHT_SMALL,
-                    corner_radius=CORNER_RADIUS_BUTTON, fg_color="transparent",
-                    border_width=CHECK_IN_CARD_BORDER_WIDTH, border_color=COLORS['border'],
-                    hover_color=COLORS['surface_hover'], text_color=COLORS['text_primary'],
-                    font=make_font('body')).pack(
-                        fill="x", pady=(0, SPACE_XS))
+                self._add_check_in_row(chooser, body, question, by_q.get(question.id, []))
         else:
             ctk.CTkLabel(
                 body, text=CHECK_IN_NONE_CONFIGURED_TEXT, font=make_font('body'),
                 text_color=COLORS['text_secondary'], anchor="w", justify="left",
                 wraplength=CHECK_IN_CHOOSER_BTN_WIDTH).pack(anchor="w", pady=(0, SPACE_SM))
-
-        self._build_check_in_today(body)
-
         ctk.CTkButton(
-            body, text=CHECK_IN_CHOOSER_CLOSE_LABEL, command=_close,
+            body, text=CHECK_IN_CHOOSER_CLOSE_LABEL, command=chooser.destroy,
             height=BUTTON_HEIGHT_SMALL, corner_radius=CORNER_RADIUS_BUTTON,
             fg_color="transparent", border_width=CHECK_IN_CARD_BORDER_WIDTH,
             border_color=COLORS['border'], hover_color=COLORS['surface_hover'],
             text_color=COLORS['text_secondary'], font=make_font('label')).pack(
                 anchor="e", pady=(SPACE_SM, 0))
+        self._refit_toplevel(chooser)
 
-        chooser.protocol("WM_DELETE_WINDOW", _close)
-        self._center_toplevel(chooser, self.root)
+    def _add_check_in_row(self, chooser, body, question, entries):
+        """One compact settings-style row: the question on the left; on the right the latest
+        answer value + a ☑ when answered, then a chevron. The whole row is clickable to answer
+        or change (which refreshes the chooser in place). Multiple answers show only the
+        latest — the full day's history is a future Insights view. `entries` oldest→newest."""
+        answered = bool(entries)
+        row = ctk.CTkFrame(body, fg_color="transparent")
+        row.pack(fill="x", pady=(0, SPACE_XXS))
+
+        def _pick(_e=None):
+            self._show_check_in(question, after=lambda: self._reopen_chooser(chooser, body))
+
+        # Right side, packed right-to-left: chevron, then ☑, then the latest answer value.
+        ctk.CTkLabel(row, text=CHECK_IN_ROW_CHEVRON, font=make_font('body'),
+                     text_color=COLORS['text_tertiary']).pack(side="right", padx=(SPACE_XS, SPACE_SM))
+        if answered:
+            ctk.CTkLabel(row, text=CHECK_IN_ROW_BADGE, font=make_font('body'),
+                         text_color=COLORS['accent_success']).pack(side="right")
+            latest = entries[-1]
+            value = latest.get("value")
+            if value is None and latest.get("note"):
+                note = latest["note"]
+                value = (note[:CHECK_IN_ROW_NOTE_MAX] + "…"
+                         if len(note) > CHECK_IN_ROW_NOTE_MAX else note)
+            if value is not None:
+                ctk.CTkLabel(row, text=str(value), font=make_font('body'),
+                             text_color=COLORS['text_secondary']).pack(side="right", padx=(0, SPACE_XS))
+        # Left: question + a muted caption saying how often it's asked (once vs multiple).
+        left = ctk.CTkFrame(row, fg_color="transparent")
+        left.pack(side="left", padx=(SPACE_SM, SPACE_XS), pady=SPACE_XS, fill="x", expand=True)
+        ctk.CTkLabel(left, text=question.text, font=make_font('body'),
+                     text_color=COLORS['text_primary'], anchor="w", justify="left",
+                     wraplength=CHECK_IN_ROW_TEXT_WRAP).pack(anchor="w", fill="x")
+        ctk.CTkLabel(left, text=(CHECK_IN_ONCE_CAPTION if question.once_per_day
+                                 else CHECK_IN_MULTI_CAPTION),
+                     font=make_font('caption'), text_color=COLORS['text_tertiary'],
+                     anchor="w").pack(anchor="w")
+
+        # The whole row (and all its children) is one click target.
+        def _bind_click(widget):
+            widget.bind("<Button-1>", _pick)
+            try:
+                widget.configure(cursor="pointinghand")
+            except Exception:
+                pass
+            for child in widget.winfo_children():
+                _bind_click(child)
+        _bind_click(row)
+
+    def _reopen_chooser(self, chooser, body):
+        """After answering from the chooser, refresh its cards and bring it back (the
+        chooser stayed open behind the answer popup — answering never dumps you to the
+        main window)."""
+        if not chooser.winfo_exists():
+            return
+        self._render_check_in_chooser(chooser, body)
         chooser.lift()
         chooser.focus_force()
-        # No grab_set: an app-modal grab here can orphan on macOS after we
-        # release+destroy and open the answer popup, leaving the whole window
-        # unclickable ("can't press Check in again"). The picker doesn't need modality.
 
-    def _build_check_in_today(self, parent):
-        """A small recap of today's answered check-ins, shown in the chooser."""
-        from dfyb.checkins.history import todays_check_ins, format_check_in_value, dedupe_once_per_day
-        from dfyb.checkins.model import parse_questions
-        once_ids = {q.id for q in parse_questions(self.check_in_questions) if q.once_per_day}
-        rows = dedupe_once_per_day(
-            todays_check_ins(self.event_log.read(), time.time()), once_ids)
-        ctk.CTkLabel(parent, text=CHECK_IN_TODAY_HEADER,
-                     font=make_font('label', weight="bold"), text_color=COLORS['text_primary'],
-                     anchor="w").pack(anchor="w", pady=(SPACE_MD, SPACE_XXS))
-        if not rows:
-            ctk.CTkLabel(parent, text=CHECK_IN_TODAY_EMPTY, font=make_font('caption'),
-                         text_color=COLORS['text_tertiary'], anchor="w").pack(anchor="w")
+    def _refit_toplevel(self, top):
+        """Resize a toplevel to its content in place (keeps its position) — e.g. after an
+        expander toggle or a card re-render grows/shrinks the content."""
+        if top is None or not top.winfo_exists():
             return
-        for r in rows:
-            t = time.strftime(CHECK_IN_TIME_FMT, time.localtime(r["ts"]))
-            ctk.CTkLabel(
-                parent, text=f"{t} · {r['question']} — {format_check_in_value(r)}",
-                font=make_font('caption'), text_color=COLORS['text_secondary'],
-                anchor="w", justify="left", wraplength=CHECK_IN_CHOOSER_BTN_WIDTH).pack(anchor="w")
+        top.update_idletasks()
+        w, h = top.winfo_reqwidth(), top.winfo_reqheight()
+        top.tk.call("wm", "geometry", top, f"{w}x{h}+{top.winfo_x()}+{top.winfo_y()}")
 
-    def _show_check_in(self, question):
+    def _show_check_in(self, question, after=None):
         if self.active_popup:                 # something else is showing — skip
             return
+        screen = self._capture_active_screen()   # capture before the popup steals focus
         now = time.time()
         state = self.check_in_state
         state.setdefault("last_prompted", {})[question.id] = now
@@ -3407,17 +3452,21 @@ class BreakApp:
         self._save_preferences()
         self.active_popup = CheckInPopup(
             self.root, question,
-            on_answer=lambda value, note: self._on_check_in_done(question, value, note),
-            on_skip=self._on_check_in_skipped)
+            on_answer=lambda value, note: self._on_check_in_done(question, value, note, after),
+            on_skip=lambda: self._on_check_in_skipped(after), screen=screen)
 
-    def _on_check_in_done(self, question, value, note):
+    def _on_check_in_done(self, question, value, note, after=None):
         try:
             self._record_event(CHECK_IN, **check_in_event_payload(question, value, note))
         finally:
             self.active_popup = None      # always clear, even if logging fails
+        if after is not None:
+            after()
 
-    def _on_check_in_skipped(self):
+    def _on_check_in_skipped(self, after=None):
         self.active_popup = None               # nothing logged
+        if after is not None:
+            after()
 
     def _reset_defer_grace(self):
         """Clear the fullscreen/mic/active hysteresis counters (#46/#84) — done on
