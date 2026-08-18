@@ -370,13 +370,13 @@ CHECK_IN_SKIP_LABEL = "Skip"
 CHECK_IN_NUMBER_ENTRY_WIDTH = 100           # px; numeric entry field (number type)
 CHECK_IN_NUMBER_PLACEHOLDER = "Number"      # numeric entry hint
 CHECK_IN_SELECT_BORDER_WIDTH = 1            # outline on an UNselected scale/choice button
-CHECK_IN_ICON_BTN_WIDTH = 28                # px; square ✎/✕ control in a Today row
-CHECK_IN_EDIT_ICON = "✎"                    # edit a past answer
+CHECK_IN_ICON_BTN_WIDTH = 28                # px; square ✕ remove control in a Today row
 CHECK_IN_REMOVE_ICON = "✕"                  # remove a past answer
 CHECK_IN_REMOVE_CONFIRM_LABEL = "Remove?"   # inline confirm shown after tapping ✕ once
 CHECK_IN_REMOVE_CONFIRM_WIDTH = 72          # px; wider so "Remove?" fits
+CHECK_IN_NEW_ANSWER_LABEL = "＋ New answer"  # link to leave edit mode and add a fresh answer
 CHECK_IN_TODAY_HEADER = "Today"             # header above today's answers list
-CHECK_IN_TODAY_ROW_FMT = "{time} · {summary}"    # <time> · <value · note>
+CHECK_IN_TODAY_ROW_FMT = "{time} · {summary}"    # value line: <time> · <value>
 CHECK_IN_TODAY_ROW_TEXT_WRAP = 210          # px; wrap a long today-row summary
 CHECK_IN_UPDATE_CONTEXT = "Update today's answer"        # once-a-day, already answered
 CHECK_IN_ADD_CONTEXT_FMT = "Add another · {n} today"     # recurring, already answered
@@ -1104,8 +1104,10 @@ class CheckInPopup:
     The detail popup is a deliberate select → optional note → Save flow (never
     tap-and-go): a scale/choice/number value is SELECTED (highlighted) first, an
     optional note can ride along, and Save logs value+note together. It also shows
-    today's answers for this question with per-entry ✎ edit / ✕ remove, and a
-    context title ("Update today's answer" / "Add another · N today").
+    today's answers for this question; the WHOLE row is the edit affordance
+    (hover-tints, click enters edit; click again or "＋ New answer" leaves edit),
+    with a per-row ✕ remove (dismissible "Remove?" confirm), and a context title
+    ("Update today's answer" / "Add another · N today").
 
     Callbacks fire at most once total: exactly one of ``on_answer(value, note)``,
     ``on_edit(target_id, value, note)``, ``on_remove(target_id)`` or ``on_skip()``
@@ -1131,7 +1133,12 @@ class CheckInPopup:
         self.save_button = None
         self.context_label = None
         self.edit_target_id = None   # non-None => Save logs an edit for this entry
-        self.today_rows = {}         # entry id -> its Today-list row frame (for edit highlight)
+        # entry id -> {"row", "value" label, "note" label, "time" str, "note_shown"}:
+        # tracked so edit mode can highlight a row and live-preview edits into it.
+        self.today_widgets = {}
+        self._armed_remove = None    # (button, entry) of a pending "Remove?" confirm, or None
+        self.new_answer_btn = None   # "＋ New answer" link (recurring only); shown while editing
+        self.actions_row = None      # Skip/Save row (anchor for placing the new-answer link)
 
         # Window: pinned to the active Space (multi-monitor #21), topmost, fixed size.
         # No AppleScript activate/focus-restore here — that switched Spaces (#21).
@@ -1173,9 +1180,14 @@ class CheckInPopup:
         if self.note_entry is None and question.answer.allow_note:
             self._build_note_entry(container, CHECK_IN_NOTE_PLACEHOLDER)
 
-        # Today's answers for this question, each with ✎ edit / ✕ remove.
+        # Today's answers for this question; the whole row edits, ✕ removes.
         if self.entries:
             self._build_today_list(container, self.entries)
+
+        # Recurring + already answered: a "＋ New answer" link (hidden until editing)
+        # to leave edit mode and add a fresh answer. Once-a-day has one answer, so no link.
+        if self.entries and not question.once_per_day:
+            self._build_new_answer_affordance(container)
 
         self._build_actions(container)
 
@@ -1209,6 +1221,14 @@ class CheckInPopup:
 
         self.window.lift()
 
+        # Once-a-day + already answered: open directly on its single answer in edit mode
+        # (Save then UPDATES it rather than appending). Restore the context to
+        # "Update today's answer" — the daily flow reads as an update, not "Editing".
+        if question.once_per_day and self.entries:
+            self._enter_edit(self.entries[-1])
+            if self.context_label is not None:
+                self.context_label.configure(text=CHECK_IN_UPDATE_CONTEXT)
+
     # ---- answer controls -------------------------------------------------
 
     def _build_answer(self, parent, answer):
@@ -1239,10 +1259,12 @@ class CheckInPopup:
 
     def _select(self, value):
         """Select a scale/choice value: highlight it, remember it, re-evaluate Save."""
+        self._disarm_remove()        # selecting a value cancels a pending "Remove?"
         self.selected_value = value
         for v, btn in self.value_buttons.items():
             self._style_select_button(btn, v == value)
         self._refresh_save_state()
+        self._preview_edit()         # live-preview the new value into the edited row
 
     def _build_scale(self, parent, answer):
         """A button per integer in ``[min, max]``; ends labelled with min/max labels.
@@ -1295,7 +1317,7 @@ class CheckInPopup:
             corner_radius=CORNER_RADIUS_INPUT, font=make_font('body'),
             placeholder_text=CHECK_IN_NUMBER_PLACEHOLDER)
         self.number_entry.pack(side="left")
-        self.number_entry.bind("<KeyRelease>", lambda e: self._refresh_save_state())
+        self.number_entry.bind("<KeyRelease>", self._on_input_changed)
         self.number_entry.bind("<Return>", lambda e: self._save())
         if answer.unit:
             ctk.CTkLabel(
@@ -1304,19 +1326,26 @@ class CheckInPopup:
 
     def _build_note_entry(self, parent, placeholder, primary=False):
         """A single-line note entry. For a note-type question (``primary``) the text IS
-        the answer, so typing gates Save; otherwise it's an optional note that rides along."""
+        the answer, so typing gates Save; otherwise it's an optional note that rides along.
+        Typing always re-evaluates Save and live-previews into the edited row (both no-ops
+        when they don't apply)."""
         self.note_entry = ctk.CTkEntry(
             parent, placeholder_text=placeholder, height=BUTTON_HEIGHT_SMALL,
             corner_radius=CORNER_RADIUS_INPUT, font=make_font('body'))
         self.note_entry.pack(fill="x", padx=PADDING_PANEL_X, pady=SPACE_XS)
         self.note_entry.bind("<Return>", lambda e: self._save())
-        if primary:
-            self.note_entry.bind("<KeyRelease>", lambda e: self._refresh_save_state())
+        self.note_entry.bind("<KeyRelease>", self._on_input_changed)
 
-    # ---- Today list (edit / remove past answers) -------------------------
+    def _on_input_changed(self, _event=None):
+        """Number/note keystroke: re-evaluate Save, then live-preview into the edited row."""
+        self._refresh_save_state()
+        self._preview_edit()
+
+    # ---- Today list (row-as-edit / remove past answers) ------------------
 
     def _build_today_list(self, parent, entries):
-        """Header + one row per today's answer for this question, each with ✎ / ✕."""
+        """Header + one row per today's answer. The WHOLE row is the edit affordance
+        (hover-tint + click-to-edit); each row also carries a ✕ remove."""
         ctk.CTkLabel(
             parent, text=CHECK_IN_TODAY_HEADER, font=make_font('caption', weight="bold"),
             text_color=COLORS['text_secondary'], anchor="w"
@@ -1325,10 +1354,13 @@ class CheckInPopup:
             self._build_today_row(parent, entry)
 
     def _build_today_row(self, parent, entry):
-        """A ``<time> · <value · note>`` row with ✎ (edit) and ✕ (remove-with-confirm)."""
+        """One answer row: a value line (``<time> · <value>``, primary) and, when the
+        entry has a note, a note subtext line (tertiary) beneath it. The whole row
+        hover-tints and click-toggles edit mode; a ✕ on the right removes (dismissible
+        confirm). Value + note labels are tracked so edit mode can highlight/preview."""
+        eid = entry["id"]
         row = ctk.CTkFrame(parent, fg_color="transparent", corner_radius=CORNER_RADIUS_BUTTON)
         row.pack(fill="x", padx=SPACE_XS, pady=SPACE_XXS)
-        self.today_rows[entry["id"]] = row      # tracked so edit mode can highlight it
         remove_btn = ctk.CTkButton(
             row, text=CHECK_IN_REMOVE_ICON, width=CHECK_IN_ICON_BTN_WIDTH,
             height=BUTTON_HEIGHT_SMALL, corner_radius=CORNER_RADIUS_BUTTON,
@@ -1336,36 +1368,175 @@ class CheckInPopup:
             text_color=COLORS['text_secondary'], font=make_font('body'))
         remove_btn.configure(command=lambda b=remove_btn, e=entry: self._arm_remove(b, e))
         remove_btn.pack(side="right", padx=(SPACE_XXS, 0))
-        ctk.CTkButton(
-            row, text=CHECK_IN_EDIT_ICON, width=CHECK_IN_ICON_BTN_WIDTH,
-            height=BUTTON_HEIGHT_SMALL, corner_radius=CORNER_RADIUS_BUTTON,
-            fg_color="transparent", hover_color=COLORS['surface_hover'],
-            text_color=COLORS['text_secondary'], font=make_font('body'),
-            command=lambda e=entry: self._enter_edit(e)
-        ).pack(side="right", padx=(SPACE_XXS, 0))
-        text = CHECK_IN_TODAY_ROW_FMT.format(
-            time=time.strftime(CHECK_IN_TIME_FMT, time.localtime(entry["ts"])),
-            summary=format_check_in_value(entry))
-        ctk.CTkLabel(
-            row, text=text, font=make_font('caption'), text_color=COLORS['text_primary'],
-            anchor="w", justify="left", wraplength=CHECK_IN_TODAY_ROW_TEXT_WRAP
-        ).pack(side="left", fill="x", expand=True)
+        # Left text column, with comfortable LEFT padding so it doesn't hug the edge.
+        text_col = ctk.CTkFrame(row, fg_color="transparent")
+        text_col.pack(side="left", fill="x", expand=True, padx=(SPACE_MD, SPACE_XS))
+        value_lbl = ctk.CTkLabel(
+            text_col, text="", font=make_font('caption'), text_color=COLORS['text_primary'],
+            anchor="w", justify="left", wraplength=CHECK_IN_TODAY_ROW_TEXT_WRAP)
+        value_lbl.pack(fill="x", anchor="w")
+        note_lbl = ctk.CTkLabel(
+            text_col, text="", font=make_font('caption'), text_color=COLORS['text_tertiary'],
+            anchor="w", justify="left", wraplength=CHECK_IN_TODAY_ROW_TEXT_WRAP)
+        self.today_widgets[eid] = {
+            "row": row, "value": value_lbl, "note": note_lbl, "note_shown": False,
+            "time": time.strftime(CHECK_IN_TIME_FMT, time.localtime(entry["ts"]))}
+        self._set_row_text(eid, entry.get("value"), entry.get("note"))
+        # Whole row is one hover target; the text column (not the ✕) is the click target.
+        self._bind_recursive(row, on_enter=lambda e, r=row: self._hover_enter(r),
+                             on_leave=lambda e, r=row: self._hover_leave(r))
+        self._bind_recursive(text_col, on_click=lambda e, en=entry: self._on_row_click(en),
+                             cursor="pointinghand")
+        row.bind("<Button-1>", lambda e, en=entry: self._on_row_click(en), add="+")
+        try:
+            row.configure(cursor="pointinghand")
+        except Exception:
+            pass
+
+    def _bind_recursive(self, widget, on_click=None, on_enter=None, on_leave=None, cursor=None):
+        """Bind the given handlers on ``widget`` and every descendant so a composite CTk
+        row reacts uniformly (a click/hover on the inner text label counts as one on the
+        row). Handlers are additive (``add="+"``) so CTk's own bindings still fire."""
+        if on_click is not None:
+            widget.bind("<Button-1>", on_click, add="+")
+        if on_enter is not None:
+            widget.bind("<Enter>", on_enter, add="+")
+        if on_leave is not None:
+            widget.bind("<Leave>", on_leave, add="+")
+        if cursor is not None:
+            try:
+                widget.configure(cursor=cursor)
+            except Exception:
+                pass
+        for child in widget.winfo_children():
+            self._bind_recursive(child, on_click, on_enter, on_leave, cursor)
+
+    # ---- row text (value line + note subtext) ---------------------------
+
+    def _value_summary(self, value, note):
+        """The value-line summary (after the time). For a note-type question the note IS
+        the answer, so it shows here; otherwise the answer value shows here."""
+        if self.question.answer.type == NOTE:
+            return format_check_in_value({"value": None, "note": note})
+        return format_check_in_value({"value": value, "note": None})
+
+    def _note_subtext(self, note):
+        """The note subtext beneath the value line, or None (note-type keeps its note on
+        the value line; a blank note shows no subtext)."""
+        if self.question.answer.type == NOTE:
+            return None
+        return str(note) if note else None
+
+    def _set_row_text(self, eid, value, note):
+        """Render a Today row's value line + note subtext from a value/note pair — the
+        stored entry (build / revert) or the live control state (preview). Shows/hides
+        the note subtext line as the note appears/clears."""
+        w = self.today_widgets.get(eid)
+        if w is None:
+            return
+        w["value"].configure(text=CHECK_IN_TODAY_ROW_FMT.format(
+            time=w["time"], summary=self._value_summary(value, note)))
+        subtext = self._note_subtext(note)
+        if subtext:
+            w["note"].configure(text=subtext)
+            if not w["note_shown"]:
+                w["note"].pack(fill="x", anchor="w")
+                w["note_shown"] = True
+        elif w["note_shown"]:
+            w["note"].pack_forget()
+            w["note_shown"] = False
+
+    # ---- hover highlight -------------------------------------------------
+
+    def _is_edited_row(self, row):
+        """True if ``row`` is the Today row currently in edit mode — it keeps its stronger
+        edit highlight, so hover must not override it."""
+        if self.edit_target_id is None:
+            return False
+        w = self.today_widgets.get(self.edit_target_id)
+        return bool(w) and w["row"] is row
+
+    def _hover_enter(self, row):
+        """Pointer over a Today row → subtle tint (unless it's the edited row)."""
+        if self._is_edited_row(row):
+            return
+        row.configure(fg_color=COLORS['surface_hover'])
+
+    def _hover_leave(self, row):
+        """Pointer left a Today row → drop the tint, but only if it TRULY left: crossing
+        into a child fires a spurious <Leave> on the row/its widgets, so walk up from the
+        widget under the pointer and keep the tint while still inside the row."""
+        if self._is_edited_row(row):
+            return
+        try:
+            under = row.winfo_containing(*row.winfo_pointerxy())
+        except Exception:
+            under = None
+        w = under
+        while w is not None:
+            if w is row:
+                return                       # still within the row → keep the tint
+            w = getattr(w, "master", None)
+        row.configure(fg_color="transparent")
+
+    # ---- remove (dismissible confirm) -----------------------------------
 
     def _arm_remove(self, btn, entry):
-        """First ✕ tap arms an inline "Remove?" confirm; a second tap actually removes."""
+        """First ✕ tap arms an inline "Remove?" confirm; a second tap actually removes.
+        Arming first dismisses any other pending confirm."""
+        self._disarm_remove()
         btn.configure(
             text=CHECK_IN_REMOVE_CONFIRM_LABEL, width=CHECK_IN_REMOVE_CONFIRM_WIDTH,
             fg_color=COLORS['accent_warning'], hover_color=COLORS['accent_warning_hover'],
             text_color=COLORS['text_on_accent'],
             command=lambda e=entry: self._remove(e))
+        self._armed_remove = (btn, entry)
+
+    def _disarm_remove(self):
+        """Revert an armed "Remove?" button back to its idle ✕ (cancelling the pending
+        removal). Called at the start of any other interaction, so clicking elsewhere
+        dismisses the confirm."""
+        if self._armed_remove is None:
+            return
+        btn, entry = self._armed_remove
+        self._armed_remove = None
+        try:
+            btn.configure(
+                text=CHECK_IN_REMOVE_ICON, width=CHECK_IN_ICON_BTN_WIDTH,
+                fg_color="transparent", hover_color=COLORS['surface_hover'],
+                text_color=COLORS['text_secondary'],
+                command=lambda b=btn, e=entry: self._arm_remove(b, e))
+        except Exception:
+            pass
 
     def _remove(self, entry):
         target = entry["id"]
         self._finish(lambda: self.on_remove(target))
 
+    # ---- edit mode (enter / exit / preview / highlight) -----------------
+
+    def _on_row_click(self, entry):
+        """Click a Today row: toggle edit mode — enter it, or exit if it's already the
+        row being edited."""
+        if self.edit_target_id == entry["id"]:
+            self._exit_edit()
+        else:
+            self._enter_edit(entry)
+
+    def _build_new_answer_affordance(self, parent):
+        """Create (hidden) the "＋ New answer" link, shown only while editing a recurring
+        question. Clicking it leaves edit mode to add a fresh answer. ``_enter_edit``
+        packs it before the actions row; ``_exit_edit`` hides it again."""
+        self.new_answer_btn = ctk.CTkLabel(
+            parent, text=CHECK_IN_NEW_ANSWER_LABEL, font=make_font('caption', weight="bold"),
+            text_color=COLORS['accent_primary'], anchor="w", cursor="pointinghand")
+        self.new_answer_btn.bind("<Button-1>", lambda e: self._exit_edit())
+
     def _enter_edit(self, entry):
-        """Enter EDIT MODE for a past answer: pre-fill the control + note with its
-        value, flip the context line to "Editing", and route Save to ``on_edit``."""
+        """Enter EDIT MODE for a past answer: pre-fill the control + note with its value,
+        flip the context line to "Editing", strong-highlight its row, reveal the
+        "＋ New answer" link (recurring), and route Save to ``on_edit``."""
+        self._disarm_remove()
         self.edit_target_id = entry["id"]
         atype = self.question.answer.type
         value = entry.get("value")
@@ -1383,17 +1554,58 @@ class CheckInPopup:
         if self.context_label is not None:
             self.context_label.configure(text=CHECK_IN_EDITING_CONTEXT)
         self._highlight_edit_row(entry["id"])
+        if self.new_answer_btn is not None:
+            self.new_answer_btn.pack(before=self.actions_row, fill="x",
+                                     padx=PADDING_PANEL_X, pady=(0, SPACE_XS))
+        self._preview_edit()         # reconcile the row with the fully pre-filled controls
         self._refresh_save_state()
 
+    def _exit_edit(self):
+        """Leave edit mode: clear the target, deselect the answer control + note, restore
+        the previewed row to its stored value, drop all row highlights, hide the
+        "＋ New answer" link, and reset the context line to its default."""
+        self._disarm_remove()
+        target = self.edit_target_id
+        self.edit_target_id = None
+        self.selected_value = None
+        for btn in self.value_buttons.values():
+            self._style_select_button(btn, False)
+        if self.number_entry is not None:
+            self.number_entry.delete(0, "end")
+        if self.note_entry is not None:
+            self.note_entry.delete(0, "end")
+        # Restore the row we were previewing back to its saved value, then un-highlight.
+        if target is not None:
+            entry = next((e for e in self.entries if e["id"] == target), None)
+            if entry is not None:
+                self._set_row_text(target, entry.get("value"), entry.get("note"))
+        self._highlight_edit_row(None)
+        if self.new_answer_btn is not None:
+            self.new_answer_btn.pack_forget()
+        if self.context_label is not None:
+            if self.question.once_per_day:
+                self.context_label.configure(text=CHECK_IN_UPDATE_CONTEXT)
+            elif self.entries:
+                self.context_label.configure(
+                    text=CHECK_IN_ADD_CONTEXT_FMT.format(n=len(self.entries)))
+        self._refresh_save_state()
+
+    def _preview_edit(self):
+        """While editing, mirror the current control state (value + note) into the edited
+        row's text so it previews the pending answer. No-op when not editing."""
+        if self.edit_target_id is None:
+            return
+        self._set_row_text(self.edit_target_id, self._current_value(), self._read_note())
+
     def _highlight_edit_row(self, target_id):
-        """Tint + outline the Today-list row being edited so it's obvious which one."""
-        for eid, row in self.today_rows.items():
+        """Tint + outline the Today row being edited (``target_id`` = None clears all)."""
+        for eid, w in self.today_widgets.items():
             if eid == target_id:
-                row.configure(fg_color=COLORS['surface_hover'],
-                              border_width=CHECK_IN_CARD_BORDER_WIDTH,
-                              border_color=COLORS['accent_primary'])
+                w["row"].configure(fg_color=COLORS['surface_hover'],
+                                   border_width=CHECK_IN_CARD_BORDER_WIDTH,
+                                   border_color=COLORS['accent_primary'])
             else:
-                row.configure(fg_color="transparent", border_width=0)
+                w["row"].configure(fg_color="transparent", border_width=0)
 
     # ---- actions (Skip / Save) ------------------------------------------
 
@@ -1402,6 +1614,7 @@ class CheckInPopup:
         there is a valid value; ``_refresh_save_state`` toggles it."""
         row = ctk.CTkFrame(parent, fg_color="transparent")
         row.pack(fill="x", padx=PADDING_PANEL_X, pady=(SPACE_XS, PADDING_PANEL_Y))
+        self.actions_row = row       # anchor: the "＋ New answer" link packs before this
         ctk.CTkButton(
             row, text=CHECK_IN_SKIP_LABEL, command=self._skip,
             height=BUTTON_HEIGHT_LARGE, corner_radius=CORNER_RADIUS_BUTTON,
