@@ -60,10 +60,11 @@ from dfyb.ui_controls import reset_button_style
 from dfyb.timer_lifecycle import timer_should_continue
 from dfyb.macos_window import pin_to_active_space
 from dfyb.checkins.model import (
-    SCALE, CHOICES, NOTE, TIMES_PER_DAY, PER_DAY, PER_WEEK,
+    SCALE, NUMBER, CHOICES, NOTE, TIMES_PER_DAY, PER_DAY, PER_WEEK,
     DEFAULT_SCALE_MIN, DEFAULT_SCALE_MAX,
-    TRIGGER_BREAK, TRIGGER_ON_DEMAND,
+    TRIGGER_BREAK, TRIGGER_ON_DEMAND, answer_is_valid,
 )
+from dfyb.checkins.history import format_check_in_value
 from dfyb.insights.transparency import track_held, held_message, holding_cue
 from dfyb.insights.status import compute_status
 from dfyb.insights.over_break import format_over_time
@@ -210,6 +211,7 @@ COLORS = {
     'text_tertiary':        ("#AEAEB2", "#808080"),   # dark ≡ old gray50
     'accent_primary':       ("#007AFF", "#0A84FF"),   # systemBlue
     'accent_primary_hover': ("#0068D6", "#0077ED"),
+    'text_on_accent':       ("#FFFFFF", "#FFFFFF"),   # label atop a filled accent button
     'accent_success':       ("#34C759", "#30D158"),   # systemGreen
     'accent_warning':       ("#FF9500", "#FF9F0A"),   # systemOrange
     'accent_warning_hover': ("#E68600", "#E8900A"),
@@ -360,10 +362,25 @@ CHECK_IN_WAKING_WINDOW_HOURS = 14                                  # assumed wak
 CHECK_IN_WAKING_WINDOW_SECONDS = CHECK_IN_WAKING_WINDOW_HOURS * SECONDS_PER_HOUR
 CHECK_IN_POPUP_W, CHECK_IN_POPUP_H = 340, 200
 CHECK_IN_SCALE_BTN_WIDTH = 44               # compact square-ish button per scale value
-CHECK_IN_NOTE_PLACEHOLDER = "Add a note (optional)"   # optional note entry (scale/choices)
-CHECK_IN_ANSWER_PLACEHOLDER = "Type your answer…"     # note-type question's primary entry
+CHECK_IN_NOTE_PLACEHOLDER = "Add a note (optional)"   # optional note entry (scale/choices/number)
+CHECK_IN_ANSWER_PLACEHOLDER = "Write a note…"         # note-type question's primary entry
 CHECK_IN_SAVE_LABEL = "Save"
 CHECK_IN_SKIP_LABEL = "Skip"
+# Detail-popup (select → optional note → Save) widgets, all token-sized.
+CHECK_IN_NUMBER_ENTRY_WIDTH = 100           # px; numeric entry field (number type)
+CHECK_IN_NUMBER_PLACEHOLDER = "Number"      # numeric entry hint
+CHECK_IN_SELECT_BORDER_WIDTH = 1            # outline on an UNselected scale/choice button
+CHECK_IN_ICON_BTN_WIDTH = 28                # px; square ✎/✕ control in a Today row
+CHECK_IN_EDIT_ICON = "✎"                    # edit a past answer
+CHECK_IN_REMOVE_ICON = "✕"                  # remove a past answer
+CHECK_IN_REMOVE_CONFIRM_LABEL = "Remove?"   # inline confirm shown after tapping ✕ once
+CHECK_IN_REMOVE_CONFIRM_WIDTH = 72          # px; wider so "Remove?" fits
+CHECK_IN_TODAY_HEADER = "Today"             # header above today's answers list
+CHECK_IN_TODAY_ROW_FMT = "{time} · {summary}"    # <time> · <value · note>
+CHECK_IN_TODAY_ROW_TEXT_WRAP = 210          # px; wrap a long today-row summary
+CHECK_IN_UPDATE_CONTEXT = "Update today's answer"        # once-a-day, already answered
+CHECK_IN_ADD_CONTEXT_FMT = "Add another · {n} today"     # recurring, already answered
+CHECK_IN_EDITING_CONTEXT = "Editing"        # context line while editing a past answer
 
 # --- On-demand "Check in" (main-window affordance + question chooser) ---
 CHECK_IN_NOW_LABEL = "Check in"                      # modest main-window button
@@ -1085,17 +1102,36 @@ class CheckInPopup:
     ``closed`` / ``bring_to_user`` / ``close`` so it can stand in as the app's
     ``active_popup`` interchangeably with CountdownPopup.
 
-    Callbacks fire at most once total: exactly one of ``on_answer(value, note)`` or
-    ``on_skip()`` — closing the window via its OS control counts as a skip.
+    The detail popup is a deliberate select → optional note → Save flow (never
+    tap-and-go): a scale/choice/number value is SELECTED (highlighted) first, an
+    optional note can ride along, and Save logs value+note together. It also shows
+    today's answers for this question with per-entry ✎ edit / ✕ remove, and a
+    context title ("Update today's answer" / "Add another · N today").
+
+    Callbacks fire at most once total: exactly one of ``on_answer(value, note)``,
+    ``on_edit(target_id, value, note)``, ``on_remove(target_id)`` or ``on_skip()``
+    — closing the window via its OS control counts as a skip.
     """
 
-    def __init__(self, root, question, on_answer, on_skip, screen=None):
+    def __init__(self, root, question, entries, on_answer, on_edit, on_remove,
+                 on_skip, screen=None):
         self.root = root
         self.question = question
+        self.entries = entries or []
         self.on_answer = on_answer
+        self.on_edit = on_edit
+        self.on_remove = on_remove
         self.on_skip = on_skip
         self.closed = False
+        # Answer state. ``selected_value`` holds the chosen scale int / choice str
+        # (number is read live from its entry; note is read from the note field).
+        self.selected_value = None
+        self.value_buttons = {}      # value -> CTkButton (scale/choices highlight)
+        self.number_entry = None
         self.note_entry = None
+        self.save_button = None
+        self.context_label = None
+        self.edit_target_id = None   # non-None => Save logs an edit for this entry
 
         # Window: pinned to the active Space (multi-monitor #21), topmost, fixed size.
         # No AppleScript activate/focus-restore here — that switched Spaces (#21).
@@ -1118,21 +1154,30 @@ class CheckInPopup:
             font=make_font('heading', weight="bold"),
             text_color=COLORS['text_primary'],
             wraplength=CHECK_IN_POPUP_W - 2 * PADDING_PANEL_X
-        ).pack(padx=PADDING_PANEL_X, pady=(PADDING_PANEL_Y, ROW_SPACING))
+        ).pack(padx=PADDING_PANEL_X, pady=(PADDING_PANEL_Y, SPACE_XXS))
+
+        # Context line (only when re-answering): once-a-day => "Update today's
+        # answer"; recurring => "Add another · N today". No line for the first answer.
+        if self.entries:
+            ctx = (CHECK_IN_UPDATE_CONTEXT if question.once_per_day
+                   else CHECK_IN_ADD_CONTEXT_FMT.format(n=len(self.entries)))
+            self.context_label = ctk.CTkLabel(
+                container, text=ctx, font=make_font('caption'),
+                text_color=COLORS['text_secondary'])
+            self.context_label.pack(padx=PADDING_PANEL_X, pady=(0, ROW_SPACING))
 
         self._build_answer(container, question.answer)
 
-        # An optional, always-visible note field for scale/choices answers. (A
-        # note-type question already built its own entry as the answer control.)
+        # An optional, always-visible note field for scale/choices/number answers.
+        # (A note-type question already built its own entry as the answer control.)
         if self.note_entry is None and question.answer.allow_note:
             self._build_note_entry(container, CHECK_IN_NOTE_PLACEHOLDER)
 
-        ctk.CTkButton(
-            container, text=CHECK_IN_SKIP_LABEL, command=self._skip,
-            height=BUTTON_HEIGHT_SMALL, corner_radius=CORNER_RADIUS_BUTTON,
-            fg_color="transparent", hover_color=COLORS['surface_hover'],
-            text_color=COLORS['text_secondary'], font=make_font('body')
-        ).pack(pady=(SPACE_XS, PADDING_PANEL_Y))
+        # Today's answers for this question, each with ✎ edit / ✕ remove.
+        if self.entries:
+            self._build_today_list(container, self.entries)
+
+        self._build_actions(container)
 
         # Center over the main window so it lands on the SAME screen the app is on
         # (multi-monitor #1): a bare CTkToplevel would otherwise open on the primary
@@ -1167,29 +1212,54 @@ class CheckInPopup:
     # ---- answer controls -------------------------------------------------
 
     def _build_answer(self, parent, answer):
-        """Render the answer control appropriate to the question's answer type."""
+        """Render the answer control appropriate to the question's answer type.
+        Scale/choices/number all SELECT (no auto-submit); Save logs the selection."""
         if answer.type == SCALE:
             self._build_scale(parent, answer)
+        elif answer.type == NUMBER:
+            self._build_number(parent, answer)
         elif answer.type == CHOICES:
             self._build_choices(parent, answer)
         else:                                    # NOTE: the free text IS the answer
-            self._build_note_entry(parent, CHECK_IN_ANSWER_PLACEHOLDER, with_save=True)
+            self._build_note_entry(parent, CHECK_IN_ANSWER_PLACEHOLDER, primary=True)
+
+    def _style_select_button(self, btn, selected):
+        """Toggle a scale/choice button between the selected (filled accent) and the
+        unselected (transparent + outline) look."""
+        if selected:
+            btn.configure(
+                fg_color=COLORS['accent_primary'],
+                hover_color=COLORS['accent_primary_hover'],
+                border_width=0, text_color=COLORS['text_on_accent'])
+        else:
+            btn.configure(
+                fg_color="transparent", hover_color=COLORS['surface_hover'],
+                border_width=CHECK_IN_SELECT_BORDER_WIDTH,
+                border_color=COLORS['border'], text_color=COLORS['text_primary'])
+
+    def _select(self, value):
+        """Select a scale/choice value: highlight it, remember it, re-evaluate Save."""
+        self.selected_value = value
+        for v, btn in self.value_buttons.items():
+            self._style_select_button(btn, v == value)
+        self._refresh_save_state()
 
     def _build_scale(self, parent, answer):
-        """A button per integer in ``[min, max]``; ends labelled with min/max labels."""
+        """A button per integer in ``[min, max]``; ends labelled with min/max labels.
+        Clicking SELECTS (highlights) — Save logs it."""
         frame = ctk.CTkFrame(parent, fg_color="transparent")
         frame.pack(padx=PADDING_PANEL_X, pady=SPACE_XS)
         row = ctk.CTkFrame(frame, fg_color="transparent")
         row.pack()
         for value in range(answer.min, answer.max + 1):
-            ctk.CTkButton(
+            btn = ctk.CTkButton(
                 row, text=str(value), width=CHECK_IN_SCALE_BTN_WIDTH,
                 height=BUTTON_HEIGHT_LARGE, corner_radius=CORNER_RADIUS_BUTTON,
-                fg_color=COLORS['accent_primary'],
-                hover_color=COLORS['accent_primary_hover'],
                 font=make_font('body', weight="bold"),
-                command=lambda v=value: self._answer(v)
-            ).pack(side="left", padx=SPACE_XXS)
+                command=lambda v=value: self._select(v))
+            btn.pack(side="left", padx=SPACE_XXS)
+            self.value_buttons[value] = btn
+            self._style_select_button(btn, False)
         if answer.min_label or answer.max_label:
             labels = ctk.CTkFrame(frame, fg_color="transparent")
             labels.pack(fill="x", pady=(SPACE_XXS, 0))
@@ -1203,36 +1273,180 @@ class CheckInPopup:
     def _build_choices(self, parent, answer):
         """One full-width button per fixed option, STACKED vertically so any number or
         length of options fits the popup width (laid out side-by-side they overflow and
-        clip off the right edge)."""
+        clip off the right edge). Clicking SELECTS (highlights) — Save logs it."""
         col = ctk.CTkFrame(parent, fg_color="transparent")
         col.pack(fill="x", padx=PADDING_PANEL_X, pady=SPACE_XS)
         for option in answer.options:
-            ctk.CTkButton(
+            btn = ctk.CTkButton(
                 col, text=str(option), height=BUTTON_HEIGHT_LARGE,
-                corner_radius=CORNER_RADIUS_BUTTON,
-                fg_color=COLORS['accent_primary'],
-                hover_color=COLORS['accent_primary_hover'],
-                font=make_font('body'),
-                command=lambda o=option: self._answer(o)
-            ).pack(fill="x", pady=SPACE_XXS)
+                corner_radius=CORNER_RADIUS_BUTTON, font=make_font('body'),
+                command=lambda o=option: self._select(o))
+            btn.pack(fill="x", pady=SPACE_XXS)
+            self.value_buttons[option] = btn
+            self._style_select_button(btn, False)
 
-    def _build_note_entry(self, parent, placeholder, with_save=False):
-        """A single-line note entry. When ``with_save`` (note-type question), a Save
-        button answers with ``value=None`` — the text travels as the note."""
+    def _build_number(self, parent, answer):
+        """A single-line numeric entry (int/decimal) with the unit shown beside it.
+        The value is read live from the field; Save validates it against min/max."""
+        frame = ctk.CTkFrame(parent, fg_color="transparent")
+        frame.pack(padx=PADDING_PANEL_X, pady=SPACE_XS)
+        self.number_entry = ctk.CTkEntry(
+            frame, width=CHECK_IN_NUMBER_ENTRY_WIDTH, height=BUTTON_HEIGHT_LARGE,
+            corner_radius=CORNER_RADIUS_INPUT, font=make_font('body'),
+            placeholder_text=CHECK_IN_NUMBER_PLACEHOLDER)
+        self.number_entry.pack(side="left")
+        self.number_entry.bind("<KeyRelease>", lambda e: self._refresh_save_state())
+        self.number_entry.bind("<Return>", lambda e: self._save())
+        if answer.unit:
+            ctk.CTkLabel(
+                frame, text=answer.unit, font=make_font('body'),
+                text_color=COLORS['text_secondary']).pack(side="left", padx=(SPACE_XS, 0))
+
+    def _build_note_entry(self, parent, placeholder, primary=False):
+        """A single-line note entry. For a note-type question (``primary``) the text IS
+        the answer, so typing gates Save; otherwise it's an optional note that rides along."""
         self.note_entry = ctk.CTkEntry(
             parent, placeholder_text=placeholder, height=BUTTON_HEIGHT_SMALL,
             corner_radius=CORNER_RADIUS_INPUT, font=make_font('body'))
         self.note_entry.pack(fill="x", padx=PADDING_PANEL_X, pady=SPACE_XS)
-        if with_save:
-            self.note_entry.bind("<Return>", lambda e: self._answer(None))
-            ctk.CTkButton(
-                parent, text=CHECK_IN_SAVE_LABEL,
-                command=lambda: self._answer(None),
-                height=BUTTON_HEIGHT_LARGE, corner_radius=CORNER_RADIUS_BUTTON,
-                fg_color=COLORS['accent_primary'],
-                hover_color=COLORS['accent_primary_hover'],
-                font=make_font('body', weight="bold")
-            ).pack(padx=PADDING_PANEL_X, pady=SPACE_XS)
+        self.note_entry.bind("<Return>", lambda e: self._save())
+        if primary:
+            self.note_entry.bind("<KeyRelease>", lambda e: self._refresh_save_state())
+
+    # ---- Today list (edit / remove past answers) -------------------------
+
+    def _build_today_list(self, parent, entries):
+        """Header + one row per today's answer for this question, each with ✎ / ✕."""
+        ctk.CTkLabel(
+            parent, text=CHECK_IN_TODAY_HEADER, font=make_font('caption', weight="bold"),
+            text_color=COLORS['text_secondary'], anchor="w"
+        ).pack(fill="x", padx=PADDING_PANEL_X, pady=(SPACE_SM, SPACE_XXS))
+        for entry in entries:
+            self._build_today_row(parent, entry)
+
+    def _build_today_row(self, parent, entry):
+        """A ``<time> · <value · note>`` row with ✎ (edit) and ✕ (remove-with-confirm)."""
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(fill="x", padx=PADDING_PANEL_X, pady=SPACE_XXS)
+        remove_btn = ctk.CTkButton(
+            row, text=CHECK_IN_REMOVE_ICON, width=CHECK_IN_ICON_BTN_WIDTH,
+            height=BUTTON_HEIGHT_SMALL, corner_radius=CORNER_RADIUS_BUTTON,
+            fg_color="transparent", hover_color=COLORS['surface_hover'],
+            text_color=COLORS['text_secondary'], font=make_font('body'))
+        remove_btn.configure(command=lambda b=remove_btn, e=entry: self._arm_remove(b, e))
+        remove_btn.pack(side="right", padx=(SPACE_XXS, 0))
+        ctk.CTkButton(
+            row, text=CHECK_IN_EDIT_ICON, width=CHECK_IN_ICON_BTN_WIDTH,
+            height=BUTTON_HEIGHT_SMALL, corner_radius=CORNER_RADIUS_BUTTON,
+            fg_color="transparent", hover_color=COLORS['surface_hover'],
+            text_color=COLORS['text_secondary'], font=make_font('body'),
+            command=lambda e=entry: self._enter_edit(e)
+        ).pack(side="right", padx=(SPACE_XXS, 0))
+        text = CHECK_IN_TODAY_ROW_FMT.format(
+            time=time.strftime(CHECK_IN_TIME_FMT, time.localtime(entry["ts"])),
+            summary=format_check_in_value(entry))
+        ctk.CTkLabel(
+            row, text=text, font=make_font('caption'), text_color=COLORS['text_primary'],
+            anchor="w", justify="left", wraplength=CHECK_IN_TODAY_ROW_TEXT_WRAP
+        ).pack(side="left", fill="x", expand=True)
+
+    def _arm_remove(self, btn, entry):
+        """First ✕ tap arms an inline "Remove?" confirm; a second tap actually removes."""
+        btn.configure(
+            text=CHECK_IN_REMOVE_CONFIRM_LABEL, width=CHECK_IN_REMOVE_CONFIRM_WIDTH,
+            fg_color=COLORS['accent_warning'], hover_color=COLORS['accent_warning_hover'],
+            text_color=COLORS['text_on_accent'],
+            command=lambda e=entry: self._remove(e))
+
+    def _remove(self, entry):
+        target = entry["id"]
+        self._finish(lambda: self.on_remove(target))
+
+    def _enter_edit(self, entry):
+        """Enter EDIT MODE for a past answer: pre-fill the control + note with its
+        value, flip the context line to "Editing", and route Save to ``on_edit``."""
+        self.edit_target_id = entry["id"]
+        atype = self.question.answer.type
+        value = entry.get("value")
+        if atype in (SCALE, CHOICES):
+            if value in self.value_buttons:
+                self._select(value)
+        elif atype == NUMBER and self.number_entry is not None:
+            self.number_entry.delete(0, "end")
+            if value is not None:
+                self.number_entry.insert(0, str(value))
+        if self.note_entry is not None:
+            self.note_entry.delete(0, "end")
+            if entry.get("note"):
+                self.note_entry.insert(0, str(entry["note"]))
+        if self.context_label is not None:
+            self.context_label.configure(text=CHECK_IN_EDITING_CONTEXT)
+        self._refresh_save_state()
+
+    # ---- actions (Skip / Save) ------------------------------------------
+
+    def _build_actions(self, parent):
+        """The bottom Skip (transparent) + Save (accent) row. Save is disabled until
+        there is a valid value; ``_refresh_save_state`` toggles it."""
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(fill="x", padx=PADDING_PANEL_X, pady=(SPACE_XS, PADDING_PANEL_Y))
+        ctk.CTkButton(
+            row, text=CHECK_IN_SKIP_LABEL, command=self._skip,
+            height=BUTTON_HEIGHT_LARGE, corner_radius=CORNER_RADIUS_BUTTON,
+            fg_color="transparent", hover_color=COLORS['surface_hover'],
+            text_color=COLORS['text_secondary'], font=make_font('body')
+        ).pack(side="left")
+        self.save_button = ctk.CTkButton(
+            row, text=CHECK_IN_SAVE_LABEL, command=self._save,
+            height=BUTTON_HEIGHT_LARGE, corner_radius=CORNER_RADIUS_BUTTON,
+            fg_color=COLORS['accent_primary'], hover_color=COLORS['accent_primary_hover'],
+            font=make_font('body', weight="bold"))
+        self.save_button.pack(side="right")
+        self._refresh_save_state()
+
+    def _refresh_save_state(self):
+        """Enable Save only when the current input is a valid answer."""
+        if self.save_button is None:
+            return
+        self.save_button.configure(
+            state="normal" if self._has_valid_answer() else "disabled")
+
+    # ---- value reading / validity ---------------------------------------
+
+    def _parse_number(self):
+        """The number-entry value as int (when whole) / float, or None if unparseable
+        or outside the answer's min..max."""
+        if self.number_entry is None:
+            return None
+        raw = self.number_entry.get().strip()
+        if not raw:
+            return None
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        if value.is_integer():
+            value = int(value)
+        return value if answer_is_valid(self.question.answer, value) else None
+
+    def _current_value(self):
+        """The value to log for the current answer type (None for a note-type answer)."""
+        atype = self.question.answer.type
+        if atype == NUMBER:
+            return self._parse_number()
+        if atype == NOTE:
+            return None
+        return self.selected_value
+
+    def _has_valid_answer(self):
+        """Whether there is enough to Save: a selected scale/choice, a parseable number,
+        or (note-type) a non-empty note."""
+        atype = self.question.answer.type
+        if atype == NOTE:
+            return self._read_note() is not None
+        if atype == NUMBER:
+            return self._parse_number() is not None
+        return self.selected_value is not None
 
     # ---- lifecycle -------------------------------------------------------
 
@@ -1245,15 +1459,23 @@ class CheckInPopup:
         except Exception:
             return None
 
-    def _answer(self, value):
+    def _save(self):
+        """Log the current value + note — as an edit when in edit mode, else a new answer."""
+        if not self._has_valid_answer():
+            return
+        value = self._current_value()
         note = self._read_note()
-        self._finish(lambda: self.on_answer(value, note))
+        if self.edit_target_id is not None:
+            target = self.edit_target_id
+            self._finish(lambda: self.on_edit(target, value, note))
+        else:
+            self._finish(lambda: self.on_answer(value, note))
 
     def _skip(self):
         self._finish(self.on_skip)
 
     def _finish(self, callback):
-        """Fire exactly one of on_answer/on_skip (guarded once), then tear down."""
+        """Fire exactly one of on_answer/on_edit/on_remove/on_skip (guarded once), then tear down."""
         if self.closed:
             return
         if os.environ.get("DFYB_CHECKIN_DEBUG"):
@@ -3454,21 +3676,42 @@ class BreakApp:
     def _show_check_in(self, question, after=None):
         if self.active_popup:                 # something else is showing — skip
             return
+        from dfyb.checkins.history import todays_check_ins
         screen = self._capture_active_screen()   # capture before the popup steals focus
         now = time.time()
+        entries = [r for r in todays_check_ins(self.event_log.read(), now)
+                   if r["question_id"] == question.id]
         state = self.check_in_state
         state.setdefault("last_prompted", {})[question.id] = now
         state["last_prompt_ts"] = now
         self._save_preferences()
         self.active_popup = CheckInPopup(
-            self.root, question,
-            on_answer=lambda value, note: self._on_check_in_done(question, value, note, after),
+            self.root, question, entries,
+            on_answer=lambda v, n: self._on_check_in_done(question, v, n, after),
+            on_edit=lambda tid, v, n: self._on_check_in_edited(tid, v, n, after),
+            on_remove=lambda tid: self._on_check_in_removed(tid, after),
             on_skip=lambda: self._on_check_in_skipped(after), screen=screen)
 
     def _on_check_in_done(self, question, value, note, after=None):
         try:
             self._record_event(CHECK_IN,
                                **check_in_event_payload(question, value, note, uuid.uuid4().hex))
+        finally:
+            self.active_popup = None      # always clear, even if logging fails
+        if after is not None:
+            after()
+
+    def _on_check_in_edited(self, target_id, value, note, after=None):
+        try:
+            self._record_check_in_edit(target_id, value, note)
+        finally:
+            self.active_popup = None      # always clear, even if logging fails
+        if after is not None:
+            after()
+
+    def _on_check_in_removed(self, target_id, after=None):
+        try:
+            self._record_check_in_remove(target_id)
         finally:
             self.active_popup = None      # always clear, even if logging fails
         if after is not None:
