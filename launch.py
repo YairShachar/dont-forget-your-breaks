@@ -387,12 +387,11 @@ CHECK_IN_NOW_LABEL = "Check in"                      # modest main-window button
 CHECK_IN_NOW_TOOLTIP = "Answer a check-in now"
 CHECK_IN_CHOOSER_TITLE = "Check in"                  # chooser window title
 CHECK_IN_CHOOSER_PROMPT = "What would you like to check in on?"
-CHECK_IN_ROW_BADGE = "☑"                             # box+tick, shown on answered rows
 CHECK_IN_ROW_CHEVRON = "›"                           # tappable affordance on every row
 CHECK_IN_ROW_TEXT_WRAP = 210                         # px; question text wrap in a compact row
 CHECK_IN_ROW_NOTE_MAX = 18                           # truncate a note shown as the row's value
-CHECK_IN_ONCE_CAPTION = "once a day"                 # cadence caption under a question
-CHECK_IN_MULTI_CAPTION = "a few times a day"
+CHECK_IN_ANSWER_WORD, CHECK_IN_ANSWERS_WORD = "answer", "answers"
+CHECK_IN_COUNT_FMT = "{n} {word}"                    # recurring row count, e.g. "3 answers"
 CHECK_IN_NONE_CONFIGURED_TEXT = "Nothing to check in on right now"   # calm empty-state note (also covers "all answered today")
 CHECK_IN_CHOOSER_CLOSE_LABEL = "Close"
 CHECK_IN_CHOOSER_BTN_WIDTH = 300                     # px; per-question chooser buttons
@@ -3606,10 +3605,10 @@ class BreakApp:
         self._refit_toplevel(chooser)
 
     def _add_check_in_row(self, chooser, body, question, entries):
-        """One compact settings-style row: the question on the left; on the right the latest
-        answer value + a ☑ when answered, then a chevron. The whole row is clickable to answer
-        or change (which refreshes the chooser in place). Multiple answers show only the
-        latest — the full day's history is a future Insights view. `entries` oldest→newest."""
+        """One compact settings-style row: the question on the left; on the right a chevron
+        and — when answered today — either the value (once-a-day) or an "N answers" count
+        (recurring). Value/count present = answered. Tapping opens the detail popup (answer /
+        change / edit) and refreshes the chooser in place. `entries` oldest→newest."""
         answered = bool(entries)
         row = ctk.CTkFrame(body, fg_color="transparent")
         row.pack(fill="x", pady=(0, SPACE_XXS))
@@ -3617,31 +3616,32 @@ class BreakApp:
         def _pick(_e=None):
             self._show_check_in(question, after=lambda: self._reopen_chooser(chooser, body))
 
-        # Right side, packed right-to-left: chevron, then ☑, then the latest answer value.
+        # Right side, packed right-to-left: chevron, then (value | count) when answered.
         ctk.CTkLabel(row, text=CHECK_IN_ROW_CHEVRON, font=make_font('body'),
                      text_color=COLORS['text_tertiary']).pack(side="right", padx=(SPACE_XS, SPACE_SM))
         if answered:
-            ctk.CTkLabel(row, text=CHECK_IN_ROW_BADGE, font=make_font('body'),
-                         text_color=COLORS['accent_success']).pack(side="right")
-            latest = entries[-1]
-            value = latest.get("value")
-            if value is None and latest.get("note"):
-                note = latest["note"]
-                value = (note[:CHECK_IN_ROW_NOTE_MAX] + "…"
-                         if len(note) > CHECK_IN_ROW_NOTE_MAX else note)
-            if value is not None:
-                ctk.CTkLabel(row, text=str(value), font=make_font('body'),
-                             text_color=COLORS['text_secondary']).pack(side="right", padx=(0, SPACE_XS))
-        # Left: question + a muted caption saying how often it's asked (once vs multiple).
-        left = ctk.CTkFrame(row, fg_color="transparent")
-        left.pack(side="left", padx=(SPACE_SM, SPACE_XS), pady=SPACE_XS, fill="x", expand=True)
-        ctk.CTkLabel(left, text=question.text, font=make_font('body'),
+            if question.once_per_day:              # once-a-day → the single value
+                latest = entries[-1]
+                value = latest.get("value")
+                if value is None and latest.get("note"):
+                    note = latest["note"]
+                    value = (note[:CHECK_IN_ROW_NOTE_MAX] + "…"
+                             if len(note) > CHECK_IN_ROW_NOTE_MAX else note)
+                text = str(value) if value is not None else ""
+                color = COLORS['text_secondary']
+            else:                                  # recurring → an "N answers" count, not a value
+                n = len(entries)
+                word = CHECK_IN_ANSWER_WORD if n == 1 else CHECK_IN_ANSWERS_WORD
+                text = CHECK_IN_COUNT_FMT.format(n=n, word=word)
+                color = COLORS['text_tertiary']
+            if text:
+                ctk.CTkLabel(row, text=text, font=make_font('body'),
+                             text_color=color).pack(side="right", padx=(0, SPACE_XS))
+
+        ctk.CTkLabel(row, text=question.text, font=make_font('body'),
                      text_color=COLORS['text_primary'], anchor="w", justify="left",
-                     wraplength=CHECK_IN_ROW_TEXT_WRAP).pack(anchor="w", fill="x")
-        ctk.CTkLabel(left, text=(CHECK_IN_ONCE_CAPTION if question.once_per_day
-                                 else CHECK_IN_MULTI_CAPTION),
-                     font=make_font('caption'), text_color=COLORS['text_tertiary'],
-                     anchor="w").pack(anchor="w")
+                     wraplength=CHECK_IN_ROW_TEXT_WRAP).pack(
+                         side="left", padx=(SPACE_SM, SPACE_XS), pady=SPACE_SM, fill="x", expand=True)
 
         # The whole row (and all its children) is one click target.
         def _bind_click(widget):
