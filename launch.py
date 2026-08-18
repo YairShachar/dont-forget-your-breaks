@@ -1131,6 +1131,7 @@ class CheckInPopup:
         self.save_button = None
         self.context_label = None
         self.edit_target_id = None   # non-None => Save logs an edit for this entry
+        self.today_rows = {}         # entry id -> its Today-list row frame (for edit highlight)
 
         # Window: pinned to the active Space (multi-monitor #21), topmost, fixed size.
         # No AppleScript activate/focus-restore here — that switched Spaces (#21).
@@ -1325,8 +1326,9 @@ class CheckInPopup:
 
     def _build_today_row(self, parent, entry):
         """A ``<time> · <value · note>`` row with ✎ (edit) and ✕ (remove-with-confirm)."""
-        row = ctk.CTkFrame(parent, fg_color="transparent")
-        row.pack(fill="x", padx=PADDING_PANEL_X, pady=SPACE_XXS)
+        row = ctk.CTkFrame(parent, fg_color="transparent", corner_radius=CORNER_RADIUS_BUTTON)
+        row.pack(fill="x", padx=SPACE_XS, pady=SPACE_XXS)
+        self.today_rows[entry["id"]] = row      # tracked so edit mode can highlight it
         remove_btn = ctk.CTkButton(
             row, text=CHECK_IN_REMOVE_ICON, width=CHECK_IN_ICON_BTN_WIDTH,
             height=BUTTON_HEIGHT_SMALL, corner_radius=CORNER_RADIUS_BUTTON,
@@ -1380,7 +1382,18 @@ class CheckInPopup:
                 self.note_entry.insert(0, str(entry["note"]))
         if self.context_label is not None:
             self.context_label.configure(text=CHECK_IN_EDITING_CONTEXT)
+        self._highlight_edit_row(entry["id"])
         self._refresh_save_state()
+
+    def _highlight_edit_row(self, target_id):
+        """Tint + outline the Today-list row being edited so it's obvious which one."""
+        for eid, row in self.today_rows.items():
+            if eid == target_id:
+                row.configure(fg_color=COLORS['surface_hover'],
+                              border_width=CHECK_IN_CARD_BORDER_WIDTH,
+                              border_color=COLORS['accent_primary'])
+            else:
+                row.configure(fg_color="transparent", border_width=0)
 
     # ---- actions (Skip / Save) ------------------------------------------
 
@@ -1466,6 +1479,10 @@ class CheckInPopup:
         note = self._read_note()
         if self.edit_target_id is not None:
             target = self.edit_target_id
+            self._finish(lambda: self.on_edit(target, value, note))
+        elif self.question.once_per_day and self.entries:
+            # once-a-day: replace today's single answer instead of appending a duplicate
+            target = self.entries[-1]["id"]
             self._finish(lambda: self.on_edit(target, value, note))
         else:
             self._finish(lambda: self.on_answer(value, note))
@@ -3681,6 +3698,8 @@ class BreakApp:
         now = time.time()
         entries = [r for r in todays_check_ins(self.event_log.read(), now)
                    if r["question_id"] == question.id]
+        if question.once_per_day and entries:
+            entries = [entries[-1]]      # once-a-day: one answer for the day (latest wins)
         state = self.check_in_state
         state.setdefault("last_prompted", {})[question.id] = now
         state["last_prompt_ts"] = now
