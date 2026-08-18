@@ -1516,12 +1516,10 @@ class CheckInPopup:
     # ---- edit mode (enter / exit / preview / highlight) -----------------
 
     def _on_row_click(self, entry):
-        """Click a Today row: toggle edit mode — enter it, or exit if it's already the
-        row being edited."""
-        if self.edit_target_id == entry["id"]:
-            self._exit_edit()
-        else:
-            self._enter_edit(entry)
+        """Click a Today row → edit that entry. Always ENTERS edit (never toggles): a click
+        on a CTk composite row can be delivered twice, and a toggle would cancel itself, so
+        re-entering the same entry is a harmless no-op. Leave edit via "＋ New answer" / Skip."""
+        self._enter_edit(entry)
 
     def _build_new_answer_affordance(self, parent):
         """Create (hidden) the "＋ New answer" link, shown only while editing a recurring
@@ -1598,14 +1596,13 @@ class CheckInPopup:
         self._set_row_text(self.edit_target_id, self._current_value(), self._read_note())
 
     def _highlight_edit_row(self, target_id):
-        """Tint + outline the Today row being edited (``target_id`` = None clears all)."""
+        """Mark the Today row being edited — a filled tint + accent-coloured value text
+        (no border, which read as stray blue lines). ``target_id`` None clears all."""
         for eid, w in self.today_widgets.items():
-            if eid == target_id:
-                w["row"].configure(fg_color=COLORS['surface_hover'],
-                                   border_width=CHECK_IN_CARD_BORDER_WIDTH,
-                                   border_color=COLORS['accent_primary'])
-            else:
-                w["row"].configure(fg_color="transparent", border_width=0)
+            editing = eid == target_id
+            w["row"].configure(fg_color=COLORS['surface_hover'] if editing else "transparent")
+            w["value"].configure(
+                text_color=COLORS['accent_primary'] if editing else COLORS['text_primary'])
 
     # ---- actions (Skip / Save) ------------------------------------------
 
