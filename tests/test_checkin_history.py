@@ -39,3 +39,27 @@ def test_dedupe_once_per_day_keeps_latest_only_for_flagged():
     refresh = [r for r in out if r["question_id"] == "refreshed"]
     assert len(sleeps) == 1 and sleeps[0]["value"] == "Great"   # latest sleep only
     assert len(refresh) == 2                                     # both refreshed kept
+
+
+def test_rows_expose_id_fallback_to_ts():
+    now = 1_000_000.0
+    rows = todays_check_ins([ev(now, question_id="a", value=1)], now)
+    assert rows[0]["id"] == str(now)          # legacy event: id falls back to str(ts)
+
+
+def test_fold_applies_edits_latest_wins():
+    now = 1_000_000.0
+    evs = [ev(now - 100, id="x", question_id="a", value=1),
+           ev(now - 50, edits="x", value=2),
+           ev(now - 10, edits="x", value=5)]     # latest edit wins
+    rows = todays_check_ins(evs, now)
+    assert len(rows) == 1 and rows[0]["value"] == 5 and rows[0]["ts"] == now - 100  # ts preserved
+
+
+def test_fold_applies_removes():
+    now = 1_000_000.0
+    evs = [ev(now - 100, id="x", question_id="a", value=1),
+           ev(now - 40, id="y", question_id="a", value=2),
+           ev(now - 10, removes="x")]
+    rows = todays_check_ins(evs, now)
+    assert [r["id"] for r in rows] == ["y"]      # x removed, y stays

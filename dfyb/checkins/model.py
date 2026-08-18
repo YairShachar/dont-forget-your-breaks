@@ -8,9 +8,10 @@ from dataclasses import dataclass
 
 # Answer types
 SCALE = "scale"       # numeric min..max (small ranges render as faces)
+NUMBER = "number"     # arbitrary numeric quantity (int/float) with optional unit/step
 CHOICES = "choices"   # a few fixed options
 NOTE = "note"         # free text only
-ANSWER_TYPES = (SCALE, CHOICES, NOTE)
+ANSWER_TYPES = (SCALE, NUMBER, CHOICES, NOTE)
 
 # Cadence types
 TIMES_PER_DAY = "times_per_day"
@@ -25,6 +26,7 @@ TRIGGERS = (TRIGGER_BREAK, TRIGGER_ON_DEMAND)
 
 SECONDS_PER_DAY = 86400
 DEFAULT_SCALE_MIN, DEFAULT_SCALE_MAX = 1, 5
+DEFAULT_NUMBER_MIN, DEFAULT_NUMBER_MAX = 0, 10000
 
 
 @dataclass
@@ -36,6 +38,8 @@ class AnswerSpec:
     max_label: str = ""
     options: tuple = ()
     allow_note: bool = True
+    unit: str = ""
+    step: float = 1
 
 
 @dataclass
@@ -63,15 +67,20 @@ def _parse_answer(raw):
         return None
     if t == CHOICES and not raw.get("options"):
         return None
+    if t == NUMBER:
+        lo = float(raw.get("min", DEFAULT_NUMBER_MIN))
+        hi = float(raw.get("max", DEFAULT_NUMBER_MAX))
+    else:
+        lo = int(raw.get("min", DEFAULT_SCALE_MIN))
+        hi = int(raw.get("max", DEFAULT_SCALE_MAX))
     return AnswerSpec(
-        type=t,
-        min=int(raw.get("min", DEFAULT_SCALE_MIN)),
-        max=int(raw.get("max", DEFAULT_SCALE_MAX)),
+        type=t, min=lo, max=hi,
         min_label=str(raw.get("min_label", "")),
         max_label=str(raw.get("max_label", "")),
         options=tuple(raw.get("options", ()) or ()),
         allow_note=bool(raw.get("allow_note", True)),
-    )
+        unit=str(raw.get("unit", "")),
+        step=float(raw.get("step", 1)))
 
 
 def _parse_cadence(raw):
@@ -116,7 +125,9 @@ def cadence_interval_seconds(cadence, active_window_seconds):
 
 def answer_is_valid(spec, value):
     if spec.type == SCALE:
-        return isinstance(value, int) and spec.min <= value <= spec.max
+        return isinstance(value, int) and not isinstance(value, bool) and spec.min <= value <= spec.max
+    if spec.type == NUMBER:
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and spec.min <= value <= spec.max
     if spec.type == CHOICES:
         return value in spec.options
     return value is None                    # NOTE: the text lives in the note field

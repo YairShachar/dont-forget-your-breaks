@@ -56,3 +56,15 @@ def test_parse_reads_once_per_day():
     assert a.once_per_day is False
     [b] = m.parse_questions([q(once_per_day=True)])
     assert b.once_per_day is True
+
+
+def test_parse_number_type_and_validate():
+    raw = {"id": "hrs", "text": "Hours slept?",
+           "answer": {"type": "number", "unit": "hours", "min": 0, "max": 24, "step": 0.5},
+           "cadence": {"type": "per_day", "count": 1}}
+    [qq] = m.parse_questions([raw])
+    assert qq.answer.type == m.NUMBER
+    assert qq.answer.unit == "hours" and qq.answer.step == 0.5
+    assert m.answer_is_valid(qq.answer, 7.5)
+    assert not m.answer_is_valid(qq.answer, 25)      # above max
+    assert not m.answer_is_valid(qq.answer, True)    # bool is not a number answer
