@@ -23,14 +23,20 @@ def center_on_screen(screen_rect, w, h):
     return (sx + (sw - w) // 2, sy + (sh - h) // 2)
 
 
-def main_window_geometry(w, h, mode, saved_position, screen):
+def main_window_geometry(w, h, mode, saved_position, screen, place=True):
     """Tk geometry string 'WxH[+x+y]' for the MAIN window at launch (#67).
 
     `mode` 'active' centers on `screen` (an (x, y, w, h) rect), overriding any saved
     position; when `screen` is None (non-macOS / detection failed) it falls back to
     the saved position, then to size-only. `mode` 'remembered' restores
     `saved_position` (e.g. '+100+200'), or size-only when there is none. Pure.
+
+    Placement is a LAUNCH-time decision: pass `place=False` on a later refit (a
+    snooze row or the update banner grew the window) to get size only, so Tk
+    resizes in place instead of yanking a window the user has since moved.
     """
+    if not place:
+        return f"{w}x{h}"
     if mode == "active" and screen is not None:
         x, y = center_on_screen(screen, w, h)
         return f"{w}x{h}+{int(x)}+{int(y)}"

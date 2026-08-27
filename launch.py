@@ -2208,7 +2208,10 @@ class BreakApp:
         # Per-section open/closed state for the settings window (persisted).
         self._sections_expanded = dict(self.saved_prefs.get("sections_expanded", {}))
 
-        # Restore saved window position (size is derived from content after UI build)
+        # Restore saved window position (size is derived from content after UI build).
+        # `_window_placed` flips once the window has been positioned, so later
+        # refits resize in place instead of re-placing it.
+        self._window_placed = False
         self._saved_position = None
         if "window_geometry" in self.saved_prefs:
             saved = self.saved_prefs["window_geometry"]
@@ -2587,6 +2590,11 @@ class BreakApp:
         w = self.root.winfo_reqwidth()
         h = self.root.winfo_reqheight()
         mode = self.main_window_placement.get()
+        if self._window_placed:
+            # A refit (snooze row, update banner) only RESIZES — re-placing here
+            # would yank a window you had moved back to where it started.
+            self.root.geometry(main_window_geometry(w, h, mode, None, None, place=False))
+            return
         # A position remembered on a monitor that is now gone (or smaller) would
         # strand the window off-screen, so clamp it onto a live display first.
         position = clamp_saved_position(w, h, self._saved_position, _display_rects())
@@ -2598,6 +2606,7 @@ class BreakApp:
             self.root.tk.call("wm", "geometry", self.root, geo)
         else:   # "remembered" (default): restore the saved position
             self.root.geometry(main_window_geometry(w, h, mode, position, None))
+        self._window_placed = True
 
     def _refit_window(self):
         """Re-grow/shrink the (otherwise size-locked) window to fit content when
