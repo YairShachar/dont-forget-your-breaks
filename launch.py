@@ -2237,6 +2237,7 @@ class BreakApp:
         )
         self.always_on_top.trace_add('write', self._apply_always_on_top)
         root.attributes('-topmost', self.always_on_top.get())
+        self._install_reopen_handler()
 
         self.defer_during_meetings = ctk.BooleanVar(
             value=self.saved_prefs.get("defer_during_meetings", True)
@@ -2596,6 +2597,23 @@ class BreakApp:
 
         # Start UI update loop
         self.update_ui()
+
+    def _install_reopen_handler(self):
+        """Bring the window back when the app is reopened from the Dock.
+
+        macOS delivers a Dock-icon click as the Tcl proc ``::tk::mac::ReopenApplication``,
+        which Tk leaves undefined — so clicking the icon while the window was
+        minimized did nothing at all. Windows/Linux restore from the taskbar
+        natively, so this is a macOS-only no-op elsewhere; a future platform
+        implementation would hook the equivalent restore event here.
+        """
+        if sys.platform != "darwin":
+            return
+        try:
+            self.root.createcommand("::tk::mac::ReopenApplication",
+                                    lambda: activate_window(self.root))
+        except Exception:
+            logging.debug("reopen handler: registration failed", exc_info=True)
 
     def _fit_window_to_content(self):
         """Size the window to fit its content, then lock the size."""
