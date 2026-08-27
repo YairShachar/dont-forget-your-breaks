@@ -394,6 +394,7 @@ CHECK_IN_ROW_NOTE_MAX = 18                           # truncate a note shown as 
 CHECK_IN_ANSWER_WORD, CHECK_IN_ANSWERS_WORD = "answer", "answers"
 CHECK_IN_COUNT_FMT = "{n} {word}"                    # recurring row count, e.g. "3 answers"
 CHECK_IN_NONE_CONFIGURED_TEXT = "Nothing to check in on right now"   # calm empty-state note (also covers "all answered today")
+CHECK_IN_ADD_QUESTION_LABEL = "＋ Add a question"   # chooser link: think of one, add it here
 CHECK_IN_CHOOSER_CLOSE_LABEL = "Close"
 CHECK_IN_CHOOSER_BTN_WIDTH = 300                     # px; per-question chooser buttons
 CHECK_IN_TIME_FMT = "%-I:%M %p"        # e.g. "10:35 AM"
@@ -507,6 +508,18 @@ def check_in_edit_payload(event_id, target_id, value, note):
 def check_in_remove_payload(event_id, target_id):
     """A CHECK_IN correction that removes the entry `target_id` from views."""
     return {"id": event_id, "removes": target_id}
+
+
+def new_check_in_question(question_id):
+    """A blank, valid question dict — the starting point for both Settings'
+    "+ Add question" and the chooser's add row. Scale-first, like the defaults."""
+    return {
+        "id": question_id, "text": CHECK_IN_NEW_QUESTION_TEXT, "enabled": True,
+        "answer": {"type": SCALE, "min": DEFAULT_SCALE_MIN, "max": DEFAULT_SCALE_MAX,
+                   "min_label": "", "max_label": "", "allow_note": True},
+        "cadence": {"type": TIMES_PER_DAY, "count": 1},
+        "trigger": TRIGGER_BREAK,
+    }
 
 
 def _ci_int(value, default):
@@ -3391,14 +3404,8 @@ class BreakApp:
 
     def _add_check_in_question(self):
         """Append a blank question (unique stable id) and open its edit form."""
-        question = {
-            "id": self._unique_check_in_id(CHECK_IN_NEW_QUESTION_TEXT),
-            "text": CHECK_IN_NEW_QUESTION_TEXT, "enabled": True,
-            "answer": {"type": SCALE, "min": DEFAULT_SCALE_MIN, "max": DEFAULT_SCALE_MAX,
-                       "min_label": "", "max_label": "", "allow_note": True},
-            "cadence": {"type": TIMES_PER_DAY, "count": 1},
-            "trigger": TRIGGER_BREAK,
-        }
+        question = new_check_in_question(
+            self._unique_check_in_id(CHECK_IN_NEW_QUESTION_TEXT))
         self.check_in_questions.append(question)
         self._refresh_check_in_section()
         self._edit_check_in_question(question)   # let the user name it right away
@@ -3419,9 +3426,14 @@ class BreakApp:
             n += 1
         return candidate
 
-    def _edit_check_in_question(self, question):
+    def _edit_check_in_question(self, question, parent=None, on_saved=None):
         """Modal form editing one question in place: text, answer type + type-specific
-        fields (scale range/labels, choices options, note), and cadence + count."""
+        fields (scale range/labels, choices options, note), and cadence + count.
+
+        Opened from Settings by default; `parent` (the window it belongs to) and
+        `on_saved` (what to do once Save lands) let the check-in chooser reuse it."""
+        owner = parent if parent is not None else getattr(self, '_settings_window', None)
+        after_save = on_saved or self._refresh_check_in_section
         answer = question.get("answer") or {}
         cadence = question.get("cadence") or {}
         type_by_label = {v: k for k, v in CHECK_IN_ANSWER_TYPE_LABELS.items()}
@@ -3434,7 +3446,8 @@ class BreakApp:
         modal.resizable(False, False)
         modal.configure(fg_color=COLORS['surface_card'])
         pin_to_active_space(modal)
-        modal.transient(self._settings_window)
+        if owner is not None:
+            modal.transient(owner)
         body = ctk.CTkFrame(modal, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=PADDING_PANEL_X, pady=PADDING_PANEL_Y)
 
@@ -3460,7 +3473,7 @@ class BreakApp:
         def _on_type_change(label):
             self._build_check_in_type_fields(type_fields, type_by_label[label],
                                              answer, widgets)
-            self._place_check_in_modal(modal)
+            self._center_toplevel(modal, owner)
 
         ctk.CTkOptionMenu(
             body, values=list(CHECK_IN_ANSWER_TYPE_LABELS.values()), variable=type_var,
@@ -3539,7 +3552,7 @@ class BreakApp:
             question["trigger"] = trigger_by_label[trigger_var.get()]
             question["once_per_day"] = CHECK_IN_REPEAT_LABELS[repeat_var.get()]
             _close()
-            self._refresh_check_in_section()
+            after_save()
 
         buttons = ctk.CTkFrame(body, fg_color="transparent")
         buttons.pack(fill="x", pady=(PADDING_PANEL_Y, 0))
@@ -3561,7 +3574,7 @@ class BreakApp:
         # app-modal grab orphans on macOS after close and locks the settings window
         # (the popup "appears then can't reopen"). See the chooser for the same fix.
         modal.attributes('-topmost', True)
-        self._place_check_in_modal(modal)
+        self._center_toplevel(modal, owner)
         modal.lift()
         modal.focus_force()
 
@@ -3641,10 +3654,6 @@ class BreakApp:
                         variable=allow_note, font=make_font('label')).pack(
                             anchor="w", pady=(SPACE_SM, 0))
         widgets['allow_note'] = allow_note
-
-    def _place_check_in_modal(self, modal):
-        """Center the edit modal over the settings window (re-run after it resizes)."""
-        self._center_toplevel(modal, getattr(self, '_settings_window', None))
 
     def _center_toplevel(self, top, over):
         """Center a toplevel over the `over` window — or the screen when it's gone."""
@@ -3951,6 +3960,7 @@ class BreakApp:
                 body, text=CHECK_IN_NONE_CONFIGURED_TEXT, font=make_font('body'),
                 text_color=COLORS['text_secondary'], anchor="w", justify="left",
                 wraplength=CHECK_IN_CHOOSER_BTN_WIDTH).pack(anchor="w", pady=(0, SPACE_SM))
+        self._add_check_in_add_row(chooser, body)
         ctk.CTkButton(
             body, text=CHECK_IN_CHOOSER_CLOSE_LABEL, command=chooser.destroy,
             height=BUTTON_HEIGHT_SMALL, corner_radius=CORNER_RADIUS_BUTTON,
@@ -4009,6 +4019,32 @@ class BreakApp:
             for child in widget.winfo_children():
                 _bind_click(child)
         _bind_click(row)
+
+    def _add_check_in_add_row(self, chooser, body):
+        """A quiet "＋ Add a question" link closing the chooser's list: thinking of a
+        question mid-check-in shouldn't mean a detour through Settings."""
+        link = ctk.CTkLabel(
+            body, text=CHECK_IN_ADD_QUESTION_LABEL, font=make_font('caption', weight="bold"),
+            text_color=COLORS['accent_primary'], anchor="w", cursor="pointinghand")
+        link.pack(anchor="w", padx=(SPACE_SM, 0), pady=(SPACE_XS, 0))
+        link.bind("<Button-1>", lambda e: self._add_check_in_from_chooser(chooser, body))
+
+    def _add_check_in_from_chooser(self, chooser, body):
+        """Open the Settings edit form for a brand-new question, owned by the chooser.
+        The question is only kept if Save lands (Cancel leaves no half-made row), and
+        the chooser then refreshes in place so it can be answered right away."""
+        question = new_check_in_question(
+            self._unique_check_in_id(CHECK_IN_NEW_QUESTION_TEXT))
+
+        def _keep():
+            # Re-slug from the name the user actually typed: the id is what groups a
+            # question's answers in the event log, and nothing has been logged yet.
+            question["id"] = self._unique_check_in_id(question["text"])
+            self.check_in_questions.append(question)
+            self._refresh_check_in_section()      # persists; no-ops if Settings is closed
+            self._reopen_chooser(chooser, body)
+
+        self._edit_check_in_question(question, parent=chooser, on_saved=_keep)
 
     def _reopen_chooser(self, chooser, body):
         """After answering from the chooser, refresh its cards and bring it back (the

@@ -81,3 +81,20 @@ def test_number_answer_round_trips_through_the_model():
     assert q.answer.unit == "hours" and q.answer.step == 0.5
     assert answer_is_valid(q.answer, 7.5)
     assert not answer_is_valid(q.answer, 25)
+
+
+# ---- a blank question (Settings' "+ Add question" and the chooser's add row) ----
+
+def test_new_question_is_a_valid_scale_question():
+    from dfyb.checkins.model import SCALE, TRIGGER_BREAK
+    q = parse_questions([launch.new_check_in_question("mood")])[0]
+    assert q.id == "mood"
+    assert q.text == launch.CHECK_IN_NEW_QUESTION_TEXT
+    assert q.answer.type == SCALE and q.answer.allow_note
+    assert q.enabled and q.trigger == TRIGGER_BREAK and q.once_per_day is False
+
+
+def test_new_question_ids_are_independent():
+    a, b = launch.new_check_in_question("a"), launch.new_check_in_question("b")
+    a["answer"]["min"] = 99                       # no shared mutable defaults
+    assert b["answer"]["min"] != 99
