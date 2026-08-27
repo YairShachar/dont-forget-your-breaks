@@ -362,11 +362,12 @@ CHECK_IN_WAKING_WINDOW_HOURS = 14                                  # assumed wak
 CHECK_IN_WAKING_WINDOW_SECONDS = CHECK_IN_WAKING_WINDOW_HOURS * SECONDS_PER_HOUR
 CHECK_IN_POPUP_W, CHECK_IN_POPUP_H = 340, 200
 CHECK_IN_SCALE_BTN_WIDTH = 44               # compact square-ish button per scale value
-CHECK_IN_SCALE_BTN_SPAN = CHECK_IN_SCALE_BTN_WIDTH + 2 * SPACE_XXS   # button + its padding
-# How many scale buttons fit on ONE row of the fixed-width popup. A wider range
-# (e.g. 0–10) wraps onto balanced extra rows rather than being clipped off the edge.
-CHECK_IN_SCALE_MAX_PER_ROW = ((CHECK_IN_POPUP_W - 2 * PADDING_PANEL_X)
-                              // CHECK_IN_SCALE_BTN_SPAN)
+CHECK_IN_SCALE_MIN_BTN_WIDTH = 22           # px; tightest still-legible scale cell
+CHECK_IN_SCALE_DENSE_GAP = 1                # px; near-joined cells once the row tightens
+CHECK_IN_SCALE_DENSE_PAD_X = SPACE_XS       # a dense strip reclaims the frame's side padding
+CHECK_IN_SCALE_DENSE_FONT = 'label'         # tighter type in a tightened cell
+CHECK_IN_SCALE_USABLE_W = CHECK_IN_POPUP_W - 2 * PADDING_PANEL_X          # normal row
+CHECK_IN_SCALE_DENSE_USABLE_W = CHECK_IN_POPUP_W - 2 * CHECK_IN_SCALE_DENSE_PAD_X
 CHECK_IN_NOTE_PLACEHOLDER = "Add a note (optional)"   # optional note entry (scale/choices/number)
 CHECK_IN_ANSWER_PLACEHOLDER = "Write a note…"         # note-type question's primary entry
 CHECK_IN_SAVE_LABEL = "Save"
@@ -543,6 +544,24 @@ def _ci_num(value, default):
     except (TypeError, ValueError):
         return default
     return int(parsed) if parsed.is_integer() else parsed
+
+
+def scale_button_size(count, usable_width, dense_usable_width):
+    """(width, gap, dense) for one row of `count` scale buttons.
+
+    A short scale (1–5) keeps the comfortable default cell inside `usable_width`.
+    A wider one (0–10) becomes a dense strip: it reclaims the frame's side padding
+    (hence the wider `dense_usable_width`), tightens the gap and shrinks the cells
+    so every value stays on ONE row — never a wrapped grid — down to a legible
+    minimum. `dense` says which layout was chosen — a count can need the tighter
+    padding while its cells still come out at the default width. Pure.
+    """
+    count = max(1, count)
+    if count * (CHECK_IN_SCALE_BTN_WIDTH + 2 * SPACE_XXS) <= usable_width:
+        return CHECK_IN_SCALE_BTN_WIDTH, SPACE_XXS, False
+    width = dense_usable_width // count - 2 * CHECK_IN_SCALE_DENSE_GAP
+    width = min(CHECK_IN_SCALE_BTN_WIDTH, max(CHECK_IN_SCALE_MIN_BTN_WIDTH, width))
+    return width, CHECK_IN_SCALE_DENSE_GAP, True
 
 
 def scale_button_rows(values, max_per_row):
@@ -1371,19 +1390,28 @@ class CheckInPopup:
     def _build_scale(self, parent, answer):
         """A button per integer in ``[min, max]``; ends labelled with min/max labels.
         Clicking SELECTS (highlights) — Save logs it."""
+        values = list(range(answer.min, answer.max + 1))
+        width, gap, dense = scale_button_size(len(values), CHECK_IN_SCALE_USABLE_W,
+                                              CHECK_IN_SCALE_DENSE_USABLE_W)
+        # A tightened cell gets a shorter body and smaller type, so the strip reads as
+        # a scale rather than a row of tall slivers — and so CTk's text-driven minimum
+        # width doesn't quietly push the row wider than the popup.
+        height = BUTTON_HEIGHT_SMALL if dense else BUTTON_HEIGHT_LARGE
+        value_font = make_font(CHECK_IN_SCALE_DENSE_FONT if dense else 'body', weight="bold")
+        usable = CHECK_IN_SCALE_DENSE_USABLE_W if dense else CHECK_IN_SCALE_USABLE_W
         frame = ctk.CTkFrame(parent, fg_color="transparent")
-        frame.pack(padx=PADDING_PANEL_X, pady=SPACE_XS)
-        for row_values in scale_button_rows(range(answer.min, answer.max + 1),
-                                            CHECK_IN_SCALE_MAX_PER_ROW):
+        frame.pack(padx=CHECK_IN_SCALE_DENSE_PAD_X if dense else PADDING_PANEL_X,
+                   pady=SPACE_XS)
+        per_row = max(1, usable // (width + 2 * gap))
+        for row_values in scale_button_rows(values, per_row):
             row = ctk.CTkFrame(frame, fg_color="transparent")
             row.pack(pady=(0, SPACE_XXS))
             for value in row_values:
                 btn = ctk.CTkButton(
-                    row, text=str(value), width=CHECK_IN_SCALE_BTN_WIDTH,
-                    height=BUTTON_HEIGHT_LARGE, corner_radius=CORNER_RADIUS_BUTTON,
-                    font=make_font('body', weight="bold"),
+                    row, text=str(value), width=width, height=height,
+                    corner_radius=CORNER_RADIUS_BUTTON, font=value_font,
                     command=lambda v=value: self._select(v))
-                btn.pack(side="left", padx=SPACE_XXS)
+                btn.pack(side="left", padx=gap)
                 self.value_buttons[value] = btn
                 self._style_select_button(btn, False)
         if answer.min_label or answer.max_label:

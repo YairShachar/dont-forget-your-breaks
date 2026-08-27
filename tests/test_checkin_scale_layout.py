@@ -1,44 +1,73 @@
-"""A wide scale (0–10) must wrap instead of running off the fixed-width popup.
+"""A wide scale (0–10) stays on ONE row, as a compact strip.
 
 Regression: the check-in popup is a fixed CHECK_IN_POPUP_W wide, but _build_scale
-packed every value in ONE row. A 0–10 question wanted 604px in a 340px window, so
-Tk squeezed buttons 6–10 down to 1px — the question rendered as "0–5".
+packed every value at full size in one row. A 0–10 question wanted 604px in a
+340px window, so Tk squeezed buttons 6–10 down to 1px — it rendered as "0–5".
+
+Wrapping onto rows fixed the clipping but read as a bingo card, so instead the
+buttons tighten to fit a single row; wrapping remains only as a last resort for
+a range too wide to fit even at the minimum legible size.
 """
 import json
 import pytest
 
 import launch
 
+USABLE = launch.CHECK_IN_SCALE_USABLE_W
+DENSE_USABLE = launch.CHECK_IN_SCALE_DENSE_USABLE_W
 
-# ---- pure: how the values are split into rows ------------------------------
+
+def _size(count):
+    return launch.scale_button_size(count, USABLE, DENSE_USABLE)
+
+
+def _fits(count, width, gap, dense):
+    return count * (width + 2 * gap) <= (DENSE_USABLE if dense else USABLE)
+
+
+# ---- pure: how big each button is ------------------------------------------
+
+def test_a_short_scale_keeps_the_comfortable_default_size():
+    assert _size(5) == (launch.CHECK_IN_SCALE_BTN_WIDTH, launch.SPACE_XXS, False)
+
+
+def test_a_wide_scale_tightens_so_it_still_fits_one_row():
+    width, gap, dense = _size(11)
+    assert dense and width < launch.CHECK_IN_SCALE_BTN_WIDTH
+    assert _fits(11, width, gap, dense)
+
+
+def test_buttons_never_shrink_below_the_legible_minimum():
+    width, _, _ = _size(60)                             # absurd range
+    assert width == launch.CHECK_IN_SCALE_MIN_BTN_WIDTH
+
+
+def test_every_reasonable_range_fits_one_row():
+    for count in range(1, 13):
+        width, gap, dense = _size(count)
+        assert _fits(count, width, gap, dense), f"{count} values overflow the popup"
+
+
+# ---- pure: wrapping, the last resort for an absurd range -------------------
 
 def test_a_short_scale_stays_on_one_row():
     assert launch.scale_button_rows(range(1, 6), 5) == [[1, 2, 3, 4, 5]]
 
 
-def test_a_wide_scale_wraps_into_balanced_rows():
-    # 11 values, at most 5 per row -> 3 rows, balanced 4/4/3 (not 5/5/1)
-    assert launch.scale_button_rows(range(0, 11), 5) == [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10]]
-
-
-def test_rows_never_exceed_the_maximum():
+def test_rows_are_balanced_and_lose_nothing():
+    rows = launch.scale_button_rows(range(0, 11), 5)
+    assert rows == [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10]]     # 4/4/3, not 5/5/1
     for n in range(1, 40):
         rows = launch.scale_button_rows(range(n), 5)
         assert all(len(r) <= 5 for r in rows)
-        assert [v for r in rows for v in r] == list(range(n))   # nothing lost or reordered
+        assert [v for r in rows for v in r] == list(range(n))
 
 
 def test_no_values_means_no_rows():
     assert launch.scale_button_rows([], 5) == []
 
 
-def test_the_row_limit_fits_the_popup_width():
-    span = launch.CHECK_IN_SCALE_BTN_WIDTH + 2 * launch.SPACE_XXS
-    usable = launch.CHECK_IN_POPUP_W - 2 * launch.PADDING_PANEL_X
-    assert launch.CHECK_IN_SCALE_MAX_PER_ROW * span <= usable
-
-
-# ---- the real popup: every value is actually visible ------------------------
+# ---- the real popup --------------------------------------------------------
 
 tk = pytest.importorskip("tkinter")
 
@@ -86,13 +115,14 @@ def test_a_wide_scale_fits_inside_the_popup(tmp_path):
         root.destroy()
 
 
-def test_every_value_button_is_rendered_at_full_size(tmp_path):
+def test_every_value_is_rendered_on_a_single_row(tmp_path):
     ctk, root, popup = _popup(tmp_path, WIDE_SCALE)
     try:
         buttons = _value_buttons(ctk, popup)
         assert len(buttons) == 11
+        assert len({b.winfo_rooty() for b in buttons}) == 1, "the strip wrapped"
         squeezed = [b.cget("text") for b in buttons
-                    if b.winfo_width() < launch.CHECK_IN_SCALE_BTN_WIDTH // 2]
+                    if b.winfo_width() < launch.CHECK_IN_SCALE_MIN_BTN_WIDTH]
         assert not squeezed, f"clipped off the popup: {squeezed}"
     finally:
         root.destroy()
