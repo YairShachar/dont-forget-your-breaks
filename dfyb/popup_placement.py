@@ -2,6 +2,10 @@
 
 No Tk, no macOS — every rect is (x, y, w, h) in global top-left points, so this
 is unit-tested off-macOS (mirrors dfyb.activity.sensors.covers_any_display)."""
+import re
+
+# A Tk '+x+y' position, allowing the '+-100' form Tk uses for negative coordinates.
+_POSITION_RE = re.compile(r"\+(-?\d+)\+(-?\d+)")
 
 
 def screen_for_point(point, screens):
@@ -39,3 +43,21 @@ def clamp_onscreen(x, y, w, h, screen_rect):
     """Nudge (x, y) so the `w`x`h` popup stays fully within `screen_rect`."""
     sx, sy, sw, sh = screen_rect
     return (max(sx, min(x, sx + sw - w)), max(sy, min(y, sy + sh - h)))
+
+
+def clamp_saved_position(w, h, position, screens):
+    """A remembered '+x+y' main-window position, clamped fully onto a live screen.
+
+    Keeps the window on whichever screen its top-left is on; when no screen holds
+    it any more (monitor unplugged, resolution changed) it lands on the first
+    screen — the primary, which `CGGetActiveDisplayList` returns first. Returns
+    `position` untouched when it is unparseable or `screens` is empty (off-macOS
+    or detection failed), so those paths behave exactly as before.
+    """
+    match = _POSITION_RE.fullmatch(position or "")
+    if not match or not screens:
+        return position
+    x, y = int(match.group(1)), int(match.group(2))
+    screen = screen_for_point((x, y), screens) or screens[0]
+    cx, cy = clamp_onscreen(x, y, w, h, screen)
+    return f"+{int(cx)}+{int(cy)}"

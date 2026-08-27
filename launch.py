@@ -47,7 +47,7 @@ from dfyb.activity.event_log import (
     RESUME_PROMPTED, RESUME_ACCEPTED, RESUME_DISMISSED, CHECK_IN)
 from dfyb.activity.sensors import read_context, frontmost_window_rect, smooth_signal
 from dfyb.popup_placement import (screen_for_point, center_on_screen, clamp_onscreen,
-                                  main_window_geometry)
+                                  main_window_geometry, clamp_saved_position)
 from dfyb.scheduler.adapter import states_from_configs
 from dfyb.scheduler.tick import (advance, apply_snooze_freeze,
                                  track_due_since, deferral_at_fire, IDLE_EPISODE)
@@ -1252,12 +1252,6 @@ class CheckInPopup:
             x = (self.window.winfo_screenwidth() - w) // 2
             y = (self.window.winfo_screenheight() - h) // 2
         self.window.tk.call("wm", "geometry", self.window, f"{w}x{h}+{int(x)}+{int(y)}")
-        if os.environ.get("DFYB_CHECKIN_DEBUG"):
-            logging.debug("checkin popup q=%s w=%s h=%s x=%s y=%s reqh=%s "
-                          "root=(x%s y%s w%s h%s) screen=(%s x %s)",
-                          question.id, w, h, int(x), int(y), self.window.winfo_reqheight(),
-                          root.winfo_x(), root.winfo_y(), root.winfo_width(), root.winfo_height(),
-                          self.window.winfo_screenwidth(), self.window.winfo_screenheight())
 
         self.window.lift()
 
@@ -1806,8 +1800,6 @@ class CheckInPopup:
         """Fire exactly one of on_answer/on_edit/on_remove/on_skip (guarded once), then tear down."""
         if self.closed:
             return
-        if os.environ.get("DFYB_CHECKIN_DEBUG"):
-            logging.debug("checkin _finish (already closed=%s)", self.closed)
         self.closed = True
         try:
             callback()
@@ -2595,14 +2587,17 @@ class BreakApp:
         w = self.root.winfo_reqwidth()
         h = self.root.winfo_reqheight()
         mode = self.main_window_placement.get()
+        # A position remembered on a monitor that is now gone (or smaller) would
+        # strand the window off-screen, so clamp it onto a live display first.
+        position = clamp_saved_position(w, h, self._saved_position, _display_rects())
         if mode == "active":
             # Center on the screen you're using (#67). Raw Tk `wm geometry` — CTk's
             # .geometry() mislocates cross-monitor +x+y (same reason as the popup).
-            geo = main_window_geometry(w, h, mode, self._saved_position,
+            geo = main_window_geometry(w, h, mode, position,
                                        self._capture_active_screen())
             self.root.tk.call("wm", "geometry", self.root, geo)
-        else:   # "remembered" (default): restore the saved position, unchanged
-            self.root.geometry(main_window_geometry(w, h, mode, self._saved_position, None))
+        else:   # "remembered" (default): restore the saved position
+            self.root.geometry(main_window_geometry(w, h, mode, position, None))
 
     def _refit_window(self):
         """Re-grow/shrink the (otherwise size-locked) window to fit content when
