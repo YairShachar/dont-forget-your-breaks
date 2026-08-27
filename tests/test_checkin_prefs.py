@@ -30,3 +30,20 @@ def test_default_triggers():
     qs = {q.id: q for q in parse_questions(launch.DEFAULT_CHECK_INS["questions"])}
     assert qs["refreshed"].trigger == TRIGGER_BREAK
     assert qs["sleep"].trigger == TRIGGER_ON_DEMAND
+
+
+def test_defaults_are_scale_first(): # spec v2 §6: gentle, tap-only, analyzable
+    from dfyb.checkins.model import parse_questions, SCALE
+    qs = {q.id: q for q in parse_questions(launch.DEFAULT_CHECK_INS["questions"])}
+    for q in qs.values():
+        assert q.answer.type == SCALE
+        assert (q.answer.min, q.answer.max) == (1, 5)
+        assert q.answer.min_label and q.answer.max_label   # both ends named
+        assert q.answer.allow_note
+
+
+def test_sleep_default_is_once_a_day():
+    from dfyb.checkins.model import parse_questions
+    qs = {q.id: q for q in parse_questions(launch.DEFAULT_CHECK_INS["questions"])}
+    assert qs["sleep"].once_per_day is True
+    assert qs["refreshed"].once_per_day is False

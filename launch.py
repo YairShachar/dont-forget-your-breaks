@@ -61,7 +61,7 @@ from dfyb.timer_lifecycle import timer_should_continue
 from dfyb.macos_window import pin_to_active_space
 from dfyb.checkins.model import (
     SCALE, NUMBER, CHOICES, NOTE, TIMES_PER_DAY, PER_DAY, PER_WEEK,
-    DEFAULT_SCALE_MIN, DEFAULT_SCALE_MAX,
+    DEFAULT_SCALE_MIN, DEFAULT_SCALE_MAX, DEFAULT_NUMBER_MIN, DEFAULT_NUMBER_MAX,
     TRIGGER_BREAK, TRIGGER_ON_DEMAND, answer_is_valid,
 )
 from dfyb.checkins.history import format_check_in_value
@@ -418,8 +418,11 @@ CHECK_IN_ACTION_BTN_WIDTH = 62                    # Edit / Delete buttons
 CHECK_IN_SUMMARY_INDENT = 28                      # align the summary caption under the text
 # One-line answer + cadence summary (e.g. "Scale 1–5 · 2×/day")
 CHECK_IN_SUMMARY_SEP = " · "                 # " · " between the answer + cadence parts
-CHECK_IN_ANSWER_TYPE_LABELS = {SCALE: "Scale", CHOICES: "Choices", NOTE: "Note"}
+CHECK_IN_ANSWER_TYPE_LABELS = {SCALE: "Scale", NUMBER: "Number",
+                               CHOICES: "Choices", NOTE: "Note"}
 CHECK_IN_SCALE_RANGE_FMT = "{label} {min}–{max}"   # e.g. "Scale 1–5"
+CHECK_IN_NUMBER_UNIT_FMT = "{label} ({unit})"      # e.g. "Number (hours)"; bare label when no unit
+CHECK_IN_DEFAULT_NUMBER_STEP = 1                   # stepper granularity when unset/invalid
 CHECK_IN_CHOICES_FMT = "{label}: {opts}"
 CHECK_IN_CHOICES_JOIN = "/"
 CHECK_IN_CADENCE_DAILY_LABEL = "daily"
@@ -440,6 +443,9 @@ CHECK_IN_EDIT_MAX_LABEL = "Max"
 CHECK_IN_EDIT_LOW_LABEL = "Low label"
 CHECK_IN_EDIT_HIGH_LABEL = "High label"
 CHECK_IN_EDIT_OPTIONS_LABEL = "Options (one per line or comma-separated)"
+CHECK_IN_EDIT_UNIT_LABEL = "Unit"
+CHECK_IN_EDIT_STEP_LABEL = "Step"
+CHECK_IN_EDIT_UNIT_PLACEHOLDER = "e.g. hours"      # optional — shown beside the entry
 CHECK_IN_EDIT_NOTE_HINT = "A free-text note is the answer — nothing else to set."
 CHECK_IN_EDIT_ALLOW_NOTE_LABEL = "Allow an optional note"
 CHECK_IN_EDIT_CADENCE_LABEL = "How often"
@@ -456,17 +462,21 @@ CHECK_IN_REPEAT_LABELS = {"A few times a day": False, "Once a day": True}
 CHECK_IN_EDIT_TEXT_WIDTH = 340                    # question / options field width
 CHECK_IN_EDIT_INT_WIDTH = 64                      # min / max / count entries
 CHECK_IN_EDIT_LABEL_WIDTH = 150                   # scale end-label entries
+CHECK_IN_EDIT_UNIT_WIDTH = 110                    # number unit entry
 CHECK_IN_EDIT_OPTIONS_HEIGHT = 96                 # options textbox height
 
 DEFAULT_CHECK_INS = {
     "enabled": True,
     "questions": [
+        # Scale-first (spec v2 §6): plain-language ends AND a number to trend on,
+        # both answered in one tap so the defaults never feel like a survey.
         {"id": "refreshed", "text": "How refreshed do you feel?", "enabled": True,
          "answer": {"type": "scale", "min": 1, "max": 5,
-                    "min_label": "groggy", "max_label": "refreshed", "allow_note": True},
+                    "min_label": "Low", "max_label": "Great", "allow_note": True},
          "cadence": {"type": "times_per_day", "count": 2}, "trigger": "break"},
         {"id": "sleep", "text": "How did you sleep?", "enabled": True,
-         "answer": {"type": "choices", "options": ["Great", "OK", "Rough"], "allow_note": True},
+         "answer": {"type": "scale", "min": 1, "max": 5,
+                    "min_label": "Awful", "max_label": "Great", "allow_note": True},
          "cadence": {"type": "per_day", "count": 1}, "trigger": "on_demand",
          "once_per_day": True},
     ],
@@ -507,6 +517,30 @@ def _ci_int(value, default):
         return default
 
 
+def _ci_num(value, default):
+    """Parse a number, int when whole (7 not 7.0) so the stored value stays clean.
+    Falls back to `default` for blank/garbage entry text."""
+    try:
+        parsed = float(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+    return int(parsed) if parsed.is_integer() else parsed
+
+
+def check_in_number_answer(unit, min_text, max_text, step_text, allow_note):
+    """The stored `answer` dict for a Number question, built from the edit modal's
+    raw field text: a reversed range is swapped and a non-positive step is healed."""
+    low = _ci_num(min_text, DEFAULT_NUMBER_MIN)
+    high = _ci_num(max_text, DEFAULT_NUMBER_MAX)
+    if high < low:
+        low, high = high, low
+    step = _ci_num(step_text, CHECK_IN_DEFAULT_NUMBER_STEP)
+    if step <= 0:
+        step = CHECK_IN_DEFAULT_NUMBER_STEP
+    return {"type": NUMBER, "unit": str(unit).strip(), "min": low, "max": high,
+            "step": step, "allow_note": bool(allow_note)}
+
+
 def _check_in_cadence_summary(cad_type, count):
     """Human phrase for a cadence: 'daily', 'weekly', '2×/day', '3×/week'."""
     if cad_type == PER_WEEK:
@@ -533,6 +567,10 @@ def check_in_summary(question):
         answer_part = CHECK_IN_SCALE_RANGE_FMT.format(
             label=label, min=answer.get("min", DEFAULT_SCALE_MIN),
             max=answer.get("max", DEFAULT_SCALE_MAX))
+    elif atype == NUMBER:
+        unit = str(answer.get("unit", "")).strip()
+        answer_part = (CHECK_IN_NUMBER_UNIT_FMT.format(label=label, unit=unit)
+                       if unit else label)
     elif atype == CHOICES:
         opts = CHECK_IN_CHOICES_JOIN.join(str(o) for o in (answer.get("options") or ()))
         answer_part = CHECK_IN_CHOICES_FMT.format(label=label, opts=opts)
@@ -1710,15 +1748,9 @@ class CheckInPopup:
         or outside the answer's min..max."""
         if self.number_entry is None:
             return None
-        raw = self.number_entry.get().strip()
-        if not raw:
+        value = _ci_num(self.number_entry.get(), None)
+        if value is None:
             return None
-        try:
-            value = float(raw)
-        except (TypeError, ValueError):
-            return None
-        if value.is_integer():
-            value = int(value)
         return value if answer_is_valid(self.question.answer, value) else None
 
     def _current_value(self):
@@ -3485,6 +3517,10 @@ class BreakApp:
                     min_label=widgets['min_label'].get().strip(),
                     max_label=widgets['max_label'].get().strip(),
                     allow_note=bool(widgets['allow_note'].get()))
+            elif atype == NUMBER:
+                new_answer.update(check_in_number_answer(
+                    widgets['unit'].get(), widgets['min'].get(), widgets['max'].get(),
+                    widgets['step'].get(), widgets['allow_note'].get()))
             elif atype == CHOICES:
                 options = _parse_options_text(widgets['options'].get("1.0", "end"))
                 new_answer.update(
@@ -3559,6 +3595,25 @@ class BreakApp:
             widgets['max_label'] = _labeled_entry(
                 labels_row, CHECK_IN_EDIT_HIGH_LABEL,
                 src.get("max_label", ""), CHECK_IN_EDIT_LABEL_WIDTH)
+            self._build_check_in_allow_note(container, src, widgets)
+        elif atype == NUMBER:
+            unit_row = ctk.CTkFrame(container, fg_color="transparent")
+            unit_row.pack(fill="x", pady=(SPACE_XS, 0))
+            widgets['unit'] = _labeled_entry(
+                unit_row, CHECK_IN_EDIT_UNIT_LABEL,
+                src.get("unit", ""), CHECK_IN_EDIT_UNIT_WIDTH)
+            widgets['unit'].configure(placeholder_text=CHECK_IN_EDIT_UNIT_PLACEHOLDER)
+            range_row = ctk.CTkFrame(container, fg_color="transparent")
+            range_row.pack(fill="x", pady=(SPACE_XS, 0))
+            widgets['min'] = _labeled_entry(
+                range_row, CHECK_IN_EDIT_MIN_LABEL,
+                src.get("min", DEFAULT_NUMBER_MIN), CHECK_IN_EDIT_INT_WIDTH)
+            widgets['max'] = _labeled_entry(
+                range_row, CHECK_IN_EDIT_MAX_LABEL,
+                src.get("max", DEFAULT_NUMBER_MAX), CHECK_IN_EDIT_INT_WIDTH)
+            widgets['step'] = _labeled_entry(
+                range_row, CHECK_IN_EDIT_STEP_LABEL,
+                src.get("step", CHECK_IN_DEFAULT_NUMBER_STEP), CHECK_IN_EDIT_INT_WIDTH)
             self._build_check_in_allow_note(container, src, widgets)
         elif atype == CHOICES:
             ctk.CTkLabel(container, text=CHECK_IN_EDIT_OPTIONS_LABEL,
