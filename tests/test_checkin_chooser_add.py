@@ -121,3 +121,37 @@ def test_the_add_row_is_there_when_there_is_nothing_to_check_in_on(tmp_path):
         assert _find(chooser, launch.CHECK_IN_ADD_QUESTION_LABEL) is not None
     finally:
         root.destroy()
+
+
+def test_the_edit_modal_is_not_stacked_under_the_chooser(tmp_path):
+    """macOS: pin_to_active_space raises windows to NSStatusWindowLevel from <Map>,
+    so a '-topmost' applied AFTER mapping drops the modal below the chooser.
+
+    NSApplication.windows() is process-global and keeps torn-down windows around,
+    so both windows get a title unique to this test — otherwise the lookup can
+    match a leftover window from an earlier test and the check means nothing.
+    """
+    AppKit = pytest.importorskip("AppKit")
+    ctk, launch, app, root = _app(tmp_path)
+    chooser_title, modal_title = "Chooser stack probe", "Modal stack probe"
+    original = (launch.CHECK_IN_CHOOSER_TITLE, launch.CHECK_IN_EDIT_TITLE)
+    launch.CHECK_IN_CHOOSER_TITLE, launch.CHECK_IN_EDIT_TITLE = chooser_title, modal_title
+    try:
+        def level_of(title):
+            return next((int(w.level()) for w in AppKit.NSApplication.sharedApplication()
+                         .windows() if w.title() == title), None)
+
+        app._open_check_in_chooser()
+        root.update_idletasks(); root.update()
+        chooser = [c for c in root.winfo_children() if isinstance(c, ctk.CTkToplevel)][-1]
+        _find(chooser, launch.CHECK_IN_ADD_QUESTION_LABEL)._label.event_generate(
+            "<Button-1>", when="now")
+        root.update_idletasks(); root.update()      # measure while the modal is OPEN
+
+        chooser_level, modal_level = level_of(chooser_title), level_of(modal_title)
+        if chooser_level is None or modal_level is None:
+            pytest.skip("NSWindow lookup unavailable")
+        assert modal_level >= chooser_level
+    finally:
+        launch.CHECK_IN_CHOOSER_TITLE, launch.CHECK_IN_EDIT_TITLE = original
+        root.destroy()

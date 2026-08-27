@@ -540,6 +540,24 @@ def _ci_num(value, default):
     return int(parsed) if parsed.is_integer() else parsed
 
 
+def check_in_scale_answer(min_text, max_text, min_label, max_label, allow_note):
+    """The stored `answer` dict for a Scale question, built from raw field text."""
+    low = _ci_int(min_text, DEFAULT_SCALE_MIN)
+    high = _ci_int(max_text, DEFAULT_SCALE_MAX)
+    if high < low:
+        low, high = high, low
+    return {"type": SCALE, "min": low, "max": high,
+            "min_label": str(min_label).strip(), "max_label": str(max_label).strip(),
+            "allow_note": bool(allow_note)}
+
+
+def check_in_choices_answer(options_text, allow_note):
+    """The stored `answer` dict for a Choices question, built from the options box."""
+    options = _parse_options_text(options_text)
+    return {"type": CHOICES, "options": options or list(CHECK_IN_DEFAULT_CHOICES),
+            "allow_note": bool(allow_note)}
+
+
 def check_in_number_answer(unit, min_text, max_text, step_text, allow_note):
     """The stored `answer` dict for a Number question, built from the edit modal's
     raw field text: a reversed range is swapped and a non-positive step is healed."""
@@ -3463,6 +3481,11 @@ class BreakApp:
         modal.title(CHECK_IN_EDIT_TITLE)
         modal.resizable(False, False)
         modal.configure(fg_color=COLORS['surface_card'])
+        # Topmost BEFORE the first map: pin_to_active_space raises the window to
+        # NSStatusWindowLevel from its <Map> handler, and Tk's '-topmost' applied
+        # afterwards would drop it back below the window that opened it (the
+        # chooser sits at that status level too). Same order as CountdownPopup.
+        modal.attributes('-topmost', True)
         pin_to_active_space(modal)
         if owner is not None:
             modal.transient(owner)
@@ -3487,10 +3510,16 @@ class BreakApp:
             answer.get("type"), CHECK_IN_ANSWER_TYPE_LABELS[SCALE]))
         type_fields = ctk.CTkFrame(body, fg_color="transparent")
         widgets = {}
+        # What each answer type last looked like ON SCREEN, so flipping the type
+        # menu never throws away a range/labels/options you had already typed.
+        drafts = {answer["type"]: dict(answer)} if answer.get("type") else {}
+        shown = [type_by_label[type_var.get()]]
 
         def _on_type_change(label):
-            self._build_check_in_type_fields(type_fields, type_by_label[label],
-                                             answer, widgets)
+            drafts[shown[0]] = self._check_in_answer_from_fields(shown[0], widgets)
+            shown[0] = type_by_label[label]
+            self._build_check_in_type_fields(type_fields, shown[0],
+                                             drafts.get(shown[0], {}), widgets)
             self._center_toplevel(modal, owner)
 
         ctk.CTkOptionMenu(
@@ -3540,29 +3569,8 @@ class BreakApp:
             modal.destroy()
 
         def _save():
-            atype = type_by_label[type_var.get()]
-            new_answer = {"type": atype}
-            if atype == SCALE:
-                low = _ci_int(widgets['min'].get(), DEFAULT_SCALE_MIN)
-                high = _ci_int(widgets['max'].get(), DEFAULT_SCALE_MAX)
-                if high < low:
-                    low, high = high, low
-                new_answer.update(
-                    min=low, max=high,
-                    min_label=widgets['min_label'].get().strip(),
-                    max_label=widgets['max_label'].get().strip(),
-                    allow_note=bool(widgets['allow_note'].get()))
-            elif atype == NUMBER:
-                new_answer.update(check_in_number_answer(
-                    widgets['unit'].get(), widgets['min'].get(), widgets['max'].get(),
-                    widgets['step'].get(), widgets['allow_note'].get()))
-            elif atype == CHOICES:
-                options = _parse_options_text(widgets['options'].get("1.0", "end"))
-                new_answer.update(
-                    options=options or list(CHECK_IN_DEFAULT_CHOICES),
-                    allow_note=bool(widgets['allow_note'].get()))
-            else:                                    # NOTE: the free text IS the answer
-                new_answer.update(allow_note=True)
+            new_answer = self._check_in_answer_from_fields(
+                type_by_label[type_var.get()], widgets)
             question["text"] = text_entry.get().strip() or CHECK_IN_NEW_QUESTION_TEXT
             question["answer"] = new_answer
             question["cadence"] = {"type": cadence_by_label[cadence_var.get()],
@@ -3588,13 +3596,29 @@ class BreakApp:
             font=make_font('label')).pack(side="right")
 
         modal.protocol("WM_DELETE_WINDOW", _close)
-        # Topmost so it doesn't hide behind the settings window; NO grab_set — an
-        # app-modal grab orphans on macOS after close and locks the settings window
-        # (the popup "appears then can't reopen"). See the chooser for the same fix.
-        modal.attributes('-topmost', True)
+        # NO grab_set — an app-modal grab orphans on macOS after close and locks the
+        # settings window (the modal "appears then can't reopen"). See the chooser
+        # for the same fix. (Topmost is set above, before the first map.)
         self._center_toplevel(modal, owner)
         modal.lift()
         modal.focus_force()
+
+    def _check_in_answer_from_fields(self, atype, widgets):
+        """The stored `answer` dict for `atype`, read from the modal's LIVE fields —
+        used both to save and to remember a type before the menu switches away."""
+        if atype == SCALE:
+            return check_in_scale_answer(
+                widgets['min'].get(), widgets['max'].get(),
+                widgets['min_label'].get(), widgets['max_label'].get(),
+                widgets['allow_note'].get())
+        if atype == NUMBER:
+            return check_in_number_answer(
+                widgets['unit'].get(), widgets['min'].get(), widgets['max'].get(),
+                widgets['step'].get(), widgets['allow_note'].get())
+        if atype == CHOICES:
+            return check_in_choices_answer(
+                widgets['options'].get("1.0", "end"), widgets['allow_note'].get())
+        return {"type": NOTE, "allow_note": True}    # the free text IS the answer
 
     def _build_check_in_type_fields(self, container, atype, answer, widgets):
         """(Re)build the answer-type-specific fields inside the edit modal. Prefills
