@@ -362,6 +362,11 @@ CHECK_IN_WAKING_WINDOW_HOURS = 14                                  # assumed wak
 CHECK_IN_WAKING_WINDOW_SECONDS = CHECK_IN_WAKING_WINDOW_HOURS * SECONDS_PER_HOUR
 CHECK_IN_POPUP_W, CHECK_IN_POPUP_H = 340, 200
 CHECK_IN_SCALE_BTN_WIDTH = 44               # compact square-ish button per scale value
+CHECK_IN_SCALE_BTN_SPAN = CHECK_IN_SCALE_BTN_WIDTH + 2 * SPACE_XXS   # button + its padding
+# How many scale buttons fit on ONE row of the fixed-width popup. A wider range
+# (e.g. 0–10) wraps onto balanced extra rows rather than being clipped off the edge.
+CHECK_IN_SCALE_MAX_PER_ROW = ((CHECK_IN_POPUP_W - 2 * PADDING_PANEL_X)
+                              // CHECK_IN_SCALE_BTN_SPAN)
 CHECK_IN_NOTE_PLACEHOLDER = "Add a note (optional)"   # optional note entry (scale/choices/number)
 CHECK_IN_ANSWER_PLACEHOLDER = "Write a note…"         # note-type question's primary entry
 CHECK_IN_SAVE_LABEL = "Save"
@@ -538,6 +543,20 @@ def _ci_num(value, default):
     except (TypeError, ValueError):
         return default
     return int(parsed) if parsed.is_integer() else parsed
+
+
+def scale_button_rows(values, max_per_row):
+    """Split scale values into BALANCED rows of at most `max_per_row` buttons.
+
+    Balanced so 0–10 reads 4/4/3 rather than 5/5/1 — the popup is a fixed width,
+    so a wide range has to wrap instead of running off the edge. Pure.
+    """
+    values = list(values)
+    if not values:
+        return []
+    rows = -(-len(values) // max(1, max_per_row))       # ceil division
+    per_row = -(-len(values) // rows)
+    return [values[i:i + per_row] for i in range(0, len(values), per_row)]
 
 
 def check_in_scale_answer(min_text, max_text, min_label, max_label, allow_note):
@@ -1354,17 +1373,19 @@ class CheckInPopup:
         Clicking SELECTS (highlights) — Save logs it."""
         frame = ctk.CTkFrame(parent, fg_color="transparent")
         frame.pack(padx=PADDING_PANEL_X, pady=SPACE_XS)
-        row = ctk.CTkFrame(frame, fg_color="transparent")
-        row.pack()
-        for value in range(answer.min, answer.max + 1):
-            btn = ctk.CTkButton(
-                row, text=str(value), width=CHECK_IN_SCALE_BTN_WIDTH,
-                height=BUTTON_HEIGHT_LARGE, corner_radius=CORNER_RADIUS_BUTTON,
-                font=make_font('body', weight="bold"),
-                command=lambda v=value: self._select(v))
-            btn.pack(side="left", padx=SPACE_XXS)
-            self.value_buttons[value] = btn
-            self._style_select_button(btn, False)
+        for row_values in scale_button_rows(range(answer.min, answer.max + 1),
+                                            CHECK_IN_SCALE_MAX_PER_ROW):
+            row = ctk.CTkFrame(frame, fg_color="transparent")
+            row.pack(pady=(0, SPACE_XXS))
+            for value in row_values:
+                btn = ctk.CTkButton(
+                    row, text=str(value), width=CHECK_IN_SCALE_BTN_WIDTH,
+                    height=BUTTON_HEIGHT_LARGE, corner_radius=CORNER_RADIUS_BUTTON,
+                    font=make_font('body', weight="bold"),
+                    command=lambda v=value: self._select(v))
+                btn.pack(side="left", padx=SPACE_XXS)
+                self.value_buttons[value] = btn
+                self._style_select_button(btn, False)
         if answer.min_label or answer.max_label:
             labels = ctk.CTkFrame(frame, fg_color="transparent")
             labels.pack(fill="x", pady=(SPACE_XXS, 0))
