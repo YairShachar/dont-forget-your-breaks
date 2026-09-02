@@ -5,6 +5,13 @@ from dataclasses import dataclass
 NATURAL_BREAK_IDLE_THRESHOLD_SECONDS = 300  # idle >= this => natural break (reset all timers)
 AWAY_IDLE_THRESHOLD_SECONDS = 60            # idle >= this at fire time => defer (briefly away)
 MIN_LADDER_GAP_SECONDS = 5                  # strict-ordering floor between pause < away < natural
+# How many attribution-less ticks the NAMED app may be carried across (see
+# `resolve_held_app`). Must equal `sensors.DEFER_GRACE_TICKS`, the signal
+# hysteresis it exists to bridge — carrying a name for longer than the signal
+# itself sticks would leave a stale app on screen. Defined here rather than
+# imported because sensors imports engine, not the reverse; a test asserts the
+# two stay equal.
+HELD_APP_CARRY_TICKS = 3
 
 FIRE = "fire"
 DEFER = "defer"
@@ -73,6 +80,22 @@ def decide(ctx, away_threshold=AWAY_IDLE_THRESHOLD_SECONDS, pause_threshold=0):
     return FIRE
 
 
+def signal_reason_and_app(is_fullscreen, is_meeting, fullscreen_app, meeting_app):
+    """(reason, app_ref) for an ACTIVE interrupt signal, in `decide()`'s priority
+    order — or (None, None) when neither signal is on.
+
+    The ONE place that order lives for the two app-bearing reasons, so the
+    deferral reason, the anticipated-chip reason and the app each names can
+    never be derived from different rules. `app_ref` is None when attribution
+    was unavailable this tick.
+    """
+    if is_fullscreen:
+        return "fullscreen", fullscreen_app
+    if is_meeting:
+        return "meeting", meeting_app
+    return None, None
+
+
 def defer_reason_and_app(ctx, away_threshold=AWAY_IDLE_THRESHOLD_SECONDS,
                          pause_threshold=0):
     """(reason, app_ref) for a deferral, in the SAME priority order as `decide()`.
@@ -81,33 +104,42 @@ def defer_reason_and_app(ctx, away_threshold=AWAY_IDLE_THRESHOLD_SECONDS,
     because of fullscreen, this must not report 'meeting'. `app_ref` is None for
     reasons that have no app (away / active) and when attribution was unavailable.
     """
-    if ctx.is_fullscreen:
-        return "fullscreen", ctx.fullscreen_app
-    if ctx.is_meeting:
-        return "meeting", ctx.meeting_app
+    reason, app = signal_reason_and_app(ctx.is_fullscreen, ctx.is_meeting,
+                                        ctx.fullscreen_app, ctx.meeting_app)
+    if reason is not None:
+        return reason, app
     if ctx.idle_seconds >= away_threshold:
         return "away", None
     return "active", None
 
 
-def resolve_held_app(is_fullscreen, is_meeting, fullscreen_app, meeting_app, previous=None):
-    """Which app to NAME for a deferral, in decide()'s priority order.
+def resolve_held_app(reason, app, previous=None, previous_reason=None,
+                     carry_left=0, carry_ticks=HELD_APP_CARRY_TICKS):
+    """Which app to NAME for `reason`, with a BOUNDED carry across blips.
 
-    Kept beside `defer_reason_and_app` for the same reason: if the priority
-    order (fullscreen before meeting) ever changes there, it must change here
-    too, or the hero could name the wrong app when both signals are true.
+    `reason` and `app` are one evaluation's output (`defer_reason_and_app` or
+    `signal_reason_and_app`), never two independent lookups — that is the whole
+    point: the sentence the user reads ("Waiting — X is using your microphone")
+    and the app the Ignore button acts on come from the same tick's view of the
+    world, so they cannot disagree.
 
-    Takes the EFFECTIVE (post-hysteresis) `is_fullscreen`/`is_meeting`, but
-    `fullscreen_app`/`meeting_app` are this tick's RAW attribution — which is
-    None during exactly the blips `smooth_signal` exists to bridge. `previous`
-    (the caller's last resolved app) is carried across such a blip instead of
-    blanking the name the user is already reading (#40). Pure; no Tk.
+    `app` is None during exactly the blips `smooth_signal` exists to bridge, so
+    the previously-named app is carried — but only while the reason is UNCHANGED
+    (carrying a fullscreen app into a mic deferral would claim Keynote is using
+    your microphone), and only for `carry_ticks` ticks, so an attribution that
+    goes permanently unavailable mid-hold cannot pin a stale name on the hero
+    forever.
+
+    Returns (app_to_name, new_carry_left); the caller carries `new_carry_left`
+    into the next tick, exactly like `smooth_signal`'s grace. Pure; no Tk.
     """
-    if is_fullscreen:
-        return fullscreen_app or previous
-    if is_meeting:
-        return meeting_app or previous
-    return None
+    if reason is None:
+        return None, 0
+    if app is not None:
+        return app, carry_ticks
+    if previous is not None and previous_reason == reason and carry_left > 0:
+        return previous, carry_left - 1
+    return None, 0
 
 
 def step(states, ctx,

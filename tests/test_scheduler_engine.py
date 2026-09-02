@@ -1,7 +1,7 @@
 from dfyb.scheduler.engine import (
     Context, BreakState, step, decide, is_natural_break, FIRE, DEFER,
     coordinate_thresholds, MIN_LADDER_GAP_SECONDS, defer_reason_and_app,
-    resolve_held_app,
+    resolve_held_app, signal_reason_and_app, HELD_APP_CARRY_TICKS,
 )
 
 GAP = MIN_LADDER_GAP_SECONDS
@@ -327,40 +327,83 @@ def test_step_carries_the_deferring_app_through():
     assert r.defer_reason == "meeting" and r.defer_app == ZOOM_REF
 
 
-# --- resolve_held_app: WHO to name for a deferral (#40) ---------------------
+# --- signal_reason_and_app / resolve_held_app: WHO to name (#40) -----------
 
 KEYNOTE_REF = {"id": "com.apple.iWork.Keynote", "name": "Keynote", "count": 1}
+TEAMS_REF = {"id": "com.microsoft.teams2", "name": "Teams", "count": 1}
 
 
-def test_resolve_held_app_fullscreen_wins_over_meeting_when_both_effective():
+def test_signal_reason_and_app_fullscreen_wins_over_meeting():
     # Mirrors decide()'s priority (fullscreen before meeting) so the hero can
     # never name the mic app under the "is in full screen" template.
-    resolved = resolve_held_app(True, True, KEYNOTE_REF, ZOOM_REF, previous=None)
-    assert resolved == KEYNOTE_REF
+    assert signal_reason_and_app(True, True, KEYNOTE_REF, ZOOM_REF) == (
+        "fullscreen", KEYNOTE_REF)
 
 
-def test_resolve_held_app_meeting_only_names_the_meeting_app():
-    resolved = resolve_held_app(False, True, None, ZOOM_REF, previous=None)
-    assert resolved == ZOOM_REF
+def test_signal_reason_and_app_meeting_only():
+    assert signal_reason_and_app(False, True, None, ZOOM_REF) == ("meeting", ZOOM_REF)
+
+
+def test_signal_reason_and_app_none_when_no_signal():
+    assert signal_reason_and_app(False, False, KEYNOTE_REF, ZOOM_REF) == (None, None)
+
+
+def test_defer_reason_and_app_uses_the_same_signal_helper():
+    """The deferral reason for the two app-bearing signals IS
+    signal_reason_and_app's — one rule, so they can never diverge."""
+    c = Context(idle_seconds=0.0, is_fullscreen=True, is_meeting=True,
+                fullscreen_app=KEYNOTE_REF, meeting_app=ZOOM_REF)
+    assert defer_reason_and_app(c, 60, 0) == signal_reason_and_app(
+        c.is_fullscreen, c.is_meeting, c.fullscreen_app, c.meeting_app)
+
+
+def test_resolve_held_app_names_this_ticks_app_and_arms_the_carry():
+    assert resolve_held_app("meeting", ZOOM_REF) == (ZOOM_REF, HELD_APP_CARRY_TICKS)
 
 
 def test_resolve_held_app_carries_the_previous_app_across_a_blip():
     # The effective signal is still bridged by smooth_signal, but this tick's
     # raw ctx app is None (the blip) — the previously-known app must survive.
-    resolved = resolve_held_app(False, True, None, None, previous=ZOOM_REF)
-    assert resolved == ZOOM_REF
+    assert resolve_held_app("meeting", None, previous=ZOOM_REF,
+                            previous_reason="meeting", carry_left=3) == (ZOOM_REF, 2)
 
 
-def test_resolve_held_app_no_stale_carry_once_the_signal_is_off():
-    resolved = resolve_held_app(False, False, None, None, previous=ZOOM_REF)
-    assert resolved is None
-
-
-TEAMS_REF = {"id": "com.microsoft.teams2", "name": "Teams", "count": 1}
+def test_resolve_held_app_no_stale_carry_once_the_reason_is_gone():
+    assert resolve_held_app(None, None, previous=ZOOM_REF,
+                            previous_reason="meeting", carry_left=3) == (None, 0)
 
 
 def test_resolve_held_app_a_new_app_wins_immediately_over_the_carried_one():
     # The signal went off and came back on with a DIFFERENT app — the new app
     # must win immediately; a stale carry would wrongly keep naming the old one.
-    resolved = resolve_held_app(False, True, None, TEAMS_REF, previous=ZOOM_REF)
-    assert resolved == TEAMS_REF
+    assert resolve_held_app("meeting", TEAMS_REF, previous=ZOOM_REF,
+                            previous_reason="meeting", carry_left=3) == (
+                                TEAMS_REF, HELD_APP_CARRY_TICKS)
+
+
+def test_resolve_held_app_does_not_carry_across_a_CHANGED_reason():
+    """The whole Finding-1 hazard in one assertion: a fullscreen app must never
+    be carried into a mic hold, or the hero says 'Keynote is using your
+    microphone' and the Ignore button writes Keynote into the mic list."""
+    assert resolve_held_app("meeting", None, previous=KEYNOTE_REF,
+                            previous_reason="fullscreen", carry_left=3) == (None, 0)
+
+
+def test_resolve_held_app_carry_is_bounded_by_the_budget():
+    """An attribution that never comes back must not pin a stale name forever."""
+    app, carry = ZOOM_REF, HELD_APP_CARRY_TICKS
+    named = []
+    for _ in range(HELD_APP_CARRY_TICKS + 2):
+        app, carry = resolve_held_app("meeting", None, previous=app,
+                                      previous_reason="meeting", carry_left=carry)
+        named.append(app)
+    assert named[:HELD_APP_CARRY_TICKS] == [ZOOM_REF] * HELD_APP_CARRY_TICKS
+    assert named[HELD_APP_CARRY_TICKS:] == [None, None]
+
+
+def test_held_app_carry_budget_matches_the_signal_hysteresis():
+    """HELD_APP_CARRY_TICKS is a copy of sensors.DEFER_GRACE_TICKS (sensors
+    imports engine, so it cannot be imported the other way). Naming an app for
+    longer than its signal is bridged would show a stale hold."""
+    from dfyb.activity.sensors import DEFER_GRACE_TICKS
+    assert HELD_APP_CARRY_TICKS == DEFER_GRACE_TICKS

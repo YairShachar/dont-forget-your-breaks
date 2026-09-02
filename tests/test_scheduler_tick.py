@@ -66,7 +66,9 @@ def test_episode_transition_deferred_to_idle_relogs():
 
 def test_advance_natural_break():
     states = [BreakState(remaining=5, interval_seconds=100, duration_seconds=5)]
-    new_remaining, fire_index, events, ep = advance(states, ctx(idle=400), None)
+    out = advance(states, ctx(idle=400), None)
+    new_remaining, fire_index, events, ep = (
+        out.new_remaining, out.fire_index, out.events, out.episode)
     assert new_remaining == [100]
     assert fire_index is None
     assert events == [(NATURAL_BREAK, {"idle_seconds": 400})]
@@ -75,7 +77,9 @@ def test_advance_natural_break():
 
 def test_advance_fires_when_due_and_active():
     states = [BreakState(remaining=1, interval_seconds=100, duration_seconds=5)]
-    new_remaining, fire_index, events, ep = advance(states, ctx(idle=0), None)
+    out = advance(states, ctx(idle=0), None)
+    new_remaining, fire_index, events, ep = (
+        out.new_remaining, out.fire_index, out.events, out.episode)
     assert fire_index == 0
     assert new_remaining == [100]
     assert events == []          # BREAK_TAKEN is logged on popup close, not here
@@ -84,7 +88,9 @@ def test_advance_fires_when_due_and_active():
 
 def test_advance_defers_on_fullscreen():
     states = [BreakState(remaining=1, interval_seconds=100, duration_seconds=5)]
-    new_remaining, fire_index, events, ep = advance(states, ctx(fullscreen=True), None)
+    out = advance(states, ctx(fullscreen=True), None)
+    new_remaining, fire_index, events, ep = (
+        out.new_remaining, out.fire_index, out.events, out.episode)
     assert fire_index is None
     assert new_remaining == [0]  # clamped
     assert events == [(BREAK_DEFERRED, {"reason": "fullscreen"})]
@@ -93,14 +99,18 @@ def test_advance_defers_on_fullscreen():
 
 def test_advance_decrements_when_not_due():
     states = [BreakState(remaining=5, interval_seconds=100, duration_seconds=5)]
-    new_remaining, fire_index, events, ep = advance(states, ctx(idle=0), None)
+    out = advance(states, ctx(idle=0), None)
+    new_remaining, fire_index, events, ep = (
+        out.new_remaining, out.fire_index, out.events, out.episode)
     assert new_remaining == [4]
     assert fire_index is None and events == [] and ep is None
 
 
 def test_advance_defers_active():
     states = [BreakState(remaining=1, interval_seconds=100, duration_seconds=5)]
-    new_remaining, fire_index, events, ep = advance(states, ctx(idle=2), None, pause_threshold=5)
+    out = advance(states, ctx(idle=2), None, pause_threshold=5)
+    new_remaining, fire_index, events, ep = (
+        out.new_remaining, out.fire_index, out.events, out.episode)
     assert fire_index is None
     assert events == [(BREAK_DEFERRED, {"reason": "active"})]
     assert ep == DEFERRED_EPISODE
@@ -115,15 +125,15 @@ def _due_states():
 def test_advance_forwards_away_threshold():
     c = Context(idle_seconds=40, is_fullscreen=False, active_idle_seconds=40)
     # pause off (0): a due break fires when present (idle < away), defers when away.
-    _, fire_lo, _, _ = advance(_due_states(), c, None, pause_threshold=0, away_threshold=30)
-    _, fire_hi, _, _ = advance(_due_states(), c, None, pause_threshold=0, away_threshold=60)
+    fire_lo = advance(_due_states(), c, None, pause_threshold=0, away_threshold=30).fire_index
+    fire_hi = advance(_due_states(), c, None, pause_threshold=0, away_threshold=60).fire_index
     assert fire_lo is None      # idle 40 >= away 30 -> defer away
     assert fire_hi == 0         # idle 40 < away 60 -> fire
 
 
 def test_advance_forwards_natural_threshold():
     c = Context(idle_seconds=200, is_fullscreen=False, active_idle_seconds=200)
-    _, _, _, ep = advance(_due_states(), c, None, natural_threshold=180)
+    ep = advance(_due_states(), c, None, natural_threshold=180).episode
     assert ep == IDLE_EPISODE    # 200 >= 180 -> natural break episode
 
 
@@ -227,7 +237,8 @@ def test_deferred_duration_end_to_end():
         c = Context(idle_seconds=0.0, is_fullscreen=False, is_meeting=meeting,
                     active_idle_seconds=0.0)
         prev = [remaining]
-        new_remaining, fire_index, _, _ = advance(states, c, None)
+        out = advance(states, c, None)
+        new_remaining, fire_index = out.new_remaining, out.fire_index
         due_since = track_due_since(due_since, [name], prev, now)
         return new_remaining[0], fire_index, due_since
 
@@ -248,7 +259,7 @@ def test_deferred_duration_zero_when_fires_immediately():
     # due and fires the same tick (no hold) -> deferred 0.
     states = [BreakState(remaining=1, interval_seconds=3000, duration_seconds=600)]
     c = Context(idle_seconds=0.0, is_fullscreen=False, is_meeting=False, active_idle_seconds=0.0)
-    _, fire_index, _, _ = advance(states, c, None)
+    fire_index = advance(states, c, None).fire_index
     due = track_due_since({}, ["Normal"], [1], now=500.0)
     assert fire_index == 0
     assert deferral_at_fire(due, "Normal", 500.0) == (500.0, 0.0)

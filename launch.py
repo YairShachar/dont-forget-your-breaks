@@ -58,7 +58,7 @@ from dfyb.scheduler.reschedule import reschedule_step, reschedule_bounds, nudged
 from dfyb.scheduler.engine import (decide, DEFER, coordinate_thresholds,
                                    AWAY_IDLE_THRESHOLD_SECONDS,
                                    NATURAL_BREAK_IDLE_THRESHOLD_SECONDS,
-                                   resolve_held_app)
+                                   resolve_held_app, signal_reason_and_app)
 from dfyb.scheduler.dedup import break_in_play
 from dfyb.ui_controls import reset_button_style
 from dfyb.timer_lifecycle import timer_should_continue
@@ -2269,11 +2269,14 @@ class BreakApp:
         self._resume_prompted = False # already offered to resume this pause episode (#77)
         self._resume_card = None      # the floating "resume?" card, or None
         self._resume_card_after = None  # auto-dismiss timer id for the resume card
-        self._held = None      # reason the due break is currently held (transparency)
+        self._held = None      # reason the due break is held THIS tick (recomputed every tick)
         self._held_app = None       # {"id","name","count"} of the app causing the hold
+        self._held_app_carry = 0    # ticks the named app may still be carried (#40)
+        self._held_carry = None     # reason carried for the FIRE-time popup line (#44/#85)
         self._chip_action = None    # (signal, app_ref) the last render's chip button promised
         self._anticipated = None  # deferral context active but nothing due yet (#74)
         self._anticipated_app = None  # {"id","name","count"} of the app behind the anticipated chip
+        self._anticipated_app_carry = 0  # ticks that app may still be carried (#40)
         self._logged_mic_fallback = False   # mic_detection_fallback is once per session
         self._rested_ack_until = None  # time.time() until which to show "welcome back"
         self._fullscreen_grace = 0  # ticks of fullscreen hysteresis left (#46)
@@ -2865,6 +2868,9 @@ class BreakApp:
             self._due_since = {}
             self._held = None
             self._held_app = None
+            self._held_app_carry = 0
+            self._held_carry = None
+            self._anticipated_app_carry = 0
             self._logged_mic_fallback = False
             self._reset_defer_grace()
             self._render_status()
@@ -3121,6 +3127,9 @@ class BreakApp:
         self._due_since = {}   # fresh deferred-duration tracking each session (#85)
         self._held = None      # reset the held-reason each session
         self._held_app = None  # reset the held-app attribution each session
+        self._held_app_carry = 0   # reset the named-app carry budget each session (#40)
+        self._held_carry = None    # reset the fire-time held-reason carry each session
+        self._anticipated_app_carry = 0   # reset the anticipated-app carry each session
         self._logged_mic_fallback = False  # mic_detection_fallback is once per session (#40)
         self._reset_defer_grace()  # reset fullscreen/mic/active hysteresis each session (#46/#84)
 
@@ -4083,41 +4092,48 @@ class BreakApp:
                 ctx = dataclass_replace(
                     ctx, is_fullscreen=eff_fullscreen, is_meeting=eff_meeting,
                     active_idle_seconds=(0.0 if eff_active else ctx.active_idle_seconds))
-                # Remember WHO caused each signal, for the hero/chip and the event
-                # log — resolved from the EFFECTIVE signals (post-hysteresis), in
-                # decide()'s priority order, so it can never name the wrong app or
-                # go blank mid-hold (#40). See resolve_held_app's docstring. Kept
-                # from BEFORE this tick's update, mirroring how track_held() below
-                # surfaces held_reason from the prior tick on the firing tick itself
-                # (by then this tick's signals may have already cleared).
-                prev_held_app = self._held_app
-                self._held_app = resolve_held_app(
-                    eff_fullscreen, eff_meeting, ctx.fullscreen_app, ctx.meeting_app,
-                    previous=self._held_app)
                 # Proactively note a sustained deferral context (call / fullscreen) so
                 # the hero can say "your break will wait" before anything is due (#74).
-                # Active-typing is excluded — it's transient and would flicker.
-                # Same fullscreen-before-meeting priority as decide(), so the reason
-                # and the resolved app can never disagree. Capture the previous value
-                # BEFORE resetting, same as _held_app above — resetting first would
-                # make the carry-across-a-blip a no-op (#40 review round 2).
+                # Active-typing is excluded — it's transient and would flicker. The
+                # reason and the app it names come from ONE evaluation
+                # (`signal_reason_and_app`), so they can never disagree. Capture the
+                # previous value BEFORE resetting — resetting first would make the
+                # carry-across-a-blip a no-op (#40 review round 2).
+                prev_anticipated = self._anticipated
                 prev_anticipated_app = self._anticipated_app
                 self._anticipated = None
                 self._anticipated_app = None
                 if self.show_anticipated_defer.get():
-                    self._anticipated = ("fullscreen" if eff_fullscreen else
-                                         "meeting" if eff_meeting else None)
-                    self._anticipated_app = resolve_held_app(
-                        eff_fullscreen, eff_meeting, ctx.fullscreen_app, ctx.meeting_app,
-                        previous=prev_anticipated_app)
+                    self._anticipated, anticipated_app = signal_reason_and_app(
+                        eff_fullscreen, eff_meeting, ctx.fullscreen_app, ctx.meeting_app)
+                    self._anticipated_app, self._anticipated_app_carry = resolve_held_app(
+                        self._anticipated, anticipated_app,
+                        previous=prev_anticipated_app, previous_reason=prev_anticipated,
+                        carry_left=self._anticipated_app_carry)
                 states = states_from_configs(self.breaks)
                 names = [c.name.get() for c in self.breaks]
                 prev_remaining = [c.remaining for c in self.breaks]
                 now = time.time()
                 prev_episode = self._episode
-                new_remaining, fire_index, events, self._episode = advance(
+                outcome = advance(
                     states, ctx, self._episode, pause_threshold=pause,
                     away_threshold=away, natural_threshold=natural)
+                new_remaining, fire_index = outcome.new_remaining, outcome.fire_index
+                events, self._episode = outcome.events, outcome.episode
+                # The ONE evaluation the whole hold-UI hangs off: the reason shown,
+                # the app named and the signal the chip's Ignore button acts on all
+                # come from THIS tick's defer decision. `BREAK_DEFERRED` stays
+                # deduped to once per episode (inside events_for_tick), but the
+                # displayed reason must not be — that dedup is exactly what let the
+                # reason go stale while the app stayed fresh, so the hero could say
+                # "Keynote is using your microphone" and excuse the wrong app for
+                # the wrong signal (#40 final review, Finding 1).
+                prev_held, prev_held_app = self._held, self._held_app
+                self._held = outcome.defer_reason
+                self._held_app, self._held_app_carry = resolve_held_app(
+                    outcome.defer_reason, outcome.defer_app,
+                    previous=prev_held_app, previous_reason=prev_held,
+                    carry_left=self._held_app_carry)
                 # A break with a pending snooze is frozen — the snooze IS its next
                 # occurrence, so it neither counts down nor fires from the loop (#84).
                 pending_names = {e['name'] for e in self._pending_snoozes}
@@ -4136,8 +4152,12 @@ class BreakApp:
                     config.remaining = remaining
                 for event_type, data in events:
                     self._record_event(event_type, **data)
-                held_reason, self._held = track_held(
-                    events, fire_index is not None, self._held)
+                # The fire-time line (#44/#85) keeps its own carry: on the firing
+                # tick the hold has just ended, so `self._held` is already None and
+                # the reason to SHOW must come from the events fold, not the live
+                # hold. Separate attribute, same behavior as before.
+                held_reason, self._held_carry = track_held(
+                    events, fire_index is not None, self._held_carry)
                 if fire_index is not None:
                     name = self.breaks[fire_index].name.get()
                     scheduled_ts, deferred_seconds = deferral_at_fire(
@@ -4595,7 +4615,15 @@ class BreakApp:
             return
         signal, app_ref = self._chip_action
         self._toggle_ignore(signal, app_ref, ignore=True, source="chip")
-        self._held, self._held_app = None, None   # stop holding immediately
+        # Stop holding immediately, so the click has instant feedback rather than
+        # waiting up to a tick. The episode marker goes with it: leaving it at
+        # DEFERRED_EPISODE meant that if something ELSE still defers, no fresh
+        # break_deferred is emitted — which used to leave the hero stuck out of
+        # "Holding" on a frozen 0:00 (#40 final review, Finding 1). The next tick
+        # now recomputes `_held` from its own defer decision regardless, and this
+        # reset makes the continued deferral visible in the event log too.
+        self._held, self._held_app, self._held_app_carry = None, None, 0
+        self._episode = None
         self._render_status()
 
     def _capture_active_screen(self):
