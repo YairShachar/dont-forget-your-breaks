@@ -85,7 +85,7 @@ def test_fullscreen_failure_returns_false(monkeypatch):
 
 def test_read_context_combines_sensors(monkeypatch):
     monkeypatch.setattr(sensors, "idle_seconds", lambda: 12.0)
-    monkeypatch.setattr(sensors, "frontmost_is_fullscreen", lambda: True)
+    monkeypatch.setattr(sensors, "fullscreen_state", lambda: (True, None))
     monkeypatch.setattr(sensors, "microphone_in_use", lambda: False)
     c = sensors.read_context()
     assert c.idle_seconds == 12.0 and c.is_fullscreen is True
@@ -118,7 +118,7 @@ def test_input_devices_idle_means_mic_free():
 
 def test_read_context_meeting_gated_off(monkeypatch):
     monkeypatch.setattr(sensors, "idle_seconds", lambda: 0.0)
-    monkeypatch.setattr(sensors, "frontmost_is_fullscreen", lambda: False)
+    monkeypatch.setattr(sensors, "fullscreen_state", lambda: (False, None))
     monkeypatch.setattr(sensors, "microphone_in_use", lambda: True)
     c = sensors.read_context(check_meeting=False)
     assert c.is_meeting is False
@@ -126,8 +126,9 @@ def test_read_context_meeting_gated_off(monkeypatch):
 
 def test_read_context_meeting_on(monkeypatch):
     monkeypatch.setattr(sensors, "idle_seconds", lambda: 0.0)
-    monkeypatch.setattr(sensors, "frontmost_is_fullscreen", lambda: False)
+    monkeypatch.setattr(sensors, "fullscreen_state", lambda: (False, None))
     monkeypatch.setattr(sensors, "microphone_in_use", lambda: True)
+    monkeypatch.setattr(sensors, "mic_input_processes", lambda: None)
     c = sensors.read_context(check_meeting=True)
     assert c.is_meeting is True
 
@@ -300,7 +301,7 @@ def test_smooth_signal_default_grace_is_defer_grace_ticks():
 
 def test_read_context_fullscreen_gated_off(monkeypatch):
     monkeypatch.setattr(sensors, "idle_seconds", lambda: 0.0)
-    monkeypatch.setattr(sensors, "frontmost_is_fullscreen", lambda: True)
+    monkeypatch.setattr(sensors, "fullscreen_state", lambda: (True, None))
     monkeypatch.setattr(sensors, "microphone_in_use", lambda: False)
     c = sensors.read_context(check_fullscreen=False)
     assert c.is_fullscreen is False
@@ -308,7 +309,7 @@ def test_read_context_fullscreen_gated_off(monkeypatch):
 
 def test_read_context_fullscreen_on(monkeypatch):
     monkeypatch.setattr(sensors, "idle_seconds", lambda: 0.0)
-    monkeypatch.setattr(sensors, "frontmost_is_fullscreen", lambda: True)
+    monkeypatch.setattr(sensors, "fullscreen_state", lambda: (True, None))
     monkeypatch.setattr(sensors, "microphone_in_use", lambda: False)
     c = sensors.read_context(check_fullscreen=True)
     assert c.is_fullscreen is True
@@ -480,3 +481,87 @@ def test_covering_owners_reports_one_entry_per_covered_display():
 def test_fullscreen_state_off_macos_is_not_fullscreen_and_unattributable(monkeypatch):
     monkeypatch.setattr(sensors.sys, "platform", "linux")
     assert sensors.fullscreen_state() == (False, None)
+
+
+# --- read_context with attribution + ignore lists ---
+
+SOUND_HOLDER = (45648, "com.apple.Sound-Settings.extension", "Sound")
+ZOOM_HOLDER = (700, "us.zoom.xos", "Zoom")
+
+
+def _stub_context_sensors(monkeypatch, *, mic_on=False, holders=None,
+                          covered=False, owners=None):
+    monkeypatch.setattr(sensors, "idle_seconds", lambda: 0.0)
+    monkeypatch.setattr(sensors, "active_idle_seconds",
+                        lambda include_mouse_move=False: 0.0)
+    monkeypatch.setattr(sensors, "microphone_in_use", lambda: mic_on)
+    monkeypatch.setattr(sensors, "mic_input_processes", lambda: holders)
+    monkeypatch.setattr(sensors, "fullscreen_state", lambda: (covered, owners))
+
+
+def test_ignored_sound_pane_alone_is_not_a_meeting(monkeypatch):
+    # REGRESSION for the 2026-09-01 incident: the System Settings Sound pane held
+    # the input for 18h and every break was deferred as "you're in a call".
+    from dfyb.activity import app_rules
+    _stub_context_sensors(monkeypatch, mic_on=True, holders=[SOUND_HOLDER])
+    ignores = app_rules.effective_ignores(app_rules.DEFAULT_MIC_IGNORED_APPS, [], [])
+    ctx = sensors.read_context(mic_ignores=ignores)
+    assert ctx.is_meeting is False and ctx.meeting_app is None
+
+
+def test_a_real_call_alongside_an_ignored_holder_still_defers(monkeypatch):
+    from dfyb.activity import app_rules
+    _stub_context_sensors(monkeypatch, mic_on=True,
+                          holders=[SOUND_HOLDER, ZOOM_HOLDER])
+    ignores = app_rules.effective_ignores(app_rules.DEFAULT_MIC_IGNORED_APPS, [], [])
+    ctx = sensors.read_context(mic_ignores=ignores)
+    assert ctx.is_meeting is True
+    assert ctx.meeting_app == {"id": "us.zoom.xos", "name": "Zoom", "count": 1}
+
+
+def test_unattributable_mic_falls_back_to_the_device_signal(monkeypatch):
+    # macOS 13 / CoreAudio failure: holders is None -> trust the device gate,
+    # defer as before, just without a name.
+    _stub_context_sensors(monkeypatch, mic_on=True, holders=None)
+    ctx = sensors.read_context(mic_ignores=frozenset({"us.zoom.xos"}))
+    assert ctx.is_meeting is True and ctx.meeting_app is None
+
+
+def test_device_gate_off_means_no_enumeration(monkeypatch):
+    calls = []
+    _stub_context_sensors(monkeypatch, mic_on=False)
+    monkeypatch.setattr(sensors, "mic_input_processes",
+                        lambda: calls.append(1) or [])
+    ctx = sensors.read_context()
+    assert ctx.is_meeting is False and calls == []
+
+
+def test_ignored_fullscreen_app_does_not_defer(monkeypatch):
+    _stub_context_sensors(monkeypatch, covered=True,
+                          owners=[(900, "com.apple.Terminal", "Terminal")])
+    ctx = sensors.read_context(fullscreen_ignores=frozenset({"com.apple.terminal"}))
+    assert ctx.is_fullscreen is False and ctx.fullscreen_app is None
+
+
+def test_second_display_covered_by_another_app_still_defers(monkeypatch):
+    _stub_context_sensors(monkeypatch, covered=True,
+                          owners=[(900, "com.apple.Terminal", "Terminal"),
+                                  (800, "com.apple.iWork.Keynote", "Keynote")])
+    ctx = sensors.read_context(fullscreen_ignores=frozenset({"com.apple.terminal"}))
+    assert ctx.is_fullscreen is True
+    assert ctx.fullscreen_app == {"id": "com.apple.iWork.Keynote",
+                                  "name": "Keynote", "count": 1}
+
+
+def test_unattributable_fullscreen_falls_back_to_the_boolean(monkeypatch):
+    _stub_context_sensors(monkeypatch, covered=True, owners=None)
+    ctx = sensors.read_context(fullscreen_ignores=frozenset({"com.apple.terminal"}))
+    assert ctx.is_fullscreen is True and ctx.fullscreen_app is None
+
+
+def test_gates_still_win_over_attribution(monkeypatch):
+    _stub_context_sensors(monkeypatch, mic_on=True, holders=[ZOOM_HOLDER],
+                          covered=True, owners=[(800, "x", "Keynote")])
+    ctx = sensors.read_context(check_meeting=False, check_fullscreen=False)
+    assert (ctx.is_meeting, ctx.meeting_app) == (False, None)
+    assert (ctx.is_fullscreen, ctx.fullscreen_app) == (False, None)

@@ -17,6 +17,11 @@ class Context:
     is_fullscreen: bool
     is_meeting: bool = False
     active_idle_seconds: float | None = None  # typing/clicks idle; None -> use idle_seconds
+    # Which app caused the signal, as {"id", "name", "count"} — for the UI and the
+    # event log only; `decide()` never reads them. None when not deferring or when
+    # attribution was unavailable.
+    meeting_app: dict | None = None
+    fullscreen_app: dict | None = None
 
 
 @dataclass(frozen=True)

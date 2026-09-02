@@ -289,3 +289,8 @@ def test_configured_natural_threshold_resets_timers():
     res = step(_due_states(), ctx, natural_threshold=180)  # 200 >= 180
     assert res.natural_break is True
     assert res.new_remaining == [1500]
+
+
+def test_context_app_fields_default_to_none():
+    c = Context(idle_seconds=0.0, is_fullscreen=False)
+    assert c.meeting_app is None and c.fullscreen_app is None

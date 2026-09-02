@@ -9,6 +9,7 @@ import logging
 import struct
 import sys
 
+from dfyb.activity import app_rules
 from dfyb.scheduler.engine import Context
 
 # Max active displays to enumerate (well above any real Mac's monitor count).
@@ -469,16 +470,54 @@ def frontmost_window_rect():
         return None
 
 
-def read_context(check_meeting=True, check_fullscreen=True, count_mouse_move=False):
+def _attributed(holders, ignores):
+    """(busy, app_ref) from a holder list and its ignore set.
+
+    `holders is None` means attribution was unavailable: the caller keeps its raw
+    boolean and gets no name. Otherwise only non-ignored holders count as busy,
+    and `primary_holder` picks the one to name.
+    """
+    if holders is None:
+        return None, None            # None => "caller, keep your own answer"
+    surviving = app_rules.surviving_holders(holders, ignores)
+    if not surviving:
+        return False, None
+    ref = app_rules.holder_ref(app_rules.primary_holder(surviving))
+    return True, {**ref, "count": len(surviving)}
+
+
+def read_context(check_meeting=True, check_fullscreen=True, count_mouse_move=False,
+                 mic_ignores=frozenset(), fullscreen_ignores=frozenset()):
     """Snapshot the current context for the scheduler.
 
     `check_meeting` / `check_fullscreen` gate their signals (the app's
     `defer_during_meetings` / `defer_during_fullscreen` prefs): when False, that
     flag is always False regardless of the real state.
+
+    `mic_ignores` / `fullscreen_ignores` are sets of normalized app keys that must
+    not cause a deferral (see `dfyb.activity.app_rules`). Filtering happens HERE,
+    before the timer loop's `smooth_signal()` hysteresis, so ignoring an app takes
+    effect immediately instead of leaving a grace-window tail of deferral.
     """
+    is_meeting, meeting_app = False, None
+    if check_meeting and microphone_in_use():
+        # The device-level check is the cheap gate; only then do we pay for the
+        # per-process enumeration to find out WHO.
+        attributed, meeting_app = _attributed(mic_input_processes(), mic_ignores)
+        is_meeting = True if attributed is None else attributed
+
+    is_fullscreen, fullscreen_app = False, None
+    if check_fullscreen:
+        covered, owners = fullscreen_state()
+        if covered:
+            attributed, fullscreen_app = _attributed(owners, fullscreen_ignores)
+            is_fullscreen = True if attributed is None else attributed
+
     return Context(
         idle_seconds=idle_seconds(),
-        is_fullscreen=check_fullscreen and frontmost_is_fullscreen(),
-        is_meeting=check_meeting and microphone_in_use(),
+        is_fullscreen=is_fullscreen,
+        is_meeting=is_meeting,
         active_idle_seconds=active_idle_seconds(include_mouse_move=count_mouse_move),
+        meeting_app=meeting_app,
+        fullscreen_app=fullscreen_app,
     )
