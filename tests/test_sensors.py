@@ -1,3 +1,4 @@
+import struct
 import sys
 import types
 
@@ -310,3 +311,74 @@ def test_read_context_fullscreen_on(monkeypatch):
     monkeypatch.setattr(sensors, "microphone_in_use", lambda: False)
     c = sensors.read_context(check_fullscreen=True)
     assert c.is_fullscreen is True
+
+
+# --- mic attribution: WHO is holding the microphone (#40) ---
+
+def _fake_coreaudio_processes(process_objects, running_input, pids, list_ok=True):
+    """Fake CoreAudio exposing the macOS 14+ process-object properties.
+    `running_input` / `pids` map a process object id -> its property value."""
+    fake = types.ModuleType("CoreAudio")
+    fake.kAudioObjectSystemObject = 1
+    fake.kAudioObjectPropertyScopeGlobal = 0x676C6F62
+    fake.kAudioObjectPropertyScopeInput = 0x696E7074
+    fake.kAudioObjectPropertyElementMain = 0
+    fake.AudioObjectPropertyAddress = lambda sel, scope, elem: (sel, scope, elem)
+
+    def get_size(obj, addr, qsize, qdata, out):
+        if not list_ok:
+            return (-1, 0)
+        return (0, len(process_objects) * 4)
+
+    def get_data(obj, addr, qsize, qdata, size, out):
+        sel = addr[0]
+        if obj == fake.kAudioObjectSystemObject:
+            return (0, size, struct.pack("%dI" % len(process_objects), *process_objects))
+        table = running_input if sel == sensors.PROCESS_IS_RUNNING_INPUT else pids
+        return (0, 4, struct.pack("I", table.get(obj, 0)))
+
+    fake.AudioObjectGetPropertyDataSize = get_size
+    fake.AudioObjectGetPropertyData = get_data
+    return fake
+
+
+def _install_mic_process_fakes(monkeypatch, fake_ca, identities):
+    monkeypatch.setattr(sensors.sys, "platform", "darwin")
+    monkeypatch.setitem(sys.modules, "CoreAudio", fake_ca)
+    monkeypatch.setitem(sys.modules, "objc", types.SimpleNamespace(NULL=None))
+    monkeypatch.setattr(sensors, "_app_identity", lambda pid: identities[pid])
+
+
+def test_mic_input_processes_names_the_holder(monkeypatch):
+    fake = _fake_coreaudio_processes(
+        process_objects=[10, 11], running_input={10: 1, 11: 0}, pids={10: 700, 11: 800})
+    _install_mic_process_fakes(monkeypatch, fake, {700: ("us.zoom.xos", "zoom.us")})
+    assert sensors.mic_input_processes() == [(700, "us.zoom.xos", "zoom.us")]
+
+
+def test_mic_input_processes_empty_when_nobody_holds_input(monkeypatch):
+    fake = _fake_coreaudio_processes(
+        process_objects=[10], running_input={10: 0}, pids={10: 700})
+    _install_mic_process_fakes(monkeypatch, fake, {})
+    # [] (asked, nobody there) — NOT None, which would mean "couldn't ask".
+    assert sensors.mic_input_processes() == []
+
+
+def test_mic_input_processes_none_when_api_unavailable(monkeypatch):
+    fake = _fake_coreaudio_processes([], {}, {}, list_ok=False)
+    _install_mic_process_fakes(monkeypatch, fake, {})
+    assert sensors.mic_input_processes() is None
+
+
+def test_mic_input_processes_none_on_exception(monkeypatch):
+    fake = _fake_coreaudio_processes([10], {10: 1}, {10: 700})
+    def boom(*a, **k):
+        raise RuntimeError("coreaudio boom")
+    fake.AudioObjectGetPropertyDataSize = boom
+    _install_mic_process_fakes(monkeypatch, fake, {})
+    assert sensors.mic_input_processes() is None
+
+
+def test_mic_input_processes_none_off_macos(monkeypatch):
+    monkeypatch.setattr(sensors.sys, "platform", "linux")
+    assert sensors.mic_input_processes() is None

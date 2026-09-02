@@ -26,6 +26,21 @@ FULLSCREEN_COVER_TOLERANCE_PX = 2
 DEFER_GRACE_TICKS = 3
 
 
+def _fourcc(code):
+    """CoreAudio selectors are four-character codes packed big-endian."""
+    return struct.unpack(">I", code.encode())[0]
+
+
+# Per-process CoreAudio selectors (macOS 14+). pyobjc's CoreAudio module does not
+# export these as named constants, so they are built from the four-character codes
+# exactly as AudioHardware.h defines them.
+PROCESS_OBJECT_LIST = _fourcc("prs#")        # kAudioHardwarePropertyProcessObjectList
+PROCESS_PID = _fourcc("ppid")                # kAudioProcessPropertyPID
+PROCESS_IS_RUNNING_INPUT = _fourcc("piri")   # kAudioProcessPropertyIsRunningInput
+# Max bytes for libproc's executable-path buffer (PROC_PIDPATHINFO_MAXSIZE).
+PROC_PATH_MAX = 4096
+
+
 def idle_seconds():
     """Seconds since the last user input event (macOS). 0.0 elsewhere / on failure."""
     if sys.platform != "darwin":
@@ -228,6 +243,111 @@ def microphone_in_use():
         # Was failing SILENTLY to "no mic" — log so this class of miss is visible.
         logging.debug("microphone_in_use() failed, assuming mic free: %s", e)
         return False
+
+
+def _bundle_identity_from_path(exe_path):
+    """(bundle_id, name) for the .app/.appex enclosing `exe_path`, else (None, basename).
+
+    NSRunningApplication returns None for non-GUI processes (daemons, app
+    extensions), which is exactly the class of process that causes false
+    'in a call' readings — so the enclosing bundle's Info.plist is read directly.
+    """
+    import os
+    import plistlib
+    part = exe_path
+    while part and part != "/":
+        if part.endswith(".app") or part.endswith(".appex"):
+            try:
+                with open(os.path.join(part, "Contents", "Info.plist"), "rb") as f:
+                    info = plistlib.load(f)
+                return (info.get("CFBundleIdentifier"),
+                        info.get("CFBundleName") or os.path.basename(part))
+            except Exception:
+                break
+        part = os.path.dirname(part)
+    return None, os.path.basename(exe_path)
+
+
+def _app_identity(pid):
+    """(bundle_id | None, display_name) for a pid. Never raises.
+
+    GUI apps resolve through NSRunningApplication; everything else falls back to
+    libproc's executable path and the enclosing bundle, so an .appex still gets a
+    real name ('Sound') instead of a bare pid.
+    """
+    import os
+    try:
+        from AppKit import NSRunningApplication
+        app = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
+        if app is not None:
+            return app.bundleIdentifier(), (app.localizedName() or str(pid))
+    except Exception:
+        pass
+    try:
+        import ctypes
+        libc = ctypes.CDLL("/usr/lib/libSystem.dylib")
+        buf = ctypes.create_string_buffer(PROC_PATH_MAX)
+        if libc.proc_pidpath(pid, buf, PROC_PATH_MAX) > 0:
+            return _bundle_identity_from_path(buf.value.decode("utf-8", "replace"))
+    except Exception:
+        pass
+    return None, "pid %d" % pid
+
+
+def mic_input_processes():
+    """Which processes are running audio INPUT right now.
+
+    Returns [(pid, bundle_id, name), …], or **None when attribution is
+    unavailable** (non-macOS, macOS < 14, or any failure). The None/[] distinction
+    is load-bearing: [] means 'asked, nobody holds the mic'; None means 'could not
+    ask', and the caller must then fall back to the device-level boolean.
+
+    Named seam for other platforms: a Windows/Linux implementation would return
+    the same shape from its own audio stack; today they get None.
+    """
+    if sys.platform != "darwin":
+        return None
+    try:
+        import CoreAudio as CA
+        import objc
+
+        def addr(selector):
+            return CA.AudioObjectPropertyAddress(
+                selector, CA.kAudioObjectPropertyScopeGlobal,
+                CA.kAudioObjectPropertyElementMain)
+
+        def u32(obj, selector):
+            status, _size, data = CA.AudioObjectGetPropertyData(
+                obj, addr(selector), 0, objc.NULL, UINT32_SIZE, None)
+            if status != 0:
+                return None
+            return struct.unpack("I", bytes(data))[0]
+
+        status, size = CA.AudioObjectGetPropertyDataSize(
+            CA.kAudioObjectSystemObject, addr(PROCESS_OBJECT_LIST), 0, objc.NULL, None)
+        if status != 0:
+            return None            # macOS < 14 — the property does not exist
+        count = size // UINT32_SIZE
+        if count <= 0:
+            return []
+        status, _size, raw = CA.AudioObjectGetPropertyData(
+            CA.kAudioObjectSystemObject, addr(PROCESS_OBJECT_LIST),
+            0, objc.NULL, size, None)
+        if status != 0:
+            return None
+        holders = []
+        for obj in struct.unpack("%dI" % count, bytes(raw)[:count * UINT32_SIZE]):
+            if not u32(obj, PROCESS_IS_RUNNING_INPUT):
+                continue
+            pid = u32(obj, PROCESS_PID)
+            if pid is None:
+                continue
+            bundle_id, name = _app_identity(pid)
+            holders.append((pid, bundle_id, name))
+        return holders
+    except Exception as e:
+        logging.debug("mic_input_processes() failed, attribution unavailable: %s", e)
+        return None
 
 
 def frontmost_window_rect():
