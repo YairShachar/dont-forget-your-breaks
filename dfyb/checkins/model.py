@@ -1,0 +1,133 @@
+"""Pure model for user-configurable check-ins (no tk/ctk).
+
+A check-in Question has an id, prompt text, an AnswerSpec (how it's answered) and
+a Cadence (how often to ask). Parsing is tolerant so a malformed config entry is
+dropped, never crashes the app.
+"""
+from dataclasses import dataclass
+
+# Answer types
+SCALE = "scale"       # numeric min..max (small ranges render as faces)
+NUMBER = "number"     # arbitrary numeric quantity (int/float) with optional unit/step
+CHOICES = "choices"   # a few fixed options
+NOTE = "note"         # free text only
+ANSWER_TYPES = (SCALE, NUMBER, CHOICES, NOTE)
+
+# Cadence types
+TIMES_PER_DAY = "times_per_day"
+PER_DAY = "per_day"
+PER_WEEK = "per_week"
+CADENCE_TYPES = (TIMES_PER_DAY, PER_DAY, PER_WEEK)
+
+# When to ask a question
+TRIGGER_BREAK = "break"          # asked when a break finishes (cadence-gated)
+TRIGGER_ON_DEMAND = "on_demand"  # only when the user taps "Check in"
+TRIGGERS = (TRIGGER_BREAK, TRIGGER_ON_DEMAND)
+
+SECONDS_PER_DAY = 86400
+DEFAULT_SCALE_MIN, DEFAULT_SCALE_MAX = 1, 5
+DEFAULT_NUMBER_MIN, DEFAULT_NUMBER_MAX = 0, 10000
+
+
+@dataclass
+class AnswerSpec:
+    type: str
+    min: int = DEFAULT_SCALE_MIN
+    max: int = DEFAULT_SCALE_MAX
+    min_label: str = ""
+    max_label: str = ""
+    options: tuple = ()
+    allow_note: bool = True
+    unit: str = ""
+    step: float = 1
+
+
+@dataclass
+class Cadence:
+    type: str
+    count: int = 1
+
+
+@dataclass
+class Question:
+    id: str
+    text: str
+    answer: AnswerSpec
+    cadence: Cadence
+    enabled: bool = True
+    trigger: str = TRIGGER_BREAK
+    once_per_day: bool = False
+
+
+def _parse_answer(raw):
+    if not isinstance(raw, dict):
+        return None
+    t = raw.get("type")
+    if t not in ANSWER_TYPES:
+        return None
+    if t == CHOICES and not raw.get("options"):
+        return None
+    if t == NUMBER:
+        lo = float(raw.get("min", DEFAULT_NUMBER_MIN))
+        hi = float(raw.get("max", DEFAULT_NUMBER_MAX))
+    else:
+        lo = int(raw.get("min", DEFAULT_SCALE_MIN))
+        hi = int(raw.get("max", DEFAULT_SCALE_MAX))
+    return AnswerSpec(
+        type=t, min=lo, max=hi,
+        min_label=str(raw.get("min_label", "")),
+        max_label=str(raw.get("max_label", "")),
+        options=tuple(raw.get("options", ()) or ()),
+        allow_note=bool(raw.get("allow_note", True)),
+        unit=str(raw.get("unit", "")),
+        step=float(raw.get("step", 1)))
+
+
+def _parse_cadence(raw):
+    raw = raw if isinstance(raw, dict) else {}
+    t = raw.get("type", PER_DAY)
+    if t not in CADENCE_TYPES:
+        t = PER_DAY
+    return Cadence(type=t, count=int(raw.get("count", 1)))
+
+
+def _parse_trigger(raw):
+    return raw if raw in TRIGGERS else TRIGGER_BREAK
+
+
+def parse_questions(raw_list):
+    """Turn the stored config list into typed Questions, dropping malformed entries."""
+    out = []
+    for raw in raw_list or []:
+        if not isinstance(raw, dict) or not raw.get("id") or not raw.get("text"):
+            continue
+        answer = _parse_answer(raw.get("answer"))
+        if answer is None:
+            continue
+        out.append(Question(
+            id=str(raw["id"]), text=str(raw["text"]), answer=answer,
+            cadence=_parse_cadence(raw.get("cadence")),
+            enabled=bool(raw.get("enabled", True)),
+            trigger=_parse_trigger(raw.get("trigger")),
+            once_per_day=bool(raw.get("once_per_day", False))))
+    return out
+
+
+def cadence_interval_seconds(cadence, active_window_seconds):
+    """Average spacing between asks for this cadence (a target, not a hard clock)."""
+    count = max(1, cadence.count)
+    if cadence.type == TIMES_PER_DAY:
+        return active_window_seconds / count
+    if cadence.type == PER_WEEK:
+        return 7 * SECONDS_PER_DAY / count
+    return SECONDS_PER_DAY / count          # PER_DAY (default)
+
+
+def answer_is_valid(spec, value):
+    if spec.type == SCALE:
+        return isinstance(value, int) and not isinstance(value, bool) and spec.min <= value <= spec.max
+    if spec.type == NUMBER:
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and spec.min <= value <= spec.max
+    if spec.type == CHOICES:
+        return value in spec.options
+    return value is None                    # NOTE: the text lives in the note field

@@ -10,6 +10,8 @@ import json
 import os
 import atexit
 import random
+import re
+import uuid
 import webbrowser
 import platform
 from dataclasses import replace as dataclass_replace
@@ -42,21 +44,31 @@ from dfyb.activity.event_log import (
     EventLog, BREAK_TAKEN, BREAK_FIRED, BREAK_SNOOZED, BREAK_SKIPPED,
     BREAK_SNOOZE_CANCELLED, BREAK_SNOOZE_RETURNED, SESSION_STARTED,
     BREAK_RESCHEDULED, SESSION_RESUMED, APP_UPDATED,
-    RESUME_PROMPTED, RESUME_ACCEPTED, RESUME_DISMISSED)
-from dfyb.activity.sensors import read_context, frontmost_window_rect, smooth_signal
+    RESUME_PROMPTED, RESUME_ACCEPTED, RESUME_DISMISSED, CHECK_IN,
+    MIC_DETECTION_FALLBACK, APP_IGNORE_ADDED, APP_IGNORE_REMOVED)
+from dfyb.activity.sensors import (read_context, frontmost_window_rect, smooth_signal,
+                                   running_gui_apps as sensors_running_gui_apps)
+from dfyb.activity import app_rules
 from dfyb.popup_placement import (screen_for_point, center_on_screen, clamp_onscreen,
-                                  main_window_geometry)
+                                  main_window_geometry, clamp_saved_position)
 from dfyb.scheduler.adapter import states_from_configs
 from dfyb.scheduler.tick import (advance, apply_snooze_freeze,
                                  track_due_since, deferral_at_fire, IDLE_EPISODE)
 from dfyb.scheduler.reschedule import reschedule_step, reschedule_bounds, nudged_remaining
 from dfyb.scheduler.engine import (decide, DEFER, coordinate_thresholds,
                                    AWAY_IDLE_THRESHOLD_SECONDS,
-                                   NATURAL_BREAK_IDLE_THRESHOLD_SECONDS)
+                                   NATURAL_BREAK_IDLE_THRESHOLD_SECONDS,
+                                   resolve_held_app, signal_reason_and_app)
 from dfyb.scheduler.dedup import break_in_play
 from dfyb.ui_controls import reset_button_style
 from dfyb.timer_lifecycle import timer_should_continue
 from dfyb.macos_window import pin_to_active_space
+from dfyb.checkins.model import (
+    SCALE, NUMBER, CHOICES, NOTE, TIMES_PER_DAY, PER_DAY, PER_WEEK,
+    DEFAULT_SCALE_MIN, DEFAULT_SCALE_MAX, DEFAULT_NUMBER_MIN, DEFAULT_NUMBER_MAX,
+    TRIGGER_BREAK, TRIGGER_ON_DEMAND, answer_is_valid,
+)
+from dfyb.checkins.history import format_check_in_value
 from dfyb.insights.transparency import track_held, held_message, holding_cue
 from dfyb.insights.status import compute_status
 from dfyb.insights.over_break import format_over_time
@@ -198,10 +210,12 @@ COLORS = {
     'surface_card':         ("#FFFFFF", "#2C2C2E"),
     'surface_hover':        ("#ECECEE", "#3A3A3C"),
     'border':               ("#D1D1D6", "#3A3A3C"),
+    'text_primary':         ("#1C1C1E", "#F2F2F7"),   # high-contrast label (iOS label)
     'text_secondary':       ("#8E8E93", "#999999"),   # dark ≡ old gray60
     'text_tertiary':        ("#AEAEB2", "#808080"),   # dark ≡ old gray50
     'accent_primary':       ("#007AFF", "#0A84FF"),   # systemBlue
     'accent_primary_hover': ("#0068D6", "#0077ED"),
+    'text_on_accent':       ("#FFFFFF", "#FFFFFF"),   # label atop a filled accent button
     'accent_success':       ("#34C759", "#30D158"),   # systemGreen
     'accent_warning':       ("#FF9500", "#FF9F0A"),   # systemOrange
     'accent_warning_hover': ("#E68600", "#E8900A"),
@@ -226,7 +240,8 @@ SETTINGS_SUBOPTION_INDENT = 12   # left inset for a nested sub-option block
 SETTINGS_SUBOPTION_RULE_W = 2    # width of the hairline marking a nested sub-block
 # Which settings categories open on first ever launch (persisted thereafter).
 SECTION_DEFAULT_EXPANDED = {"breaks": True, "smart_pausing": True,
-                            "break_popup": False, "app": False}
+                            "break_popup": False, "app": False,
+                            "check_ins": True}
 
 # Corner radii
 CORNER_RADIUS_PANEL = 10
@@ -237,6 +252,7 @@ CORNER_RADIUS_INPUT = 6
 BUTTON_HEIGHT_LARGE = 38    # Control buttons (Start/Reset/Pause)
 BUTTON_HEIGHT_SMALL = 28    # Test, play buttons
 BUTTON_HEIGHT_XLARGE = 40   # Popup actions (Snooze / ▾ / Done / Set)
+BUTTON_HEIGHT_BOTTOM_BAR = 22   # modest bottom-bar text buttons (Feedback / Check in / version)
 
 # Cockpit status hero
 DOT_SIZE = 11            # status dot diameter
@@ -253,6 +269,19 @@ PROGRESS_HEIGHT = 6     # slim progress-to-next-break bar
 HERO_PAD = SPACE_LG     # inner padding of the hero card
 DOT_PULSE_MS = 3200     # full breathe cycle of the on-track status dot
 HERO_HEADLINE_HEIGHT = 38  # fixed slot so the big<->medium font swap doesn't resize the window
+CHIP_ACTION_HEIGHT = 20     # inline "Ignore <app>" button on the holding chip
+IGNORE_ROW_REMOVE_W = 24    # ✕ button on an ignored-app row
+IGNORE_ROW_RESTORE_W = 64   # "Restore" button on a built-in the user turned off
+IGNORE_ROW_REMOVE_LABEL = "✕"
+IGNORE_ROW_RESTORE_LABEL = "Restore"
+IGNORE_ROW_BUILTIN_SUFFIX = " (built-in)"
+# A built-in the user removed stays listed, greyed, with a Restore button — the
+# picker only offers regular Dock apps, so most built-ins (an .appex, an agent, a
+# daemon) could never be found again once the row vanished (#40 final review).
+IGNORE_ROW_OFF_SUFFIX = " (built-in, off)"
+IGNORE_LIST_HEADING = "Ignore these apps"
+IGNORE_LIST_EMPTY_TEXT = "None — every app defers your breaks"
+APP_PICKER_TITLE = "Choose an app"
 STATUS_DOT_COLORS = {
     'good': COLORS['accent_success'],
     'warning': COLORS['accent_warning'],
@@ -283,6 +312,8 @@ SETTINGS_WINDOW_MIN_HEIGHT_RATIO = 0.15  # floor as a fraction of screen height
 SETTINGS_WINDOW_OPACITY = 0.95          # slight translucency (0..1)
 SETTINGS_WINDOW_HEIGHT_SLACK = SPACE_LG  # margin below the last card so it never sits flush/cut
 SETTINGS_WINDOW_Y_OFFSET = 80           # px the window sits above the main window
+APP_PICKER_W = 320          # "Choose an app" modal width
+APP_PICKER_H = 420          # "Choose an app" modal height
 
 # Break popup
 POPUP_WIDTH = 380  # height fits content (see CountdownPopup._position_popup)
@@ -342,6 +373,321 @@ BREAK_MESSAGES = [
     "Take a breath and unwind.",
     "A gentle pause.",
 ]
+
+# --- Check-ins (user-configurable periodic questions; #9 habits foundation) ---
+MIN_CHECK_IN_GAP_SECONDS = 20 * 60          # never two check-in prompts closer than this
+SECONDS_PER_HOUR = 3600                      # waking-window hours → seconds (check-ins)
+CHECK_IN_WAKING_WINDOW_HOURS = 14                                  # assumed waking span
+CHECK_IN_WAKING_WINDOW_SECONDS = CHECK_IN_WAKING_WINDOW_HOURS * SECONDS_PER_HOUR
+CHECK_IN_POPUP_W, CHECK_IN_POPUP_H = 340, 200
+CHECK_IN_SCALE_BTN_WIDTH = 44               # compact square-ish button per scale value
+CHECK_IN_SCALE_MIN_BTN_WIDTH = 22           # px; tightest still-legible scale cell
+CHECK_IN_SCALE_DENSE_GAP = 1                # px; near-joined cells once the row tightens
+CHECK_IN_SCALE_DENSE_PAD_X = SPACE_XS       # a dense strip reclaims the frame's side padding
+CHECK_IN_SCALE_DENSE_FONT = 'label'         # tighter type in a tightened cell
+CHECK_IN_SCALE_USABLE_W = CHECK_IN_POPUP_W - 2 * PADDING_PANEL_X          # normal row
+CHECK_IN_SCALE_DENSE_USABLE_W = CHECK_IN_POPUP_W - 2 * CHECK_IN_SCALE_DENSE_PAD_X
+CHECK_IN_NOTE_PLACEHOLDER = "Add a note (optional)"   # optional note entry (scale/choices/number)
+CHECK_IN_ANSWER_PLACEHOLDER = "Write a note…"         # note-type question's primary entry
+CHECK_IN_SAVE_LABEL = "Save"
+CHECK_IN_SKIP_LABEL = "Skip"
+# Detail-popup (select → optional note → Save) widgets, all token-sized.
+CHECK_IN_NUMBER_ENTRY_WIDTH = 100           # px; numeric entry field (number type)
+CHECK_IN_NUMBER_PLACEHOLDER = "Number"      # numeric entry hint
+CHECK_IN_SELECT_BORDER_WIDTH = 1            # outline on an UNselected scale/choice button
+CHECK_IN_ICON_BTN_WIDTH = 28                # px; square ✕ remove control in a Today row
+CHECK_IN_REMOVE_ICON = "✕"                  # remove a past answer
+CHECK_IN_REMOVE_CONFIRM_LABEL = "Remove?"   # inline confirm shown after tapping ✕ once
+CHECK_IN_REMOVE_CONFIRM_WIDTH = 72          # px; wider so "Remove?" fits
+CHECK_IN_NEW_ANSWER_LABEL = "＋ New answer"  # link to leave edit mode and add a fresh answer
+CHECK_IN_TODAY_HEADER = "Today"             # header above today's answers list
+CHECK_IN_TODAY_ROW_FMT = "{time} · {summary}"    # value line: <time> · <value>
+CHECK_IN_TODAY_ROW_TEXT_WRAP = 210          # px; wrap a long today-row summary
+CHECK_IN_UPDATE_CONTEXT = "Update today's answer"        # once-a-day, already answered
+CHECK_IN_ADD_CONTEXT_FMT = "Add another · {n} today"     # recurring, already answered
+CHECK_IN_EDITING_CONTEXT = "Editing"        # context line while editing a past answer
+CHECK_IN_ANSWERING_NOW_FMT = "Answering now: {value}"    # status line while composing a new answer
+
+# --- On-demand "Check in" (main-window affordance + question chooser) ---
+CHECK_IN_NOW_LABEL = "Check in"                      # modest main-window button
+CHECK_IN_NOW_TOOLTIP = "Answer a check-in now"
+CHECK_IN_CHOOSER_TITLE = "Check in"                  # chooser window title
+CHECK_IN_CHOOSER_PROMPT = "What would you like to check in on?"
+CHECK_IN_ROW_CHEVRON = "›"                           # tappable affordance on every row
+CHECK_IN_ROW_TEXT_WRAP = 210                         # px; question text wrap in a compact row
+CHECK_IN_ROW_NOTE_MAX = 18                           # truncate a note shown as the row's value
+CHECK_IN_ANSWER_WORD, CHECK_IN_ANSWERS_WORD = "answer", "answers"
+CHECK_IN_COUNT_FMT = "{n} {word}"                    # recurring row count, e.g. "3 answers"
+CHECK_IN_NONE_CONFIGURED_TEXT = "Nothing to check in on right now"   # calm empty-state note (also covers "all answered today")
+CHECK_IN_ADD_QUESTION_LABEL = "＋ Add a question"   # chooser link: think of one, add it here
+CHECK_IN_CHOOSER_CLOSE_LABEL = "Close"
+CHECK_IN_CHOOSER_BTN_WIDTH = 300                     # px; per-question chooser buttons
+CHECK_IN_TIME_FMT = "%-I:%M %p"        # e.g. "10:35 AM"
+
+# --- Settings > Check-ins section (card list + add/edit/delete question form) ---
+# All labels/sizes are tokens here; the widget code never inlines literals.
+CHECK_IN_SECTION_TITLE = "Check-ins"
+CHECK_IN_ENABLE_LABEL = "Enable check-ins"
+CHECK_IN_ADD_LABEL = "+ Add question"
+CHECK_IN_EDIT_LABEL = "Edit"
+CHECK_IN_DELETE_LABEL = "Delete"
+CHECK_IN_NEW_QUESTION_TEXT = "New question"       # default text for a freshly added card
+CHECK_IN_ID_FALLBACK = "question"                 # slug base when the text has no word chars
+CHECK_IN_ID_SEP = "-"                             # joins slug + a disambiguating counter
+CHECK_IN_DEFAULT_CHOICES = ["Yes", "No"]          # fallback if a Choices question has no options
+CHECK_IN_OPTIONS_SPLIT = ","                      # options may be comma- OR newline-separated
+# Card layout
+CHECK_IN_CARD_BORDER_WIDTH = 1
+CHECK_IN_CARD_TEXT_WRAP = 360                     # px; wrap long question text inside a card
+CHECK_IN_TOGGLE_WIDTH = 28                        # bare per-question enable checkbox
+CHECK_IN_ACTION_BTN_WIDTH = 62                    # Edit / Delete buttons
+CHECK_IN_SUMMARY_INDENT = 28                      # align the summary caption under the text
+# One-line answer + cadence summary (e.g. "Scale 1–5 · 2×/day")
+CHECK_IN_SUMMARY_SEP = " · "                 # " · " between the answer + cadence parts
+CHECK_IN_ANSWER_TYPE_LABELS = {SCALE: "Scale", NUMBER: "Number",
+                               CHOICES: "Choices", NOTE: "Note"}
+CHECK_IN_SCALE_RANGE_FMT = "{label} {min}–{max}"   # e.g. "Scale 1–5"
+CHECK_IN_NUMBER_UNIT_FMT = "{label} ({unit})"      # e.g. "Number (hours)"; bare label when no unit
+CHECK_IN_DEFAULT_NUMBER_STEP = 1                   # stepper granularity when unset/invalid
+CHECK_IN_CHOICES_FMT = "{label}: {opts}"
+CHECK_IN_CHOICES_JOIN = "/"
+CHECK_IN_CADENCE_DAILY_LABEL = "daily"
+CHECK_IN_CADENCE_WEEKLY_LABEL = "weekly"
+CHECK_IN_CADENCE_PER_DAY_FMT = "{count}×/day"      # e.g. "2×/day"
+CHECK_IN_CADENCE_PER_WEEK_FMT = "{count}×/week"
+# Trigger ("When") summary suffixes appended to a card caption (e.g. "… · on demand")
+CHECK_IN_TRIGGER_BREAK_SUFFIX = "with a break"
+CHECK_IN_TRIGGER_ON_DEMAND_SUFFIX = "on demand"
+# Repeat summary suffix appended to a card caption when a question is once-per-day
+CHECK_IN_ONCE_A_DAY_SUFFIX = " · once a day"
+# Edit modal
+CHECK_IN_EDIT_TITLE = "Edit check-in"
+CHECK_IN_EDIT_TEXT_LABEL = "Question"
+CHECK_IN_EDIT_TYPE_LABEL = "Answer type"
+CHECK_IN_EDIT_MIN_LABEL = "Min"
+CHECK_IN_EDIT_MAX_LABEL = "Max"
+CHECK_IN_EDIT_LOW_LABEL = "Low label"
+CHECK_IN_EDIT_HIGH_LABEL = "High label"
+CHECK_IN_EDIT_OPTIONS_LABEL = "Options (one per line or comma-separated)"
+CHECK_IN_EDIT_UNIT_LABEL = "Unit"
+CHECK_IN_EDIT_STEP_LABEL = "Step"
+CHECK_IN_EDIT_UNIT_PLACEHOLDER = "e.g. hours"      # optional — shown beside the entry
+CHECK_IN_EDIT_NOTE_HINT = "A free-text note is the answer — nothing else to set."
+CHECK_IN_EDIT_ALLOW_NOTE_LABEL = "Allow an optional note"
+CHECK_IN_EDIT_CADENCE_LABEL = "How often"
+CHECK_IN_EDIT_COUNT_LABEL = "Count"
+CHECK_IN_EDIT_TRIGGER_LABEL = "When"
+CHECK_IN_EDIT_REPEAT_LABEL = "Repeat"
+CHECK_IN_EDIT_SAVE_LABEL = "Save"
+CHECK_IN_EDIT_CANCEL_LABEL = "Cancel"
+CHECK_IN_CADENCE_LABELS = {TIMES_PER_DAY: "Times per day",
+                           PER_DAY: "Per day", PER_WEEK: "Per week"}
+CHECK_IN_TRIGGER_LABELS = {TRIGGER_BREAK: "With a break",
+                           TRIGGER_ON_DEMAND: "On demand only"}
+CHECK_IN_REPEAT_LABELS = {"A few times a day": False, "Once a day": True}
+CHECK_IN_EDIT_TEXT_WIDTH = 340                    # question / options field width
+CHECK_IN_EDIT_INT_WIDTH = 64                      # min / max / count entries
+CHECK_IN_EDIT_LABEL_WIDTH = 150                   # scale end-label entries
+CHECK_IN_EDIT_UNIT_WIDTH = 110                    # number unit entry
+CHECK_IN_EDIT_OPTIONS_HEIGHT = 96                 # options textbox height
+
+DEFAULT_CHECK_INS = {
+    "enabled": True,
+    "questions": [
+        # Scale-first (spec v2 §6): plain-language ends AND a number to trend on,
+        # both answered in one tap so the defaults never feel like a survey.
+        {"id": "refreshed", "text": "How refreshed do you feel?", "enabled": True,
+         "answer": {"type": "scale", "min": 1, "max": 5,
+                    "min_label": "Low", "max_label": "Great", "allow_note": True},
+         "cadence": {"type": "times_per_day", "count": 2}, "trigger": "break"},
+        {"id": "sleep", "text": "How did you sleep?", "enabled": True,
+         "answer": {"type": "scale", "min": 1, "max": 5,
+                    "min_label": "Awful", "max_label": "Great", "allow_note": True},
+         "cadence": {"type": "per_day", "count": 1}, "trigger": "on_demand",
+         "once_per_day": True},
+    ],
+}
+
+
+def merge_check_ins(saved_prefs):
+    """(enabled, questions) from saved prefs, falling back to DEFAULT_CHECK_INS so
+    older config files (no 'check_ins' key) load unchanged."""
+    block = saved_prefs.get("check_ins") or {}
+    enabled = block.get("enabled", DEFAULT_CHECK_INS["enabled"])
+    questions = block.get("questions", DEFAULT_CHECK_INS["questions"])
+    return enabled, questions
+
+
+def check_in_event_payload(question, value, note, event_id):
+    """The data dict for a CHECK_IN answer event. `event_id` is a stable id (uuid hex) so
+    the entry can later be edited/removed via correction events."""
+    return {"id": event_id, "question_id": question.id, "question": question.text,
+            "answer_type": question.answer.type, "value": value, "note": (note or None)}
+
+
+def check_in_edit_payload(event_id, target_id, value, note):
+    """A CHECK_IN correction that overrides the value/note of the entry `target_id`."""
+    return {"id": event_id, "edits": target_id, "value": value, "note": (note or None)}
+
+
+def check_in_remove_payload(event_id, target_id):
+    """A CHECK_IN correction that removes the entry `target_id` from views."""
+    return {"id": event_id, "removes": target_id}
+
+
+def new_check_in_question(question_id):
+    """A blank, valid question dict — the starting point for both Settings'
+    "+ Add question" and the chooser's add row. Scale-first, like the defaults."""
+    return {
+        "id": question_id, "text": CHECK_IN_NEW_QUESTION_TEXT, "enabled": True,
+        "answer": {"type": SCALE, "min": DEFAULT_SCALE_MIN, "max": DEFAULT_SCALE_MAX,
+                   "min_label": "", "max_label": "", "allow_note": True},
+        "cadence": {"type": TIMES_PER_DAY, "count": 1},
+        "trigger": TRIGGER_BREAK,
+    }
+
+
+def _ci_int(value, default):
+    """Parse an int, falling back to `default` for blank/garbage entry text."""
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _ci_num(value, default):
+    """Parse a number, int when whole (7 not 7.0) so the stored value stays clean.
+    Falls back to `default` for blank/garbage entry text."""
+    try:
+        parsed = float(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+    return int(parsed) if parsed.is_integer() else parsed
+
+
+def scale_button_size(count, usable_width, dense_usable_width):
+    """(width, gap, dense) for one row of `count` scale buttons.
+
+    A short scale (1–5) keeps the comfortable default cell inside `usable_width`.
+    A wider one (0–10) becomes a dense strip: it reclaims the frame's side padding
+    (hence the wider `dense_usable_width`), tightens the gap and shrinks the cells
+    so every value stays on ONE row — never a wrapped grid — down to a legible
+    minimum. `dense` says which layout was chosen — a count can need the tighter
+    padding while its cells still come out at the default width. Pure.
+    """
+    count = max(1, count)
+    if count * (CHECK_IN_SCALE_BTN_WIDTH + 2 * SPACE_XXS) <= usable_width:
+        return CHECK_IN_SCALE_BTN_WIDTH, SPACE_XXS, False
+    width = dense_usable_width // count - 2 * CHECK_IN_SCALE_DENSE_GAP
+    width = min(CHECK_IN_SCALE_BTN_WIDTH, max(CHECK_IN_SCALE_MIN_BTN_WIDTH, width))
+    return width, CHECK_IN_SCALE_DENSE_GAP, True
+
+
+def scale_button_rows(values, max_per_row):
+    """Split scale values into BALANCED rows of at most `max_per_row` buttons.
+
+    Balanced so 0–10 reads 4/4/3 rather than 5/5/1 — the popup is a fixed width,
+    so a wide range has to wrap instead of running off the edge. Pure.
+    """
+    values = list(values)
+    if not values:
+        return []
+    rows = -(-len(values) // max(1, max_per_row))       # ceil division
+    per_row = -(-len(values) // rows)
+    return [values[i:i + per_row] for i in range(0, len(values), per_row)]
+
+
+def check_in_scale_answer(min_text, max_text, min_label, max_label, allow_note):
+    """The stored `answer` dict for a Scale question, built from raw field text."""
+    low = _ci_int(min_text, DEFAULT_SCALE_MIN)
+    high = _ci_int(max_text, DEFAULT_SCALE_MAX)
+    if high < low:
+        low, high = high, low
+    return {"type": SCALE, "min": low, "max": high,
+            "min_label": str(min_label).strip(), "max_label": str(max_label).strip(),
+            "allow_note": bool(allow_note)}
+
+
+def check_in_choices_answer(options_text, allow_note):
+    """The stored `answer` dict for a Choices question, built from the options box."""
+    options = _parse_options_text(options_text)
+    return {"type": CHOICES, "options": options or list(CHECK_IN_DEFAULT_CHOICES),
+            "allow_note": bool(allow_note)}
+
+
+def check_in_number_answer(unit, min_text, max_text, step_text, allow_note):
+    """The stored `answer` dict for a Number question, built from the edit modal's
+    raw field text: a reversed range is swapped and a non-positive step is healed."""
+    low = _ci_num(min_text, DEFAULT_NUMBER_MIN)
+    high = _ci_num(max_text, DEFAULT_NUMBER_MAX)
+    if high < low:
+        low, high = high, low
+    step = _ci_num(step_text, CHECK_IN_DEFAULT_NUMBER_STEP)
+    if step <= 0:
+        step = CHECK_IN_DEFAULT_NUMBER_STEP
+    return {"type": NUMBER, "unit": str(unit).strip(), "min": low, "max": high,
+            "step": step, "allow_note": bool(allow_note)}
+
+
+def _check_in_cadence_summary(cad_type, count):
+    """Human phrase for a cadence: 'daily', 'weekly', '2×/day', '3×/week'."""
+    if cad_type == PER_WEEK:
+        return (CHECK_IN_CADENCE_WEEKLY_LABEL if count == 1
+                else CHECK_IN_CADENCE_PER_WEEK_FMT.format(count=count))
+    if cad_type == PER_DAY and count == 1:
+        return CHECK_IN_CADENCE_DAILY_LABEL
+    return CHECK_IN_CADENCE_PER_DAY_FMT.format(count=count)
+
+
+def _check_in_trigger_summary(trigger):
+    """Human 'When' suffix for a trigger: 'with a break' or 'on demand'."""
+    return (CHECK_IN_TRIGGER_ON_DEMAND_SUFFIX if trigger == TRIGGER_ON_DEMAND
+            else CHECK_IN_TRIGGER_BREAK_SUFFIX)
+
+
+def check_in_summary(question):
+    """A one-line 'answer-type + range/options · cadence · when' summary for a raw
+    question dict (e.g. 'Scale 1–5 · 2×/day · with a break')."""
+    answer = question.get("answer") or {}
+    atype = answer.get("type")
+    label = CHECK_IN_ANSWER_TYPE_LABELS.get(atype, CHECK_IN_ANSWER_TYPE_LABELS[NOTE])
+    if atype == SCALE:
+        answer_part = CHECK_IN_SCALE_RANGE_FMT.format(
+            label=label, min=answer.get("min", DEFAULT_SCALE_MIN),
+            max=answer.get("max", DEFAULT_SCALE_MAX))
+    elif atype == NUMBER:
+        unit = str(answer.get("unit", "")).strip()
+        answer_part = (CHECK_IN_NUMBER_UNIT_FMT.format(label=label, unit=unit)
+                       if unit else label)
+    elif atype == CHOICES:
+        opts = CHECK_IN_CHOICES_JOIN.join(str(o) for o in (answer.get("options") or ()))
+        answer_part = CHECK_IN_CHOICES_FMT.format(label=label, opts=opts)
+    else:
+        answer_part = label
+    cadence = question.get("cadence") or {}
+    cadence_part = _check_in_cadence_summary(
+        cadence.get("type", PER_DAY), _ci_int(cadence.get("count", 1), 1))
+    trigger_part = _check_in_trigger_summary(question.get("trigger"))
+    summary = CHECK_IN_SUMMARY_SEP.join((answer_part, cadence_part, trigger_part))
+    if question.get("once_per_day"):
+        summary += CHECK_IN_ONCE_A_DAY_SUFFIX
+    return summary
+
+
+def _slugify_check_in(text):
+    """A lowercase hyphen slug from question text (word chars only)."""
+    return re.sub(r"[^a-z0-9]+", CHECK_IN_ID_SEP, str(text).lower()).strip(CHECK_IN_ID_SEP)
+
+
+def _parse_options_text(text):
+    """Options entered one-per-line or comma-separated → a clean list (no blanks)."""
+    normalized = (text or "").replace(CHECK_IN_OPTIONS_SPLIT, "\n")
+    return [line.strip() for line in normalized.splitlines() if line.strip()]
+
+
+def _options_to_text(options):
+    """Options list → newline-joined text for the edit box."""
+    return "\n".join(str(o) for o in (options or ()))
 
 
 def _display_rects():
@@ -870,6 +1216,718 @@ class CountdownPopup:
             pass
 
 
+# ------------------ CHECK-IN POPUP ------------------
+
+class CheckInPopup:
+    """A small, gentle popup that surfaces one user-configurable check-in question
+    and reports the answer (or a skip) back via callbacks.
+
+    Mirrors CountdownPopup's window setup (a ``CTkToplevel`` pinned to the active
+    Space per #21, kept on top, styled purely from design tokens) but carries no
+    countdown/snooze machinery: answering or skipping simply closes it. It exposes
+    ``closed`` / ``bring_to_user`` / ``close`` so it can stand in as the app's
+    ``active_popup`` interchangeably with CountdownPopup.
+
+    The detail popup is a deliberate select → optional note → Save flow (never
+    tap-and-go): a scale/choice/number value is SELECTED (highlighted) first, an
+    optional note can ride along, and Save logs value+note together. It also shows
+    today's answers for this question; the WHOLE row is the edit affordance
+    (hover-tints, click enters edit; click again or "＋ New answer" leaves edit),
+    with a per-row ✕ remove (dismissible "Remove?" confirm), and a context title
+    ("Update today's answer" / "Add another · N today").
+
+    Callbacks fire at most once total: exactly one of ``on_answer(value, note)``,
+    ``on_edit(target_id, value, note)``, ``on_remove(target_id)`` or ``on_skip()``
+    — closing the window via its OS control counts as a skip.
+    """
+
+    def __init__(self, root, question, entries, on_answer, on_edit, on_remove,
+                 on_skip, screen=None):
+        self.root = root
+        self.question = question
+        self.entries = entries or []
+        self.on_answer = on_answer
+        self.on_edit = on_edit
+        self.on_remove = on_remove
+        self.on_skip = on_skip
+        self.closed = False
+        # Answer state. ``selected_value`` holds the chosen scale int / choice str
+        # (number is read live from its entry; note is read from the note field).
+        self.selected_value = None
+        self.value_buttons = {}      # value -> CTkButton (scale/choices highlight)
+        self.number_entry = None
+        self.note_entry = None
+        self.save_button = None
+        self.context_label = None
+        self.edit_target_id = None   # non-None => Save logs an edit for this entry
+        # entry id -> {"row", "value" label, "note" label, "time" str, "note_shown"}:
+        # tracked so edit mode can highlight a row and live-preview edits into it.
+        self.today_widgets = {}
+        self._armed_remove = None    # (button, entry) of a pending "Remove?" confirm, or None
+        self.new_answer_btn = None   # "＋ New answer"/"Answering now" status line (recurring only)
+        self.actions_row = None      # Skip/Save row (anchor for placing the new-answer link)
+        self.screen = screen         # placement screen rect (re-clamp on-screen when re-fitting)
+
+        # Window: pinned to the active Space (multi-monitor #21), topmost, fixed size.
+        # No AppleScript activate/focus-restore here — that switched Spaces (#21).
+        self.window = ctk.CTkToplevel(root)
+        self.window.title(question.text)
+        self.window.resizable(False, False)
+        pin_to_active_space(self.window)
+        self.window.attributes('-topmost', True)
+        self.window.geometry(f"{CHECK_IN_POPUP_W}x{CHECK_IN_POPUP_H}")
+        # Closing via the OS window control counts as a skip (nothing logged).
+        self.window.protocol("WM_DELETE_WINDOW", self._skip)
+
+        container = ctk.CTkFrame(
+            self.window, corner_radius=CORNER_RADIUS_PANEL,
+            fg_color=COLORS['surface_card'])
+        container.pack(fill="both", expand=True)
+
+        ctk.CTkLabel(
+            container, text=question.text,
+            font=make_font('heading', weight="bold"),
+            text_color=COLORS['text_primary'],
+            wraplength=CHECK_IN_POPUP_W - 2 * PADDING_PANEL_X
+        ).pack(padx=PADDING_PANEL_X, pady=(PADDING_PANEL_Y, SPACE_XXS))
+
+        # Context line (only when re-answering): once-a-day => "Update today's
+        # answer"; recurring => "Add another · N today". No line for the first answer.
+        if self.entries:
+            ctx = (CHECK_IN_UPDATE_CONTEXT if question.once_per_day
+                   else CHECK_IN_ADD_CONTEXT_FMT.format(n=len(self.entries)))
+            self.context_label = ctk.CTkLabel(
+                container, text=ctx, font=make_font('caption'),
+                text_color=COLORS['text_secondary'])
+            self.context_label.pack(padx=PADDING_PANEL_X, pady=(0, ROW_SPACING))
+
+        self._build_answer(container, question.answer)
+
+        # An optional, always-visible note field for scale/choices/number answers.
+        # (A note-type question already built its own entry as the answer control.)
+        if self.note_entry is None and question.answer.allow_note:
+            self._build_note_entry(container, CHECK_IN_NOTE_PLACEHOLDER)
+
+        # Today's answers for this question; the whole row edits, ✕ removes.
+        if self.entries:
+            self._build_today_list(container, self.entries)
+
+        # Recurring + already answered: a "＋ New answer" link (hidden until editing)
+        # to leave edit mode and add a fresh answer. Once-a-day has one answer, so no link.
+        if self.entries and not question.once_per_day:
+            self._build_new_answer_affordance(container)
+
+        self._build_actions(container)
+
+        # Center over the main window so it lands on the SAME screen the app is on
+        # (multi-monitor #1): a bare CTkToplevel would otherwise open on the primary
+        # display. Raw Tk `wm geometry` — CTk's .geometry() mislocates cross-monitor.
+        self.window.update_idletasks()
+        # Grow to fit the content (min = the design height) so descenders on the
+        # scale end-labels ("groggy") aren't clipped by a too-short fixed window.
+        w = CHECK_IN_POPUP_W
+        h = max(CHECK_IN_POPUP_H, self.window.winfo_reqheight())
+        # Center on the active screen and CLAMP fully on-screen. Centering over the
+        # (possibly small / edge) main window could push a tall popup off the top, so it
+        # flashed and vanished. Mirrors the break popup's placement.
+        if screen is not None:
+            x, y = center_on_screen(screen, w, h)
+            x, y = clamp_onscreen(x, y, w, h, screen)
+        elif root is not None and root.winfo_exists():
+            x = root.winfo_x() + (root.winfo_width() - w) // 2
+            y = root.winfo_y() + (root.winfo_height() - h) // 2
+        else:
+            x = (self.window.winfo_screenwidth() - w) // 2
+            y = (self.window.winfo_screenheight() - h) // 2
+        self.window.tk.call("wm", "geometry", self.window, f"{w}x{h}+{int(x)}+{int(y)}")
+
+        self.window.lift()
+
+        # Once-a-day + already answered: open directly on its single answer in edit mode
+        # (Save then UPDATES it rather than appending). Restore the context to
+        # "Update today's answer" — the daily flow reads as an update, not "Editing".
+        if question.once_per_day and self.entries:
+            self._enter_edit(self.entries[-1])
+            if self.context_label is not None:
+                self.context_label.configure(text=CHECK_IN_UPDATE_CONTEXT)
+
+    def _refit_height(self):
+        """Re-fit the window height to the current content in place, keeping x/y (the
+        window is sized ONCE in ``__init__`` while the status line is hidden; entering
+        edit / showing "Answering now" grows the content, so without this the bottom
+        Skip/Save row and the "Editing" descender get squeezed off). Re-clamps on the
+        placement screen so a taller window can't push off the top edge."""
+        if self.closed:
+            return
+        self.window.update_idletasks()
+        w = CHECK_IN_POPUP_W
+        h = max(CHECK_IN_POPUP_H, self.window.winfo_reqheight())
+        x, y = self.window.winfo_x(), self.window.winfo_y()
+        if self.screen is not None:
+            _x, y = clamp_onscreen(x, y, w, h, self.screen)
+        self.window.tk.call("wm", "geometry", self.window, f"{w}x{h}+{int(x)}+{int(y)}")
+
+    # ---- answer controls -------------------------------------------------
+
+    def _build_answer(self, parent, answer):
+        """Render the answer control appropriate to the question's answer type.
+        Scale/choices/number all SELECT (no auto-submit); Save logs the selection."""
+        if answer.type == SCALE:
+            self._build_scale(parent, answer)
+        elif answer.type == NUMBER:
+            self._build_number(parent, answer)
+        elif answer.type == CHOICES:
+            self._build_choices(parent, answer)
+        else:                                    # NOTE: the free text IS the answer
+            self._build_note_entry(parent, CHECK_IN_ANSWER_PLACEHOLDER, primary=True)
+
+    def _style_select_button(self, btn, selected):
+        """Toggle a scale/choice button between the selected (filled accent) and the
+        unselected (transparent + outline) look."""
+        if selected:
+            btn.configure(
+                fg_color=COLORS['accent_primary'],
+                hover_color=COLORS['accent_primary_hover'],
+                border_width=0, text_color=COLORS['text_on_accent'])
+        else:
+            btn.configure(
+                fg_color="transparent", hover_color=COLORS['surface_hover'],
+                border_width=CHECK_IN_SELECT_BORDER_WIDTH,
+                border_color=COLORS['border'], text_color=COLORS['text_primary'])
+
+    def _select(self, value):
+        """Select a scale/choice value: highlight it, remember it, re-evaluate Save."""
+        self._disarm_remove()        # selecting a value cancels a pending "Remove?"
+        self.selected_value = value
+        for v, btn in self.value_buttons.items():
+            self._style_select_button(btn, v == value)
+        self._refresh_save_state()
+        self._preview_edit()         # live-preview the new value into the edited row
+        self._update_status()        # composing: reflect the chosen value in the status line
+        self._refit_height()         # the status line may have appeared → re-fit height
+
+    def _build_scale(self, parent, answer):
+        """A button per integer in ``[min, max]``; ends labelled with min/max labels.
+        Clicking SELECTS (highlights) — Save logs it."""
+        values = list(range(answer.min, answer.max + 1))
+        width, gap, dense = scale_button_size(len(values), CHECK_IN_SCALE_USABLE_W,
+                                              CHECK_IN_SCALE_DENSE_USABLE_W)
+        # A tightened cell gets a shorter body and smaller type, so the strip reads as
+        # a scale rather than a row of tall slivers — and so CTk's text-driven minimum
+        # width doesn't quietly push the row wider than the popup.
+        height = BUTTON_HEIGHT_SMALL if dense else BUTTON_HEIGHT_LARGE
+        value_font = make_font(CHECK_IN_SCALE_DENSE_FONT if dense else 'body', weight="bold")
+        usable = CHECK_IN_SCALE_DENSE_USABLE_W if dense else CHECK_IN_SCALE_USABLE_W
+        frame = ctk.CTkFrame(parent, fg_color="transparent")
+        frame.pack(padx=CHECK_IN_SCALE_DENSE_PAD_X if dense else PADDING_PANEL_X,
+                   pady=SPACE_XS)
+        per_row = max(1, usable // (width + 2 * gap))
+        for row_values in scale_button_rows(values, per_row):
+            row = ctk.CTkFrame(frame, fg_color="transparent")
+            row.pack(pady=(0, SPACE_XXS))
+            for value in row_values:
+                btn = ctk.CTkButton(
+                    row, text=str(value), width=width, height=height,
+                    corner_radius=CORNER_RADIUS_BUTTON, font=value_font,
+                    command=lambda v=value: self._select(v))
+                btn.pack(side="left", padx=gap)
+                self.value_buttons[value] = btn
+                self._style_select_button(btn, False)
+        if answer.min_label or answer.max_label:
+            labels = ctk.CTkFrame(frame, fg_color="transparent")
+            labels.pack(fill="x", pady=(SPACE_XXS, 0))
+            ctk.CTkLabel(
+                labels, text=answer.min_label, font=make_font('caption'),
+                text_color=COLORS['text_secondary']).pack(side="left")
+            ctk.CTkLabel(
+                labels, text=answer.max_label, font=make_font('caption'),
+                text_color=COLORS['text_secondary']).pack(side="right")
+
+    def _build_choices(self, parent, answer):
+        """One full-width button per fixed option, STACKED vertically so any number or
+        length of options fits the popup width (laid out side-by-side they overflow and
+        clip off the right edge). Clicking SELECTS (highlights) — Save logs it."""
+        col = ctk.CTkFrame(parent, fg_color="transparent")
+        col.pack(fill="x", padx=PADDING_PANEL_X, pady=SPACE_XS)
+        for option in answer.options:
+            btn = ctk.CTkButton(
+                col, text=str(option), height=BUTTON_HEIGHT_LARGE,
+                corner_radius=CORNER_RADIUS_BUTTON, font=make_font('body'),
+                command=lambda o=option: self._select(o))
+            btn.pack(fill="x", pady=SPACE_XXS)
+            self.value_buttons[option] = btn
+            self._style_select_button(btn, False)
+
+    def _build_number(self, parent, answer):
+        """A single-line numeric entry (int/decimal) with the unit shown beside it.
+        The value is read live from the field; Save validates it against min/max."""
+        frame = ctk.CTkFrame(parent, fg_color="transparent")
+        frame.pack(padx=PADDING_PANEL_X, pady=SPACE_XS)
+        self.number_entry = ctk.CTkEntry(
+            frame, width=CHECK_IN_NUMBER_ENTRY_WIDTH, height=BUTTON_HEIGHT_LARGE,
+            corner_radius=CORNER_RADIUS_INPUT, font=make_font('body'),
+            placeholder_text=CHECK_IN_NUMBER_PLACEHOLDER)
+        self.number_entry.pack(side="left")
+        self.number_entry.bind("<KeyRelease>", self._on_input_changed)
+        self.number_entry.bind("<Return>", lambda e: self._save())
+        if answer.unit:
+            ctk.CTkLabel(
+                frame, text=answer.unit, font=make_font('body'),
+                text_color=COLORS['text_secondary']).pack(side="left", padx=(SPACE_XS, 0))
+
+    def _build_note_entry(self, parent, placeholder, primary=False):
+        """A single-line note entry. For a note-type question (``primary``) the text IS
+        the answer, so typing gates Save; otherwise it's an optional note that rides along.
+        Typing always re-evaluates Save and live-previews into the edited row (both no-ops
+        when they don't apply)."""
+        self.note_entry = ctk.CTkEntry(
+            parent, placeholder_text=placeholder, height=BUTTON_HEIGHT_SMALL,
+            corner_radius=CORNER_RADIUS_INPUT, font=make_font('body'))
+        self.note_entry.pack(fill="x", padx=PADDING_PANEL_X, pady=SPACE_XS)
+        self.note_entry.bind("<Return>", lambda e: self._save())
+        self.note_entry.bind("<KeyRelease>", self._on_input_changed)
+
+    def _on_input_changed(self, _event=None):
+        """Number/note keystroke: re-evaluate Save, live-preview into the edited row, and
+        keep the "Answering now" status line (and window height) in step with the input."""
+        self._refresh_save_state()
+        self._preview_edit()
+        self._update_status()        # composing: reflect the typed value in the status line
+        self._refit_height()         # the status line may have appeared/cleared → re-fit
+
+    # ---- Today list (row-as-edit / remove past answers) ------------------
+
+    def _build_today_list(self, parent, entries):
+        """Header + one row per today's answer. The WHOLE row is the edit affordance
+        (hover-tint + click-to-edit); each row also carries a ✕ remove."""
+        ctk.CTkLabel(
+            parent, text=CHECK_IN_TODAY_HEADER, font=make_font('caption', weight="bold"),
+            text_color=COLORS['text_secondary'], anchor="w"
+        ).pack(fill="x", padx=PADDING_PANEL_X, pady=(SPACE_SM, SPACE_XXS))
+        for entry in entries:
+            self._build_today_row(parent, entry)
+
+    def _build_today_row(self, parent, entry):
+        """One answer row: a value line (``<time> · <value>``, primary) and, when the
+        entry has a note, a note subtext line (tertiary) beneath it. The whole row
+        hover-tints and click-toggles edit mode; a ✕ on the right removes (dismissible
+        confirm). Value + note labels are tracked so edit mode can highlight/preview."""
+        eid = entry["id"]
+        row = ctk.CTkFrame(parent, fg_color="transparent", corner_radius=CORNER_RADIUS_BUTTON)
+        row.pack(fill="x", padx=SPACE_XS, pady=SPACE_XXS)
+        remove_btn = ctk.CTkButton(
+            row, text=CHECK_IN_REMOVE_ICON, width=CHECK_IN_ICON_BTN_WIDTH,
+            height=BUTTON_HEIGHT_SMALL, corner_radius=CORNER_RADIUS_BUTTON,
+            fg_color="transparent", hover_color=COLORS['surface_hover'],
+            text_color=COLORS['text_secondary'], font=make_font('body'))
+        remove_btn.configure(command=lambda b=remove_btn, e=entry: self._arm_remove(b, e))
+        remove_btn.pack(side="right", padx=(SPACE_XXS, 0))
+        # Left text column, with comfortable LEFT padding so it doesn't hug the edge.
+        text_col = ctk.CTkFrame(row, fg_color="transparent")
+        text_col.pack(side="left", fill="x", expand=True, padx=(SPACE_MD, SPACE_XS))
+        value_lbl = ctk.CTkLabel(
+            text_col, text="", font=make_font('caption'), text_color=COLORS['text_primary'],
+            anchor="w", justify="left", wraplength=CHECK_IN_TODAY_ROW_TEXT_WRAP)
+        value_lbl.pack(fill="x", anchor="w")
+        note_lbl = ctk.CTkLabel(
+            text_col, text="", font=make_font('caption'), text_color=COLORS['text_tertiary'],
+            anchor="w", justify="left", wraplength=CHECK_IN_TODAY_ROW_TEXT_WRAP)
+        self.today_widgets[eid] = {
+            "row": row, "value": value_lbl, "note": note_lbl, "note_shown": False,
+            "time": time.strftime(CHECK_IN_TIME_FMT, time.localtime(entry["ts"]))}
+        self._set_row_text(eid, entry.get("value"), entry.get("note"))
+        # Whole row is one hover target; the text column (not the ✕) is the click target.
+        self._bind_recursive(row, on_enter=lambda e, r=row: self._hover_enter(r),
+                             on_leave=lambda e, r=row: self._hover_leave(r))
+        self._bind_recursive(text_col, on_click=lambda e, en=entry: self._on_row_click(en),
+                             cursor="pointinghand")
+        row.bind("<Button-1>", lambda e, en=entry: self._on_row_click(en), add="+")
+        try:
+            row.configure(cursor="pointinghand")
+        except Exception:
+            pass
+
+    def _bind_recursive(self, widget, on_click=None, on_enter=None, on_leave=None, cursor=None):
+        """Bind the given handlers on ``widget`` and every descendant so a composite CTk
+        row reacts uniformly (a click/hover on the inner text label counts as one on the
+        row). Handlers are additive (``add="+"``) so CTk's own bindings still fire."""
+        if on_click is not None:
+            widget.bind("<Button-1>", on_click, add="+")
+        if on_enter is not None:
+            widget.bind("<Enter>", on_enter, add="+")
+        if on_leave is not None:
+            widget.bind("<Leave>", on_leave, add="+")
+        if cursor is not None:
+            try:
+                widget.configure(cursor=cursor)
+            except Exception:
+                pass
+        for child in widget.winfo_children():
+            self._bind_recursive(child, on_click, on_enter, on_leave, cursor)
+
+    # ---- row text (value line + note subtext) ---------------------------
+
+    def _value_summary(self, value, note):
+        """The value-line summary (after the time). For a note-type question the note IS
+        the answer, so it shows here; otherwise the answer value shows here."""
+        if self.question.answer.type == NOTE:
+            return format_check_in_value({"value": None, "note": note})
+        return format_check_in_value({"value": value, "note": None})
+
+    def _note_subtext(self, note):
+        """The note subtext beneath the value line, or None (note-type keeps its note on
+        the value line; a blank note shows no subtext)."""
+        if self.question.answer.type == NOTE:
+            return None
+        return str(note) if note else None
+
+    def _set_row_text(self, eid, value, note):
+        """Render a Today row's value line + note subtext from a value/note pair — the
+        stored entry (build / revert) or the live control state (preview). Shows/hides
+        the note subtext line as the note appears/clears."""
+        w = self.today_widgets.get(eid)
+        if w is None:
+            return
+        w["value"].configure(text=CHECK_IN_TODAY_ROW_FMT.format(
+            time=w["time"], summary=self._value_summary(value, note)))
+        subtext = self._note_subtext(note)
+        if subtext:
+            w["note"].configure(text=subtext)
+            if not w["note_shown"]:
+                w["note"].pack(fill="x", anchor="w")
+                w["note_shown"] = True
+        elif w["note_shown"]:
+            w["note"].pack_forget()
+            w["note_shown"] = False
+
+    # ---- hover highlight -------------------------------------------------
+
+    def _is_edited_row(self, row):
+        """True if ``row`` is the Today row currently in edit mode — it keeps its stronger
+        edit highlight, so hover must not override it."""
+        if self.edit_target_id is None:
+            return False
+        w = self.today_widgets.get(self.edit_target_id)
+        return bool(w) and w["row"] is row
+
+    def _hover_enter(self, row):
+        """Pointer over a Today row → subtle tint (unless it's the edited row)."""
+        if self._is_edited_row(row):
+            return
+        row.configure(fg_color=COLORS['surface_hover'])
+
+    def _hover_leave(self, row):
+        """Pointer left a Today row → drop the tint, but only if it TRULY left: crossing
+        into a child fires a spurious <Leave> on the row/its widgets, so walk up from the
+        widget under the pointer and keep the tint while still inside the row."""
+        if self._is_edited_row(row):
+            return
+        try:
+            under = row.winfo_containing(*row.winfo_pointerxy())
+        except Exception:
+            under = None
+        w = under
+        while w is not None:
+            if w is row:
+                return                       # still within the row → keep the tint
+            w = getattr(w, "master", None)
+        row.configure(fg_color="transparent")
+
+    # ---- remove (dismissible confirm) -----------------------------------
+
+    def _arm_remove(self, btn, entry):
+        """First ✕ tap arms an inline "Remove?" confirm; a second tap actually removes.
+        Arming first dismisses any other pending confirm."""
+        self._disarm_remove()
+        btn.configure(
+            text=CHECK_IN_REMOVE_CONFIRM_LABEL, width=CHECK_IN_REMOVE_CONFIRM_WIDTH,
+            fg_color=COLORS['accent_warning'], hover_color=COLORS['accent_warning_hover'],
+            text_color=COLORS['text_on_accent'],
+            command=lambda e=entry: self._remove(e))
+        self._armed_remove = (btn, entry)
+
+    def _disarm_remove(self):
+        """Revert an armed "Remove?" button back to its idle ✕ (cancelling the pending
+        removal). Called at the start of any other interaction, so clicking elsewhere
+        dismisses the confirm."""
+        if self._armed_remove is None:
+            return
+        btn, entry = self._armed_remove
+        self._armed_remove = None
+        try:
+            btn.configure(
+                text=CHECK_IN_REMOVE_ICON, width=CHECK_IN_ICON_BTN_WIDTH,
+                fg_color="transparent", hover_color=COLORS['surface_hover'],
+                text_color=COLORS['text_secondary'],
+                command=lambda b=btn, e=entry: self._arm_remove(b, e))
+        except Exception:
+            pass
+
+    def _remove(self, entry):
+        target = entry["id"]
+        self._finish(lambda: self.on_remove(target))
+
+    # ---- edit mode (enter / exit / preview / highlight) -----------------
+
+    def _on_row_click(self, entry):
+        """Click a Today row → edit that entry. Always ENTERS edit (never toggles): a click
+        on a CTk composite row can be delivered twice, and a toggle would cancel itself, so
+        re-entering the same entry is a harmless no-op. Leave edit via "＋ New answer" / Skip."""
+        self._enter_edit(entry)
+
+    def _build_new_answer_affordance(self, parent):
+        """Create (hidden) the mode-aware status line (recurring-answered only). ``_update_status``
+        drives it: while EDITING it is the clickable "＋ New answer" link (leaves edit to compose
+        a fresh answer); while COMPOSING a new answer it becomes a passive "Answering now: <value>"
+        readout, or hides when nothing is chosen. Packs before the actions row / hides itself."""
+        self.new_answer_btn = ctk.CTkLabel(
+            parent, text=CHECK_IN_NEW_ANSWER_LABEL, font=make_font('caption', weight="bold"),
+            text_color=COLORS['accent_primary'], anchor="w", cursor="pointinghand")
+        self.new_answer_btn.bind("<Button-1>", lambda e: self._new_answer())
+
+    def _new_answer(self):
+        """Leave edit mode to compose a FRESH answer while KEEPING the current control
+        selection so it seeds the new answer (unlike ``_exit_edit``, which clears it).
+        Recurring-answered only; the status line flips to "Answering now: <value>"."""
+        self._disarm_remove()
+        target = self.edit_target_id
+        self.edit_target_id = None
+        # Restore the row we were previewing back to its saved value — we're no longer
+        # editing it; the kept selection now seeds a NEW answer, not an edit of that row.
+        if target is not None:
+            entry = next((e for e in self.entries if e["id"] == target), None)
+            if entry is not None:
+                self._set_row_text(target, entry.get("value"), entry.get("note"))
+        self._highlight_edit_row(None)
+        if self.context_label is not None:
+            self.context_label.configure(
+                text=CHECK_IN_ADD_CONTEXT_FMT.format(n=len(self.entries)))
+        self._update_status()
+        self._refresh_save_state()
+        self._refit_height()
+
+    def _update_status(self):
+        """Drive the mode-aware status line (recurring-answered only). Editing an existing
+        entry → the clickable "＋ New answer" link (click leaves edit to compose fresh);
+        composing a new answer with a value chosen → a passive "Answering now: <value>";
+        composing with nothing chosen yet → hidden. Cheap no-op when there is no line."""
+        if self.new_answer_btn is None:
+            return
+        if self.edit_target_id is not None:
+            self.new_answer_btn.unbind("<Button-1>")
+            self.new_answer_btn.bind("<Button-1>", lambda e: self._new_answer())
+            self.new_answer_btn.configure(
+                text=CHECK_IN_NEW_ANSWER_LABEL, text_color=COLORS['accent_primary'],
+                cursor="pointinghand")
+            self.new_answer_btn.pack(before=self.actions_row, fill="x",
+                                     padx=PADDING_PANEL_X, pady=(0, SPACE_XS))
+        elif self._has_valid_answer():
+            summary = self._value_summary(self._current_value(), self._read_note())
+            self.new_answer_btn.unbind("<Button-1>")
+            self.new_answer_btn.configure(
+                text=CHECK_IN_ANSWERING_NOW_FMT.format(value=summary),
+                text_color=COLORS['text_secondary'], cursor="")
+            self.new_answer_btn.pack(before=self.actions_row, fill="x",
+                                     padx=PADDING_PANEL_X, pady=(0, SPACE_XS))
+        else:
+            self.new_answer_btn.pack_forget()
+
+    def _enter_edit(self, entry):
+        """Enter EDIT MODE for a past answer: pre-fill the control + note with its value,
+        flip the context line to "Editing", strong-highlight its row, reveal the
+        "＋ New answer" link (recurring), and route Save to ``on_edit``."""
+        self._disarm_remove()
+        self.edit_target_id = entry["id"]
+        atype = self.question.answer.type
+        value = entry.get("value")
+        if atype in (SCALE, CHOICES):
+            if value in self.value_buttons:
+                self._select(value)
+        elif atype == NUMBER and self.number_entry is not None:
+            self.number_entry.delete(0, "end")
+            if value is not None:
+                self.number_entry.insert(0, str(value))
+        if self.note_entry is not None:
+            self.note_entry.delete(0, "end")
+            if entry.get("note"):
+                self.note_entry.insert(0, str(entry["note"]))
+        if self.context_label is not None:
+            self.context_label.configure(text=CHECK_IN_EDITING_CONTEXT)
+        self._highlight_edit_row(entry["id"])
+        self._preview_edit()         # reconcile the row with the fully pre-filled controls
+        self._refresh_save_state()
+        self._update_status()        # editing → show the clickable "＋ New answer" link
+        self._refit_height()         # the status line grew the content → re-fit height
+
+    def _exit_edit(self):
+        """Leave edit mode: clear the target, deselect the answer control + note, restore
+        the previewed row to its stored value, drop all row highlights, hide the
+        "＋ New answer" link, and reset the context line to its default."""
+        self._disarm_remove()
+        target = self.edit_target_id
+        self.edit_target_id = None
+        self.selected_value = None
+        for btn in self.value_buttons.values():
+            self._style_select_button(btn, False)
+        if self.number_entry is not None:
+            self.number_entry.delete(0, "end")
+        if self.note_entry is not None:
+            self.note_entry.delete(0, "end")
+        # Restore the row we were previewing back to its saved value, then un-highlight.
+        if target is not None:
+            entry = next((e for e in self.entries if e["id"] == target), None)
+            if entry is not None:
+                self._set_row_text(target, entry.get("value"), entry.get("note"))
+        self._highlight_edit_row(None)
+        if self.context_label is not None:
+            if self.question.once_per_day:
+                self.context_label.configure(text=CHECK_IN_UPDATE_CONTEXT)
+            elif self.entries:
+                self.context_label.configure(
+                    text=CHECK_IN_ADD_CONTEXT_FMT.format(n=len(self.entries)))
+        self._refresh_save_state()
+        self._update_status()        # cleared controls → status line hides (nothing chosen)
+        self._refit_height()         # content shrank → re-fit height
+
+    def _preview_edit(self):
+        """While editing, mirror the current control state (value + note) into the edited
+        row's text so it previews the pending answer. No-op when not editing."""
+        if self.edit_target_id is None:
+            return
+        self._set_row_text(self.edit_target_id, self._current_value(), self._read_note())
+
+    def _highlight_edit_row(self, target_id):
+        """Mark the Today row being edited — a filled tint + accent-coloured value text
+        (no border, which read as stray blue lines). ``target_id`` None clears all."""
+        for eid, w in self.today_widgets.items():
+            editing = eid == target_id
+            w["row"].configure(fg_color=COLORS['surface_hover'] if editing else "transparent")
+            w["value"].configure(
+                text_color=COLORS['accent_primary'] if editing else COLORS['text_primary'])
+
+    # ---- actions (Skip / Save) ------------------------------------------
+
+    def _build_actions(self, parent):
+        """The bottom Skip (transparent) + Save (accent) row. Save is disabled until
+        there is a valid value; ``_refresh_save_state`` toggles it."""
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(fill="x", padx=PADDING_PANEL_X, pady=(SPACE_XS, PADDING_PANEL_Y))
+        self.actions_row = row       # anchor: the "＋ New answer" link packs before this
+        ctk.CTkButton(
+            row, text=CHECK_IN_SKIP_LABEL, command=self._skip,
+            height=BUTTON_HEIGHT_LARGE, corner_radius=CORNER_RADIUS_BUTTON,
+            fg_color="transparent", hover_color=COLORS['surface_hover'],
+            text_color=COLORS['text_secondary'], font=make_font('body')
+        ).pack(side="left")
+        self.save_button = ctk.CTkButton(
+            row, text=CHECK_IN_SAVE_LABEL, command=self._save,
+            height=BUTTON_HEIGHT_LARGE, corner_radius=CORNER_RADIUS_BUTTON,
+            fg_color=COLORS['accent_primary'], hover_color=COLORS['accent_primary_hover'],
+            font=make_font('body', weight="bold"))
+        self.save_button.pack(side="right")
+        self._refresh_save_state()
+
+    def _refresh_save_state(self):
+        """Enable Save only when the current input is a valid answer."""
+        if self.save_button is None:
+            return
+        self.save_button.configure(
+            state="normal" if self._has_valid_answer() else "disabled")
+
+    # ---- value reading / validity ---------------------------------------
+
+    def _parse_number(self):
+        """The number-entry value as int (when whole) / float, or None if unparseable
+        or outside the answer's min..max."""
+        if self.number_entry is None:
+            return None
+        value = _ci_num(self.number_entry.get(), None)
+        if value is None:
+            return None
+        return value if answer_is_valid(self.question.answer, value) else None
+
+    def _current_value(self):
+        """The value to log for the current answer type (None for a note-type answer)."""
+        atype = self.question.answer.type
+        if atype == NUMBER:
+            return self._parse_number()
+        if atype == NOTE:
+            return None
+        return self.selected_value
+
+    def _has_valid_answer(self):
+        """Whether there is enough to Save: a selected scale/choice, a parseable number,
+        or (note-type) a non-empty note."""
+        atype = self.question.answer.type
+        if atype == NOTE:
+            return self._read_note() is not None
+        if atype == NUMBER:
+            return self._parse_number() is not None
+        return self.selected_value is not None
+
+    # ---- lifecycle -------------------------------------------------------
+
+    def _read_note(self):
+        """The trimmed note text, or None when there is no note field / it's blank."""
+        if self.note_entry is None:
+            return None
+        try:
+            return self.note_entry.get().strip() or None
+        except Exception:
+            return None
+
+    def _save(self):
+        """Log the current value + note — as an edit when in edit mode, else a new answer."""
+        if not self._has_valid_answer():
+            return
+        value = self._current_value()
+        note = self._read_note()
+        if self.edit_target_id is not None:
+            target = self.edit_target_id
+            self._finish(lambda: self.on_edit(target, value, note))
+        elif self.question.once_per_day and self.entries:
+            # once-a-day: replace today's single answer instead of appending a duplicate
+            target = self.entries[-1]["id"]
+            self._finish(lambda: self.on_edit(target, value, note))
+        else:
+            self._finish(lambda: self.on_answer(value, note))
+
+    def _skip(self):
+        self._finish(self.on_skip)
+
+    def _finish(self, callback):
+        """Fire exactly one of on_answer/on_edit/on_remove/on_skip (guarded once), then tear down."""
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            callback()
+        except Exception:
+            logging.exception("check-in callback failed")
+        self._destroy()
+
+    def _destroy(self):
+        try:
+            self.window.destroy()
+        except Exception:
+            pass
+
+    def close(self):
+        """Force-close the popup (e.g. app reset); treated as a skip — nothing logged."""
+        self._skip()
+
+    def bring_to_user(self):
+        """Raise / keep the popup on top — interface parity with CountdownPopup so a
+        CheckInPopup can serve as the app's ``active_popup``."""
+        if self.closed:
+            return
+        try:
+            self.window.lift()
+            self.window.attributes('-topmost', True)
+        except Exception:
+            pass
+
+
 # ------------------ BREAK CONFIG PANEL ------------------
 
 class CollapsibleSection(ctk.CTkFrame):
@@ -1222,8 +2280,15 @@ class BreakApp:
         self._resume_prompted = False # already offered to resume this pause episode (#77)
         self._resume_card = None      # the floating "resume?" card, or None
         self._resume_card_after = None  # auto-dismiss timer id for the resume card
-        self._held = None      # reason the due break is currently held (transparency)
+        self._held = None      # reason the due break is held THIS tick (recomputed every tick)
+        self._held_app = None       # {"id","name","count"} of the app causing the hold
+        self._held_app_carry = 0    # ticks the named app may still be carried (#40)
+        self._held_carry = None     # reason carried for the FIRE-time popup line (#44/#85)
+        self._chip_action = None    # (signal, app_ref) the last render's chip button promised
         self._anticipated = None  # deferral context active but nothing due yet (#74)
+        self._anticipated_app = None  # {"id","name","count"} of the app behind the anticipated chip
+        self._anticipated_app_carry = 0  # ticks that app may still be carried (#40)
+        self._logged_mic_fallback = False   # mic_detection_fallback is once per session
         self._rested_ack_until = None  # time.time() until which to show "welcome back"
         self._fullscreen_grace = 0  # ticks of fullscreen hysteresis left (#46)
         self._meeting_grace = 0     # ticks of mic-in-use hysteresis left (#84)
@@ -1249,7 +2314,10 @@ class BreakApp:
         # Per-section open/closed state for the settings window (persisted).
         self._sections_expanded = dict(self.saved_prefs.get("sections_expanded", {}))
 
-        # Restore saved window position (size is derived from content after UI build)
+        # Restore saved window position (size is derived from content after UI build).
+        # `_window_placed` flips once the window has been positioned, so later
+        # refits resize in place instead of re-placing it.
+        self._window_placed = False
         self._saved_position = None
         if "window_geometry" in self.saved_prefs:
             saved = self.saved_prefs["window_geometry"]
@@ -1262,6 +2330,7 @@ class BreakApp:
         )
         self.always_on_top.trace_add('write', self._apply_always_on_top)
         root.attributes('-topmost', self.always_on_top.get())
+        self._install_reopen_handler()
 
         self.defer_during_meetings = ctk.BooleanVar(
             value=self.saved_prefs.get("defer_during_meetings", True)
@@ -1272,6 +2341,14 @@ class BreakApp:
             value=self.saved_prefs.get("defer_during_fullscreen", True)
         )
         self.defer_during_fullscreen.trace_add('write', self._save_preferences)
+
+        # Per-app exceptions to the defer signals (#40/#28). Read with .get so
+        # older config files keep loading; built-ins live in app_rules, not prefs.
+        self.mic_ignored_apps = self.saved_prefs.get("mic_ignored_apps", [])
+        self.mic_unignored_builtins = self.saved_prefs.get("mic_unignored_builtins", [])
+        self.fullscreen_ignored_apps = self.saved_prefs.get("fullscreen_ignored_apps", [])
+        self.fullscreen_unignored_builtins = self.saved_prefs.get(
+            "fullscreen_unignored_builtins", [])
 
         self.defer_while_active = ctk.BooleanVar(
             value=self.saved_prefs.get("defer_while_active", False)
@@ -1313,6 +2390,15 @@ class BreakApp:
                 "snooze_seconds",
                 self.saved_prefs.get("snooze_minutes", DEFAULT_SNOOZE_SECONDS // 60) * 60)
         )
+
+        # Check-ins (#9 habits): master toggle + editable question list + prompt-timing
+        # state cache. Merged from saved prefs so older configs load unchanged.
+        _ci_enabled, _ci_questions = merge_check_ins(self.saved_prefs)
+        self.check_ins_enabled = ctk.BooleanVar(value=_ci_enabled)
+        self.check_ins_enabled.trace_add('write', self._save_preferences)
+        self.check_in_questions = [dict(q) for q in _ci_questions]     # editable working copy
+        self.check_in_state = self.saved_prefs.get(
+            "check_in_state", {"last_prompted": {}, "last_prompt_ts": 0.0})
 
         self.popup_placement = ctk.StringVar(
             value=self.saved_prefs.get("popup_placement", "active")
@@ -1421,10 +2507,19 @@ class BreakApp:
         self.hero_progress.set(0)
         self.hero_progress.pack(fill="x", padx=HERO_PAD)
 
-        # Holding chip \u2014 revealed by _render_status only while a break is deferred
+        # Holding chip \u2014 revealed by _render_status only while a break is deferred.
+        # A row, not a bare label, so the attributed case can offer "Ignore <app>".
+        self.hero_chip_row = ctk.CTkFrame(hero, fg_color="transparent")
         self.hero_chip = ctk.CTkLabel(
-            hero, text="", anchor="w", font=make_font('caption', weight="bold"),
+            self.hero_chip_row, text="", anchor="w",
+            font=make_font('caption', weight="bold"),
             text_color=COLORS['accent_warning'])
+        self.hero_chip.pack(side="left")
+        self.hero_chip_action = ctk.CTkButton(
+            self.hero_chip_row, text="", width=0, height=CHIP_ACTION_HEIGHT,
+            fg_color="transparent", hover_color=COLORS['surface_hover'],
+            text_color=COLORS['text_secondary'],
+            font=make_font('caption'), command=self._handle_chip_ignore)
 
         # Global controls
         controls = ctk.CTkFrame(hero, fg_color="transparent")
@@ -1590,6 +2685,18 @@ class BreakApp:
         self.version_btn.pack(side="right", padx=(0, SPACE_XXS))
         self._register_tooltip(self.version_btn, "Check for updates")
 
+        # On-demand "Check in": answer any configured question now (either trigger).
+        # Modest bottom-bar text button, matching the Feedback/version affordances.
+        check_in_font = make_font('caption')
+        self.check_in_now_btn = ctk.CTkButton(
+            bottom_frame, text=CHECK_IN_NOW_LABEL, command=self._open_check_in_now,
+            width=check_in_font.measure(CHECK_IN_NOW_LABEL) + 2 * SPACE_SM,
+            height=BUTTON_HEIGHT_BOTTOM_BAR, corner_radius=CORNER_RADIUS_INPUT,
+            fg_color="transparent", hover_color=COLORS['surface_hover'],
+            text_color=COLORS['text_tertiary'], font=check_in_font)
+        self.check_in_now_btn.pack(side="left")
+        self._register_tooltip(self.check_in_now_btn, CHECK_IN_NOW_TOOLTIP)
+
         # Bind keyboard shortcuts
         self.root.bind('<Command-s>', lambda e: self._handle_toggle())
         self.root.bind('<Command-comma>', lambda e: self._open_settings())
@@ -1601,20 +2708,46 @@ class BreakApp:
         # Start UI update loop
         self.update_ui()
 
+    def _install_reopen_handler(self):
+        """Bring the window back when the app is reopened from the Dock.
+
+        macOS delivers a Dock-icon click as the Tcl proc ``::tk::mac::ReopenApplication``,
+        which Tk leaves undefined — so clicking the icon while the window was
+        minimized did nothing at all. Windows/Linux restore from the taskbar
+        natively, so this is a macOS-only no-op elsewhere; a future platform
+        implementation would hook the equivalent restore event here.
+        """
+        if sys.platform != "darwin":
+            return
+        try:
+            self.root.createcommand("::tk::mac::ReopenApplication",
+                                    lambda: activate_window(self.root))
+        except Exception:
+            logging.debug("reopen handler: registration failed", exc_info=True)
+
     def _fit_window_to_content(self):
         """Size the window to fit its content, then lock the size."""
         self.root.update_idletasks()
         w = self.root.winfo_reqwidth()
         h = self.root.winfo_reqheight()
         mode = self.main_window_placement.get()
+        if self._window_placed:
+            # A refit (snooze row, update banner) only RESIZES — re-placing here
+            # would yank a window you had moved back to where it started.
+            self.root.geometry(main_window_geometry(w, h, mode, None, None, place=False))
+            return
+        # A position remembered on a monitor that is now gone (or smaller) would
+        # strand the window off-screen, so clamp it onto a live display first.
+        position = clamp_saved_position(w, h, self._saved_position, _display_rects())
         if mode == "active":
             # Center on the screen you're using (#67). Raw Tk `wm geometry` — CTk's
             # .geometry() mislocates cross-monitor +x+y (same reason as the popup).
-            geo = main_window_geometry(w, h, mode, self._saved_position,
+            geo = main_window_geometry(w, h, mode, position,
                                        self._capture_active_screen())
             self.root.tk.call("wm", "geometry", self.root, geo)
-        else:   # "remembered" (default): restore the saved position, unchanged
-            self.root.geometry(main_window_geometry(w, h, mode, self._saved_position, None))
+        else:   # "remembered" (default): restore the saved position
+            self.root.geometry(main_window_geometry(w, h, mode, position, None))
+        self._window_placed = True
 
     def _refit_window(self):
         """Re-grow/shrink the (otherwise size-locked) window to fit content when
@@ -1644,6 +2777,10 @@ class BreakApp:
             "check_for_updates": self.check_for_updates.get(),
             "defer_during_meetings": self.defer_during_meetings.get(),
             "defer_during_fullscreen": self.defer_during_fullscreen.get(),
+            "mic_ignored_apps": self.mic_ignored_apps,
+            "mic_unignored_builtins": self.mic_unignored_builtins,
+            "fullscreen_ignored_apps": self.fullscreen_ignored_apps,
+            "fullscreen_unignored_builtins": self.fullscreen_unignored_builtins,
             "popup_placement": self.popup_placement.get(),
             "main_window_placement": self.main_window_placement.get(),
             "defer_while_active": self.defer_while_active.get(),
@@ -1655,6 +2792,9 @@ class BreakApp:
             "resume_prompt_samples": self.resume_prompt_samples.get(),
             "show_anticipated_defer": self.show_anticipated_defer.get(),
             "snooze_seconds": self.snooze_seconds.get(),
+            "check_ins": {"enabled": self.check_ins_enabled.get(),
+                          "questions": self.check_in_questions},
+            "check_in_state": self.check_in_state,
             "last_update_check": self.saved_prefs.get("last_update_check", 0),
             "sections_expanded": self._sections_expanded,
         }
@@ -1741,6 +2881,11 @@ class BreakApp:
             self._episode = None
             self._due_since = {}
             self._held = None
+            self._held_app = None
+            self._held_app_carry = 0
+            self._held_carry = None
+            self._anticipated_app_carry = 0
+            self._logged_mic_fallback = False
             self._reset_defer_grace()
             self._render_status()
             self.toggle_btn.configure(text="Pause", fg_color=COLORS['accent_warning'],
@@ -1995,6 +3140,11 @@ class BreakApp:
         self._episode = None  # fresh idle/deferred dedup marker each session
         self._due_since = {}   # fresh deferred-duration tracking each session (#85)
         self._held = None      # reset the held-reason each session
+        self._held_app = None  # reset the held-app attribution each session
+        self._held_app_carry = 0   # reset the named-app carry budget each session (#40)
+        self._held_carry = None    # reset the fire-time held-reason carry each session
+        self._anticipated_app_carry = 0   # reset the anticipated-app carry each session
+        self._logged_mic_fallback = False  # mic_detection_fallback is once per session (#40)
         self._reset_defer_grace()  # reset fullscreen/mic/active hysteresis each session (#46/#84)
 
         # A fresh Start wipes stale pending state (#69): cancel any snoozes left
@@ -2159,8 +3309,10 @@ class BreakApp:
         smart = _add_section("smart_pausing", "Smart pausing")
         _checkbox(smart.body, "Pause breaks while microphone is in use",
                   self.defer_during_meetings)
+        self._build_ignore_list(smart.body, app_rules.MIC)
         _checkbox(smart.body, "Pause breaks during fullscreen",
                   self.defer_during_fullscreen)
+        self._build_ignore_list(smart.body, app_rules.FULLSCREEN)
         _checkbox(smart.body, "Wait until you pause (typing or clicking)",
                   self.defer_while_active)
 
@@ -2278,6 +3430,21 @@ class BreakApp:
         mw_menu.pack(side="right")
         appsec.finalize()
 
+        # -- Check-ins: master toggle + one card per configurable question --
+        cisec = _add_section("check_ins", CHECK_IN_SECTION_TITLE)
+        _checkbox(cisec.body, CHECK_IN_ENABLE_LABEL, self.check_ins_enabled)
+        self._check_in_cards_frame = ctk.CTkFrame(cisec.body, fg_color="transparent")
+        self._check_in_cards_frame.pack(fill="x")
+        self._render_check_in_cards()
+        ctk.CTkButton(
+            cisec.body, text=CHECK_IN_ADD_LABEL, command=self._add_check_in_question,
+            height=BUTTON_HEIGHT_SMALL, corner_radius=CORNER_RADIUS_BUTTON,
+            fg_color="transparent", border_width=1, border_color=COLORS['border'],
+            hover_color=COLORS['surface_hover'], text_color=COLORS['text_secondary'],
+            font=make_font('label')).pack(
+                anchor="w", padx=PADDING_PANEL_X, pady=(SPACE_XS, PADDING_PANEL_Y))
+        cisec.finalize()
+
         # Trackpad/wheel scrolling over the whole content (not just the scrollbar).
         self._enable_trackpad_scroll(container)
 
@@ -2311,6 +3478,491 @@ class BreakApp:
             if panel.config is config:
                 panel.focus_config()
                 break
+
+    def _build_ignore_list(self, parent, signal):
+        """The 'Ignore these apps' sub-block under a defer toggle.
+
+        EVERY built-in is listed, whether or not it is currently ignored, plus the
+        user's own additions. An ignored row carries ✕ (stop ignoring); a built-in
+        the user turned off stays as a greyed row with Restore, because removing
+        it used to be a one-way door: "+ Add app" only offers regular Dock apps,
+        and three of the four mic built-ins (an .appex, a menu-bar agent and a
+        daemon) can never appear there. Rebuilt in place after every change.
+        """
+        subwrap = ctk.CTkFrame(parent, fg_color="transparent")
+        subwrap.pack(fill="x", anchor="w",
+                     padx=(PADDING_PANEL_X + SETTINGS_SUBOPTION_INDENT, PADDING_PANEL_X),
+                     pady=(0, PADDING_PANEL_Y))
+        ctk.CTkFrame(subwrap, width=SETTINGS_SUBOPTION_RULE_W, height=1,
+                     fg_color=COLORS['border']).pack(side="left", fill="y")
+        block = ctk.CTkFrame(subwrap, fg_color="transparent")
+        block.pack(side="left", fill="x", expand=True, padx=(SPACE_SM, 0))
+
+        def render():
+            for child in block.winfo_children():
+                child.destroy()
+            ctk.CTkLabel(block, text=IGNORE_LIST_HEADING, font=make_font('caption'),
+                         text_color=COLORS['text_tertiary']).pack(
+                anchor="w", pady=(0, SPACE_XXS))
+            ignored = self._ignores(signal)
+            builtins, added, _removed = self._ignore_lists(signal)
+            # (app_ref, is_builtin, is_ignored) — built-ins always listed, so a
+            # removed one is restorable instead of gone.
+            rows = [(a, True,
+                     app_rules.normalize_app(a.get("id"), a.get("name")) in ignored)
+                    for a in builtins]
+            rows += [(a, False, True) for a in added]
+            if not rows:
+                ctk.CTkLabel(block, text=IGNORE_LIST_EMPTY_TEXT,
+                             font=make_font('caption'),
+                             text_color=COLORS['text_tertiary']).pack(anchor="w")
+            for app_ref, is_builtin, is_ignored in rows:
+                row = ctk.CTkFrame(block, fg_color="transparent")
+                row.pack(fill="x", anchor="w", pady=(0, SPACE_XXS))
+                suffix = (IGNORE_ROW_BUILTIN_SUFFIX if is_ignored
+                          else IGNORE_ROW_OFF_SUFFIX) if is_builtin else ""
+                ctk.CTkLabel(
+                    row, text=app_ref.get("name") + suffix, font=make_font('label'),
+                    text_color=(COLORS['text_primary'] if is_ignored
+                                else COLORS['text_tertiary'])).pack(side="left")
+                ctk.CTkButton(
+                    row,
+                    text=(IGNORE_ROW_REMOVE_LABEL if is_ignored
+                          else IGNORE_ROW_RESTORE_LABEL),
+                    width=(IGNORE_ROW_REMOVE_W if is_ignored else IGNORE_ROW_RESTORE_W),
+                    height=CHIP_ACTION_HEIGHT,
+                    fg_color="transparent", hover_color=COLORS['surface_hover'],
+                    text_color=(COLORS['text_secondary'] if is_ignored
+                                else COLORS['accent_primary']),
+                    font=make_font('caption'),
+                    command=lambda a=app_ref, on=is_ignored: self._set_ignore_row(
+                        signal, a, ignore=not on, render=render)).pack(side="right")
+            ctk.CTkButton(
+                block, text="+ Add app", width=0, height=CHIP_ACTION_HEIGHT,
+                fg_color="transparent", hover_color=COLORS['surface_hover'],
+                text_color=COLORS['accent_primary'], font=make_font('caption'),
+                command=lambda: self._open_app_picker(signal, render)).pack(anchor="w")
+
+        render()
+        return render
+
+    def _set_ignore_row(self, signal, app_ref, ignore, render):
+        """Flip one row (✕ un-ignores, Restore re-ignores a built-in), then
+        rebuild the list and refit the settings window, on the next event-loop turn.
+
+        The rebuild destroys the very button whose command is running, so it
+        must NOT happen inline — `after(0, …)` lets the click finish first.
+        Adding/removing a row changes the section's height, so the refit rides
+        the same deferred turn as the rebuild (see `_refresh_check_in_section`
+        for the same pattern on the check-in cards).
+        """
+        self._toggle_ignore(signal, app_ref, ignore=ignore, source="settings")
+
+        def _rebuild():
+            render()
+            self._resize_settings_to_content()
+
+        self.root.after(0, _rebuild)
+
+    def _open_app_picker(self, signal, on_done):
+        """Modal chooser of the running apps, for adding one to an ignore list.
+
+        Deliberately lists only running apps: an app you can see is one you can
+        recognize, and the chip covers the "it just happened" case anyway.
+
+        Window setup mirrors `_edit_check_in_question` exactly, and for the same
+        reasons: it belongs to the SETTINGS window it was opened from (not the
+        main window), and it must sit in front of it — Settings is `-topmost`
+        whenever always-on-top is set, so a picker without that would open behind
+        it. There is deliberately NO grab_set: an app-modal grab orphans on macOS
+        after the window closes and leaves Settings unclickable ("appears, then
+        can't reopen") — see the same fix on the check-in modal and chooser.
+        """
+        owner = getattr(self, '_settings_window', None) or self.root
+        picker = ctk.CTkToplevel(self.root)
+        picker.title(APP_PICKER_TITLE)
+        picker.geometry(f"{APP_PICKER_W}x{APP_PICKER_H}")
+        picker.resizable(False, False)
+        picker.configure(fg_color=COLORS['surface_card'])
+        # Topmost BEFORE the first map: pin_to_active_space raises the window to
+        # NSStatusWindowLevel from its <Map> handler, and Tk's '-topmost' applied
+        # afterwards would drop it back below the window that opened it.
+        picker.attributes('-topmost', True)
+        pin_to_active_space(picker)
+        picker.transient(owner)
+        picker.protocol("WM_DELETE_WINDOW", picker.destroy)
+        scroll = ctk.CTkScrollableFrame(picker, fg_color="transparent")
+        scroll.pack(fill="both", expand=True, padx=SPACE_SM, pady=SPACE_SM)
+
+        def _rebuild():
+            on_done()
+            self._resize_settings_to_content()
+
+        def choose(bundle_id, name):
+            self._toggle_ignore(signal, {"id": bundle_id, "name": name},
+                                ignore=True, source="settings")
+            picker.destroy()
+            # Rebuild the row list off the click, not inline — it destroys the
+            # very button whose command is running (same rule as _set_ignore_row),
+            # and refit the settings window to the new height on the same turn.
+            self.root.after(0, _rebuild)
+
+        ignored = self._ignores(signal)
+        for bundle_id, name in sensors_running_gui_apps():
+            if app_rules.normalize_app(bundle_id, name) in ignored:
+                continue
+            ctk.CTkButton(
+                scroll, text=name, anchor="w", height=BUTTON_HEIGHT_SMALL,
+                fg_color="transparent", hover_color=COLORS['surface_hover'],
+                text_color=COLORS['text_primary'], font=make_font('label'),
+                command=lambda b=bundle_id, n=name: choose(b, n)).pack(fill="x")
+
+        self._center_toplevel(picker, owner, size=(APP_PICKER_W, APP_PICKER_H))
+        picker.lift()
+        picker.focus_force()
+        return picker
+
+    # ------------------ CHECK-INS SETTINGS ------------------
+
+    def _render_check_in_cards(self):
+        """Clear + rebuild the per-question card list so add/edit/delete refresh
+        live. Safe to call whenever `self.check_in_questions` changes."""
+        frame = getattr(self, '_check_in_cards_frame', None)
+        if frame is None or not frame.winfo_exists():
+            return
+        for child in frame.winfo_children():
+            child.destroy()
+        for question in self.check_in_questions:
+            self._build_check_in_card(frame, question)
+
+    def _build_check_in_card(self, parent, question):
+        """One card: enable toggle + question text + summary + Edit/Delete."""
+        card = ctk.CTkFrame(
+            parent, corner_radius=CORNER_RADIUS_PANEL, fg_color=COLORS['surface_card'],
+            border_width=CHECK_IN_CARD_BORDER_WIDTH, border_color=COLORS['border'])
+        card.pack(fill="x", padx=PADDING_PANEL_X, pady=(0, ROW_SPACING))
+
+        top = ctk.CTkFrame(card, fg_color="transparent")
+        top.pack(fill="x", padx=PADDING_PANEL_X, pady=(PADDING_PANEL_Y // 2, 0))
+
+        enabled_var = ctk.BooleanVar(value=bool(question.get("enabled", True)))
+
+        def _on_toggle(*_a, q=question, var=enabled_var):
+            q["enabled"] = var.get()
+            self._save_preferences()
+
+        enabled_var.trace_add('write', _on_toggle)
+        ctk.CTkCheckBox(top, text="", width=CHECK_IN_TOGGLE_WIDTH,
+                        variable=enabled_var).pack(side="left")
+
+        ctk.CTkButton(
+            top, text=CHECK_IN_DELETE_LABEL, width=CHECK_IN_ACTION_BTN_WIDTH,
+            height=BUTTON_HEIGHT_SMALL, corner_radius=CORNER_RADIUS_INPUT,
+            fg_color="transparent", border_width=1, border_color=COLORS['border'],
+            hover_color=COLORS['surface_hover'], text_color=COLORS['text_secondary'],
+            font=make_font('label'),
+            command=lambda q=question: self._delete_check_in_question(q)).pack(
+                side="right", padx=(SPACE_XS, 0))
+        ctk.CTkButton(
+            top, text=CHECK_IN_EDIT_LABEL, width=CHECK_IN_ACTION_BTN_WIDTH,
+            height=BUTTON_HEIGHT_SMALL, corner_radius=CORNER_RADIUS_INPUT,
+            fg_color="transparent", border_width=1, border_color=COLORS['border'],
+            hover_color=COLORS['surface_hover'], text_color=COLORS['text_secondary'],
+            font=make_font('label'),
+            command=lambda q=question: self._edit_check_in_question(q)).pack(side="right")
+
+        ctk.CTkLabel(
+            top, text=question.get("text", ""), font=make_font('body', weight="bold"),
+            text_color=COLORS['text_primary'],
+            anchor="w", justify="left", wraplength=CHECK_IN_CARD_TEXT_WRAP).pack(
+                side="left", padx=(SPACE_XS, SPACE_SM), fill="x", expand=True)
+
+        ctk.CTkLabel(
+            card, text=check_in_summary(question), font=make_font('caption'),
+            text_color=COLORS['text_secondary'], anchor="w", justify="left").pack(
+                anchor="w", padx=(PADDING_PANEL_X + CHECK_IN_SUMMARY_INDENT, PADDING_PANEL_X),
+                pady=(0, PADDING_PANEL_Y // 2))
+
+    def _refresh_check_in_section(self):
+        """Persist, rebuild the cards, and resize the settings window to fit."""
+        self._save_preferences()
+        self._render_check_in_cards()
+        self._resize_settings_to_content()
+
+    def _add_check_in_question(self):
+        """Append a blank question (unique stable id) and open its edit form."""
+        question = new_check_in_question(
+            self._unique_check_in_id(CHECK_IN_NEW_QUESTION_TEXT))
+        self.check_in_questions.append(question)
+        self._refresh_check_in_section()
+        self._edit_check_in_question(question)   # let the user name it right away
+
+    def _delete_check_in_question(self, question):
+        """Remove a question (by identity, so duplicate-valued dicts are safe)."""
+        self.check_in_questions[:] = [
+            q for q in self.check_in_questions if q is not question]
+        self._refresh_check_in_section()
+
+    def _unique_check_in_id(self, text):
+        """A stable slug id from `text`, disambiguated so it never collides."""
+        existing = {q.get("id") for q in self.check_in_questions}
+        base = _slugify_check_in(text) or CHECK_IN_ID_FALLBACK
+        candidate, n = base, 2
+        while candidate in existing:
+            candidate = f"{base}{CHECK_IN_ID_SEP}{n}"
+            n += 1
+        return candidate
+
+    def _edit_check_in_question(self, question, parent=None, on_saved=None):
+        """Modal form editing one question in place: text, answer type + type-specific
+        fields (scale range/labels, choices options, note), and cadence + count.
+
+        Opened from Settings by default; `parent` (the window it belongs to) and
+        `on_saved` (what to do once Save lands) let the check-in chooser reuse it."""
+        owner = parent if parent is not None else getattr(self, '_settings_window', None)
+        after_save = on_saved or self._refresh_check_in_section
+        answer = question.get("answer") or {}
+        cadence = question.get("cadence") or {}
+        type_by_label = {v: k for k, v in CHECK_IN_ANSWER_TYPE_LABELS.items()}
+        cadence_by_label = {v: k for k, v in CHECK_IN_CADENCE_LABELS.items()}
+        trigger_by_label = {v: k for k, v in CHECK_IN_TRIGGER_LABELS.items()}
+        repeat_label_by_value = {v: k for k, v in CHECK_IN_REPEAT_LABELS.items()}
+
+        modal = ctk.CTkToplevel(self.root)
+        modal.title(CHECK_IN_EDIT_TITLE)
+        modal.resizable(False, False)
+        modal.configure(fg_color=COLORS['surface_card'])
+        # Topmost BEFORE the first map: pin_to_active_space raises the window to
+        # NSStatusWindowLevel from its <Map> handler, and Tk's '-topmost' applied
+        # afterwards would drop it back below the window that opened it (the
+        # chooser sits at that status level too). Same order as CountdownPopup.
+        modal.attributes('-topmost', True)
+        pin_to_active_space(modal)
+        if owner is not None:
+            modal.transient(owner)
+        body = ctk.CTkFrame(modal, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=PADDING_PANEL_X, pady=PADDING_PANEL_Y)
+
+        def _caption(text):
+            ctk.CTkLabel(body, text=text, font=make_font('label'),
+                         text_color=COLORS['text_secondary']).pack(
+                             anchor="w", pady=(SPACE_SM, SPACE_XXS))
+
+        # Question text
+        _caption(CHECK_IN_EDIT_TEXT_LABEL)
+        text_entry = ctk.CTkEntry(body, width=CHECK_IN_EDIT_TEXT_WIDTH,
+                                  font=make_font('body'), corner_radius=CORNER_RADIUS_INPUT)
+        text_entry.insert(0, question.get("text", ""))
+        text_entry.pack(fill="x")
+
+        # Answer type
+        _caption(CHECK_IN_EDIT_TYPE_LABEL)
+        type_var = ctk.StringVar(value=CHECK_IN_ANSWER_TYPE_LABELS.get(
+            answer.get("type"), CHECK_IN_ANSWER_TYPE_LABELS[SCALE]))
+        type_fields = ctk.CTkFrame(body, fg_color="transparent")
+        widgets = {}
+        # What each answer type last looked like ON SCREEN, so flipping the type
+        # menu never throws away a range/labels/options you had already typed.
+        drafts = {answer["type"]: dict(answer)} if answer.get("type") else {}
+        shown = [type_by_label[type_var.get()]]
+
+        def _on_type_change(label):
+            drafts[shown[0]] = self._check_in_answer_from_fields(shown[0], widgets)
+            shown[0] = type_by_label[label]
+            self._build_check_in_type_fields(type_fields, shown[0],
+                                             drafts.get(shown[0], {}), widgets)
+            self._center_toplevel(modal, owner)
+
+        ctk.CTkOptionMenu(
+            body, values=list(CHECK_IN_ANSWER_TYPE_LABELS.values()), variable=type_var,
+            command=_on_type_change, font=make_font('body'),
+            corner_radius=CORNER_RADIUS_INPUT).pack(anchor="w")
+        type_fields.pack(fill="x")
+        self._build_check_in_type_fields(
+            type_fields, type_by_label[type_var.get()], answer, widgets)
+
+        # Cadence + count
+        _caption(CHECK_IN_EDIT_CADENCE_LABEL)
+        cadence_row = ctk.CTkFrame(body, fg_color="transparent")
+        cadence_row.pack(fill="x")
+        cadence_var = ctk.StringVar(value=CHECK_IN_CADENCE_LABELS.get(
+            cadence.get("type"), CHECK_IN_CADENCE_LABELS[TIMES_PER_DAY]))
+        ctk.CTkOptionMenu(
+            cadence_row, values=list(CHECK_IN_CADENCE_LABELS.values()),
+            variable=cadence_var, font=make_font('body'),
+            corner_radius=CORNER_RADIUS_INPUT).pack(side="left")
+        ctk.CTkLabel(cadence_row, text=CHECK_IN_EDIT_COUNT_LABEL,
+                     font=make_font('label')).pack(side="left", padx=(SPACE_MD, SPACE_XS))
+        count_entry = ctk.CTkEntry(cadence_row, width=CHECK_IN_EDIT_INT_WIDTH,
+                                   font=make_font('body'), corner_radius=CORNER_RADIUS_INPUT)
+        count_entry.insert(0, str(_ci_int(cadence.get("count", 1), 1)))
+        count_entry.pack(side="left")
+
+        # When: a break-coupled question is offered after a break (cadence-gated);
+        # an on-demand one only surfaces via the "Check in" button.
+        _caption(CHECK_IN_EDIT_TRIGGER_LABEL)
+        trigger_var = ctk.StringVar(value=CHECK_IN_TRIGGER_LABELS.get(
+            question.get("trigger"), CHECK_IN_TRIGGER_LABELS[TRIGGER_BREAK]))
+        ctk.CTkOptionMenu(
+            body, values=list(CHECK_IN_TRIGGER_LABELS.values()), variable=trigger_var,
+            font=make_font('body'), corner_radius=CORNER_RADIUS_INPUT).pack(anchor="w")
+
+        # Repeat: a once-a-day question, once answered today, isn't offered again after
+        # later breaks; a few-times-a-day one can recur (still cadence-gated).
+        _caption(CHECK_IN_EDIT_REPEAT_LABEL)
+        repeat_var = ctk.StringVar(
+            value=repeat_label_by_value[bool(question.get("once_per_day", False))])
+        ctk.CTkOptionMenu(
+            body, values=list(CHECK_IN_REPEAT_LABELS), variable=repeat_var,
+            font=make_font('body'), corner_radius=CORNER_RADIUS_INPUT).pack(anchor="w")
+
+        def _close():
+            modal.destroy()
+
+        def _save():
+            new_answer = self._check_in_answer_from_fields(
+                type_by_label[type_var.get()], widgets)
+            question["text"] = text_entry.get().strip() or CHECK_IN_NEW_QUESTION_TEXT
+            question["answer"] = new_answer
+            question["cadence"] = {"type": cadence_by_label[cadence_var.get()],
+                                   "count": max(1, _ci_int(count_entry.get(), 1))}
+            question["trigger"] = trigger_by_label[trigger_var.get()]
+            question["once_per_day"] = CHECK_IN_REPEAT_LABELS[repeat_var.get()]
+            _close()
+            after_save()
+
+        buttons = ctk.CTkFrame(body, fg_color="transparent")
+        buttons.pack(fill="x", pady=(PADDING_PANEL_Y, 0))
+        ctk.CTkButton(
+            buttons, text=CHECK_IN_EDIT_SAVE_LABEL, command=_save,
+            height=BUTTON_HEIGHT_SMALL, corner_radius=CORNER_RADIUS_BUTTON,
+            fg_color=COLORS['accent_primary'], hover_color=COLORS['accent_primary_hover'],
+            font=make_font('label', weight="bold")).pack(
+                side="right", padx=(SPACE_XS, 0))
+        ctk.CTkButton(
+            buttons, text=CHECK_IN_EDIT_CANCEL_LABEL, command=_close,
+            height=BUTTON_HEIGHT_SMALL, corner_radius=CORNER_RADIUS_BUTTON,
+            fg_color="transparent", border_width=1, border_color=COLORS['border'],
+            hover_color=COLORS['surface_hover'], text_color=COLORS['text_secondary'],
+            font=make_font('label')).pack(side="right")
+
+        modal.protocol("WM_DELETE_WINDOW", _close)
+        # NO grab_set — an app-modal grab orphans on macOS after close and locks the
+        # settings window (the modal "appears then can't reopen"). See the chooser
+        # for the same fix. (Topmost is set above, before the first map.)
+        self._center_toplevel(modal, owner)
+        modal.lift()
+        modal.focus_force()
+
+    def _check_in_answer_from_fields(self, atype, widgets):
+        """The stored `answer` dict for `atype`, read from the modal's LIVE fields —
+        used both to save and to remember a type before the menu switches away."""
+        if atype == SCALE:
+            return check_in_scale_answer(
+                widgets['min'].get(), widgets['max'].get(),
+                widgets['min_label'].get(), widgets['max_label'].get(),
+                widgets['allow_note'].get())
+        if atype == NUMBER:
+            return check_in_number_answer(
+                widgets['unit'].get(), widgets['min'].get(), widgets['max'].get(),
+                widgets['step'].get(), widgets['allow_note'].get())
+        if atype == CHOICES:
+            return check_in_choices_answer(
+                widgets['options'].get("1.0", "end"), widgets['allow_note'].get())
+        return {"type": NOTE, "allow_note": True}    # the free text IS the answer
+
+    def _build_check_in_type_fields(self, container, atype, answer, widgets):
+        """(Re)build the answer-type-specific fields inside the edit modal. Prefills
+        from `answer` when it matches the type, else uses sensible defaults."""
+        for child in container.winfo_children():
+            child.destroy()
+        widgets.clear()
+        src = answer if answer.get("type") == atype else {}
+
+        def _labeled_entry(parent, label, value, width):
+            ctk.CTkLabel(parent, text=label, font=make_font('label')).pack(
+                side="left", padx=(0, SPACE_XS))
+            entry = ctk.CTkEntry(parent, width=width, font=make_font('body'),
+                                 corner_radius=CORNER_RADIUS_INPUT)
+            entry.insert(0, str(value))
+            entry.pack(side="left", padx=(0, SPACE_MD))
+            return entry
+
+        if atype == SCALE:
+            row = ctk.CTkFrame(container, fg_color="transparent")
+            row.pack(fill="x", pady=(SPACE_XS, 0))
+            widgets['min'] = _labeled_entry(
+                row, CHECK_IN_EDIT_MIN_LABEL,
+                src.get("min", DEFAULT_SCALE_MIN), CHECK_IN_EDIT_INT_WIDTH)
+            widgets['max'] = _labeled_entry(
+                row, CHECK_IN_EDIT_MAX_LABEL,
+                src.get("max", DEFAULT_SCALE_MAX), CHECK_IN_EDIT_INT_WIDTH)
+            labels_row = ctk.CTkFrame(container, fg_color="transparent")
+            labels_row.pack(fill="x", pady=(SPACE_XS, 0))
+            widgets['min_label'] = _labeled_entry(
+                labels_row, CHECK_IN_EDIT_LOW_LABEL,
+                src.get("min_label", ""), CHECK_IN_EDIT_LABEL_WIDTH)
+            widgets['max_label'] = _labeled_entry(
+                labels_row, CHECK_IN_EDIT_HIGH_LABEL,
+                src.get("max_label", ""), CHECK_IN_EDIT_LABEL_WIDTH)
+            self._build_check_in_allow_note(container, src, widgets)
+        elif atype == NUMBER:
+            unit_row = ctk.CTkFrame(container, fg_color="transparent")
+            unit_row.pack(fill="x", pady=(SPACE_XS, 0))
+            widgets['unit'] = _labeled_entry(
+                unit_row, CHECK_IN_EDIT_UNIT_LABEL,
+                src.get("unit", ""), CHECK_IN_EDIT_UNIT_WIDTH)
+            widgets['unit'].configure(placeholder_text=CHECK_IN_EDIT_UNIT_PLACEHOLDER)
+            range_row = ctk.CTkFrame(container, fg_color="transparent")
+            range_row.pack(fill="x", pady=(SPACE_XS, 0))
+            widgets['min'] = _labeled_entry(
+                range_row, CHECK_IN_EDIT_MIN_LABEL,
+                src.get("min", DEFAULT_NUMBER_MIN), CHECK_IN_EDIT_INT_WIDTH)
+            widgets['max'] = _labeled_entry(
+                range_row, CHECK_IN_EDIT_MAX_LABEL,
+                src.get("max", DEFAULT_NUMBER_MAX), CHECK_IN_EDIT_INT_WIDTH)
+            widgets['step'] = _labeled_entry(
+                range_row, CHECK_IN_EDIT_STEP_LABEL,
+                src.get("step", CHECK_IN_DEFAULT_NUMBER_STEP), CHECK_IN_EDIT_INT_WIDTH)
+            self._build_check_in_allow_note(container, src, widgets)
+        elif atype == CHOICES:
+            ctk.CTkLabel(container, text=CHECK_IN_EDIT_OPTIONS_LABEL,
+                         font=make_font('label')).pack(anchor="w", pady=(SPACE_XS, SPACE_XXS))
+            box = ctk.CTkTextbox(container, width=CHECK_IN_EDIT_TEXT_WIDTH,
+                                 height=CHECK_IN_EDIT_OPTIONS_HEIGHT, font=make_font('body'),
+                                 corner_radius=CORNER_RADIUS_INPUT)
+            box.insert("1.0", _options_to_text(src.get("options", CHECK_IN_DEFAULT_CHOICES)))
+            box.pack(fill="x")
+            widgets['options'] = box
+            self._build_check_in_allow_note(container, src, widgets)
+        else:                                        # NOTE
+            ctk.CTkLabel(container, text=CHECK_IN_EDIT_NOTE_HINT, font=make_font('caption'),
+                         text_color=COLORS['text_secondary']).pack(
+                             anchor="w", pady=(SPACE_XS, 0))
+
+    def _build_check_in_allow_note(self, container, src, widgets):
+        """The 'allow an optional note' checkbox shared by scale/choices editors."""
+        allow_note = ctk.BooleanVar(value=bool(src.get("allow_note", True)))
+        ctk.CTkCheckBox(container, text=CHECK_IN_EDIT_ALLOW_NOTE_LABEL,
+                        variable=allow_note, font=make_font('label')).pack(
+                            anchor="w", pady=(SPACE_SM, 0))
+        widgets['allow_note'] = allow_note
+
+    def _center_toplevel(self, top, over, size=None):
+        """Center a toplevel over the `over` window — or the screen when it's gone.
+
+        `size` overrides the requested size for a window with a fixed geometry
+        (the app picker), whose scrollable content does not define its extent.
+        """
+        top.update_idletasks()
+        w, h = size if size is not None else (top.winfo_reqwidth(), top.winfo_reqheight())
+        if over is not None and over.winfo_exists():
+            x = over.winfo_x() + (over.winfo_width() - w) // 2
+            y = over.winfo_y() + (over.winfo_height() - h) // 2
+        else:
+            x = (top.winfo_screenwidth() - w) // 2
+            y = (top.winfo_screenheight() - h) // 2
+        top.tk.call("wm", "geometry", top, f"{w}x{h}+{int(x)}+{int(y)}")
 
     def _build_timing_slider(self, parent, var, label_fn, lo, hi, step):
         """A labeled slider row (label left, slider right) that writes `var` and
@@ -2352,23 +4004,36 @@ class BreakApp:
     def _enable_trackpad_scroll(self, scroll_frame):
         """Make trackpad/wheel scrolling work ANYWHERE over the settings window.
 
-        CTk gates its own wheel handler on `check_if_master_is_canvas` and only
-        covers widgets inside the canvas — so the padding/edges don't scroll, and
-        small fractional trackpad deltas `int()`-truncate to 0 (two-finger drag
-        does nothing). Bind <MouseWheel> on every widget in the window and forward
-        to the canvas with a min step of 1; 'break' stops CTk's bind_all handler
-        from also firing (double speed)."""
+        On macOS with Tk 9 there are TWO scroll events: a mouse wheel fires
+        <MouseWheel> (whole ±120 deltas), while a trackpad two-finger scroll fires
+        <TouchpadScroll> (precise sub-pixel deltas decoded via tk::PreciseScrollDeltas).
+        The old handler bound only <MouseWheel>, so the trackpad silently did nothing.
+        We bind BOTH on every widget in the window and forward to the canvas; 'break'
+        stops CTk's own bind_all handler from also firing (double speed)."""
         canvas = scroll_frame._parent_canvas
 
-        def _on_wheel(event):
-            if canvas.yview() != (0.0, 1.0):          # only when there's overflow
+        def _has_overflow():
+            return canvas.yview() != (0.0, 1.0)
+
+        def _on_wheel(event):                      # mouse wheel (whole ±120 deltas)
+            if _has_overflow():
                 step = -event.delta
                 canvas.yview_scroll(
                     int(step) if abs(step) >= 1 else (1 if step > 0 else -1), "units")
             return "break"
 
+        def _on_touchpad(event):                   # trackpad two-finger (Tk 9 precise)
+            try:
+                _dx, dy = canvas.tk.call("tk::PreciseScrollDeltas", event.delta)
+            except Exception:
+                return "break"
+            if dy and _has_overflow():
+                canvas.yview_scroll(-int(dy), "units")
+            return "break"
+
         def _bind(widget):
             widget.bind("<MouseWheel>", _on_wheel, add="+")
+            widget.bind("<TouchpadScroll>", _on_touchpad, add="+")
             for child in widget.winfo_children():
                 _bind(child)
 
@@ -2442,6 +4107,7 @@ class BreakApp:
                 continue
             if self.paused:
                 self._anticipated = None      # no anticipatory chip while paused (#74)
+                self._anticipated_app = None
                 self._maybe_prompt_resume()   # #77: offer to resume if you're clearly back
                 continue
 
@@ -2450,7 +4116,14 @@ class BreakApp:
                     check_meeting=self.defer_during_meetings.get(),
                     check_fullscreen=self.defer_during_fullscreen.get(),
                     count_mouse_move=self.count_mouse_move.get(),
+                    mic_ignores=self._ignores(app_rules.MIC),
+                    fullscreen_ignores=self._ignores(app_rules.FULLSCREEN),
                 )
+                if (ctx.is_meeting and ctx.meeting_app is None
+                        and not self._logged_mic_fallback):
+                    self._logged_mic_fallback = True
+                    self._record_event(MIC_DETECTION_FALLBACK,
+                                       reason="process attribution unavailable")
                 pause, away, natural = self._scheduler_thresholds()
                 # Raw sensor readings (pre-hysteresis), kept verbatim to log at fire
                 # time so an intermittent mid-activity fire is diagnosable (#84).
@@ -2472,19 +4145,46 @@ class BreakApp:
                     active_idle_seconds=(0.0 if eff_active else ctx.active_idle_seconds))
                 # Proactively note a sustained deferral context (call / fullscreen) so
                 # the hero can say "your break will wait" before anything is due (#74).
-                # Active-typing is excluded — it's transient and would flicker.
+                # Active-typing is excluded — it's transient and would flicker. The
+                # reason and the app it names come from ONE evaluation
+                # (`signal_reason_and_app`), so they can never disagree. Capture the
+                # previous value BEFORE resetting — resetting first would make the
+                # carry-across-a-blip a no-op (#40 review round 2).
+                prev_anticipated = self._anticipated
+                prev_anticipated_app = self._anticipated_app
                 self._anticipated = None
+                self._anticipated_app = None
                 if self.show_anticipated_defer.get():
-                    self._anticipated = ("meeting" if eff_meeting else
-                                         "fullscreen" if eff_fullscreen else None)
+                    self._anticipated, anticipated_app = signal_reason_and_app(
+                        eff_fullscreen, eff_meeting, ctx.fullscreen_app, ctx.meeting_app)
+                    self._anticipated_app, self._anticipated_app_carry = resolve_held_app(
+                        self._anticipated, anticipated_app,
+                        previous=prev_anticipated_app, previous_reason=prev_anticipated,
+                        carry_left=self._anticipated_app_carry)
                 states = states_from_configs(self.breaks)
                 names = [c.name.get() for c in self.breaks]
                 prev_remaining = [c.remaining for c in self.breaks]
                 now = time.time()
                 prev_episode = self._episode
-                new_remaining, fire_index, events, self._episode = advance(
+                outcome = advance(
                     states, ctx, self._episode, pause_threshold=pause,
                     away_threshold=away, natural_threshold=natural)
+                new_remaining, fire_index = outcome.new_remaining, outcome.fire_index
+                events, self._episode = outcome.events, outcome.episode
+                # The ONE evaluation the whole hold-UI hangs off: the reason shown,
+                # the app named and the signal the chip's Ignore button acts on all
+                # come from THIS tick's defer decision. `BREAK_DEFERRED` stays
+                # deduped to once per episode (inside events_for_tick), but the
+                # displayed reason must not be — that dedup is exactly what let the
+                # reason go stale while the app stayed fresh, so the hero could say
+                # "Keynote is using your microphone" and excuse the wrong app for
+                # the wrong signal (#40 final review, Finding 1).
+                prev_held, prev_held_app = self._held, self._held_app
+                self._held = outcome.defer_reason
+                self._held_app, self._held_app_carry = resolve_held_app(
+                    outcome.defer_reason, outcome.defer_app,
+                    previous=prev_held_app, previous_reason=prev_held,
+                    carry_left=self._held_app_carry)
                 # A break with a pending snooze is frozen — the snooze IS its next
                 # occurrence, so it neither counts down nor fires from the loop (#84).
                 pending_names = {e['name'] for e in self._pending_snoozes}
@@ -2503,8 +4203,12 @@ class BreakApp:
                     config.remaining = remaining
                 for event_type, data in events:
                     self._record_event(event_type, **data)
-                held_reason, self._held = track_held(
-                    events, fire_index is not None, self._held)
+                # The fire-time line (#44/#85) keeps its own carry: on the firing
+                # tick the hold has just ended, so `self._held` is already None and
+                # the reason to SHOW must come from the events fold, not the live
+                # hold. Separate attribute, same behavior as before.
+                held_reason, self._held_carry = track_held(
+                    events, fire_index is not None, self._held_carry)
                 if fire_index is not None:
                     name = self.breaks[fire_index].name.get()
                     scheduled_ts, deferred_seconds = deferral_at_fire(
@@ -2515,13 +4219,246 @@ class BreakApp:
                         raw_active_idle=raw_active_idle, raw_meeting=raw_meeting,
                         raw_fullscreen=raw_fullscreen, pause=pause, away=away,
                         held_reason=held_reason, scheduled_ts=scheduled_ts,
-                        deferred_seconds=deferred_seconds)
+                        deferred_seconds=deferred_seconds,
+                        held_app=(prev_held_app or {}).get("name"))
                     logging.info(
                         "break due, firing: %s (idle=%.0fs raw_meeting=%s raw_fs=%s held=%s)",
                         name, ctx.idle_seconds, raw_meeting, raw_fullscreen, held_reason)
                     self.trigger_break(self.breaks[fire_index], held_reason=held_reason)
             except Exception as e:
                 logging.error(f"timer_loop tick failed: {e}", exc_info=True)
+
+    def _maybe_check_in_after_break(self):
+        """After a real break finishes, maybe surface a break-coupled check-in — cadence-
+        gated, and only when nothing else is queued/snoozed/showing so it never stacks (#9)."""
+        if self.active_popup or self.break_queue or self._pending_snoozes:
+            return
+        if not self.check_ins_enabled.get():
+            return
+        from dfyb.checkins.model import parse_questions
+        from dfyb.checkins.scheduler import due_break_check_in
+        from dfyb.checkins.history import todays_check_ins
+        questions = parse_questions(self.check_in_questions)
+        state = self.check_in_state
+        answered_today = {r["question_id"]
+                          for r in todays_check_ins(self.event_log.read(), time.time())}
+        q = due_break_check_in(
+            questions, time.time(), state.get("last_prompted", {}),
+            state.get("last_prompt_ts", 0.0),
+            CHECK_IN_WAKING_WINDOW_SECONDS, MIN_CHECK_IN_GAP_SECONDS,
+            answered_today=answered_today)
+        if q is not None:
+            self._show_check_in(q)
+
+    def _open_check_in_now(self):
+        """On-demand entry point (the "Check in" button): open the chooser listing every
+        enabled question as a card. Answering stays in the chooser (it refreshes in place)."""
+        self._open_check_in_chooser()
+
+    def _open_check_in_chooser(self):
+        """A small window of question cards. Pinned to the active Space (no Space switch)."""
+        chooser = ctk.CTkToplevel(self.root)
+        chooser.title(CHECK_IN_CHOOSER_TITLE)
+        chooser.resizable(False, False)
+        chooser.configure(fg_color=COLORS['surface_card'])
+        pin_to_active_space(chooser)
+        chooser.transient(self.root)
+        body = ctk.CTkFrame(chooser, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=PADDING_PANEL_X, pady=PADDING_PANEL_Y)
+        chooser.protocol("WM_DELETE_WINDOW", chooser.destroy)
+        self._render_check_in_chooser(chooser, body)
+        self._center_toplevel(chooser, self.root)
+        chooser.lift()
+        chooser.focus_force()
+        # No grab_set: an app-modal grab orphans on macOS after we open the answer popup,
+        # leaving the window unclickable. The picker doesn't need modality.
+
+    def _render_check_in_chooser(self, chooser, body):
+        """(Re)build the chooser's cards — on open and after each answer, so they reflect
+        the newest state — then resize the window to fit."""
+        for child in body.winfo_children():
+            child.destroy()
+        from dfyb.checkins.model import parse_questions
+        from dfyb.checkins.history import todays_check_ins
+        questions = ([q for q in parse_questions(self.check_in_questions) if q.enabled]
+                     if self.check_ins_enabled.get() else [])
+        by_q = {}
+        for r in todays_check_ins(self.event_log.read(), time.time()):
+            by_q.setdefault(r["question_id"], []).append(r)   # oldest -> newest
+        if questions:
+            ctk.CTkLabel(
+                body, text=CHECK_IN_CHOOSER_PROMPT, font=make_font('body', weight="bold"),
+                anchor="w", justify="left", wraplength=CHECK_IN_CHOOSER_BTN_WIDTH).pack(
+                    anchor="w", pady=(0, SPACE_SM))
+            for question in questions:
+                self._add_check_in_row(chooser, body, question, by_q.get(question.id, []))
+        else:
+            ctk.CTkLabel(
+                body, text=CHECK_IN_NONE_CONFIGURED_TEXT, font=make_font('body'),
+                text_color=COLORS['text_secondary'], anchor="w", justify="left",
+                wraplength=CHECK_IN_CHOOSER_BTN_WIDTH).pack(anchor="w", pady=(0, SPACE_SM))
+        self._add_check_in_add_row(chooser, body)
+        ctk.CTkButton(
+            body, text=CHECK_IN_CHOOSER_CLOSE_LABEL, command=chooser.destroy,
+            height=BUTTON_HEIGHT_SMALL, corner_radius=CORNER_RADIUS_BUTTON,
+            fg_color="transparent", border_width=CHECK_IN_CARD_BORDER_WIDTH,
+            border_color=COLORS['border'], hover_color=COLORS['surface_hover'],
+            text_color=COLORS['text_secondary'], font=make_font('label')).pack(
+                anchor="e", pady=(SPACE_SM, 0))
+        self._refit_toplevel(chooser)
+
+    def _add_check_in_row(self, chooser, body, question, entries):
+        """One compact settings-style row: the question on the left; on the right a chevron
+        and — when answered today — either the value (once-a-day) or an "N answers" count
+        (recurring). Value/count present = answered. Tapping opens the detail popup (answer /
+        change / edit) and refreshes the chooser in place. `entries` oldest→newest."""
+        answered = bool(entries)
+        row = ctk.CTkFrame(body, fg_color="transparent")
+        row.pack(fill="x", pady=(0, SPACE_XXS))
+
+        def _pick(_e=None):
+            self._show_check_in(question, after=lambda: self._reopen_chooser(chooser, body))
+
+        # Right side, packed right-to-left: chevron, then (value | count) when answered.
+        ctk.CTkLabel(row, text=CHECK_IN_ROW_CHEVRON, font=make_font('body'),
+                     text_color=COLORS['text_tertiary']).pack(side="right", padx=(SPACE_XS, SPACE_SM))
+        if answered:
+            if question.once_per_day:              # once-a-day → the single value
+                latest = entries[-1]
+                value = latest.get("value")
+                if value is None and latest.get("note"):
+                    note = latest["note"]
+                    value = (note[:CHECK_IN_ROW_NOTE_MAX] + "…"
+                             if len(note) > CHECK_IN_ROW_NOTE_MAX else note)
+                text = str(value) if value is not None else ""
+                color = COLORS['text_secondary']
+            else:                                  # recurring → an "N answers" count, not a value
+                n = len(entries)
+                word = CHECK_IN_ANSWER_WORD if n == 1 else CHECK_IN_ANSWERS_WORD
+                text = CHECK_IN_COUNT_FMT.format(n=n, word=word)
+                color = COLORS['text_tertiary']
+            if text:
+                ctk.CTkLabel(row, text=text, font=make_font('body'),
+                             text_color=color).pack(side="right", padx=(0, SPACE_XS))
+
+        ctk.CTkLabel(row, text=question.text, font=make_font('body'),
+                     text_color=COLORS['text_primary'], anchor="w", justify="left",
+                     wraplength=CHECK_IN_ROW_TEXT_WRAP).pack(
+                         side="left", padx=(SPACE_SM, SPACE_XS), pady=SPACE_SM, fill="x", expand=True)
+
+        # The whole row (and all its children) is one click target.
+        def _bind_click(widget):
+            widget.bind("<Button-1>", _pick)
+            try:
+                widget.configure(cursor="pointinghand")
+            except Exception:
+                pass
+            for child in widget.winfo_children():
+                _bind_click(child)
+        _bind_click(row)
+
+    def _add_check_in_add_row(self, chooser, body):
+        """A quiet "＋ Add a question" link closing the chooser's list: thinking of a
+        question mid-check-in shouldn't mean a detour through Settings."""
+        link = ctk.CTkLabel(
+            body, text=CHECK_IN_ADD_QUESTION_LABEL, font=make_font('caption', weight="bold"),
+            text_color=COLORS['accent_primary'], anchor="w", cursor="pointinghand")
+        link.pack(anchor="w", padx=(SPACE_SM, 0), pady=(SPACE_XS, 0))
+        link.bind("<Button-1>", lambda e: self._add_check_in_from_chooser(chooser, body))
+
+    def _add_check_in_from_chooser(self, chooser, body):
+        """Open the Settings edit form for a brand-new question, owned by the chooser.
+        The question is only kept if Save lands (Cancel leaves no half-made row), and
+        the chooser then refreshes in place so it can be answered right away."""
+        question = new_check_in_question(
+            self._unique_check_in_id(CHECK_IN_NEW_QUESTION_TEXT))
+
+        def _keep():
+            # Re-slug from the name the user actually typed: the id is what groups a
+            # question's answers in the event log, and nothing has been logged yet.
+            question["id"] = self._unique_check_in_id(question["text"])
+            self.check_in_questions.append(question)
+            self._refresh_check_in_section()      # persists; no-ops if Settings is closed
+            self._reopen_chooser(chooser, body)
+
+        self._edit_check_in_question(question, parent=chooser, on_saved=_keep)
+
+    def _reopen_chooser(self, chooser, body):
+        """After answering from the chooser, refresh its cards and bring it back (the
+        chooser stayed open behind the answer popup — answering never dumps you to the
+        main window)."""
+        if not chooser.winfo_exists():
+            return
+        self._render_check_in_chooser(chooser, body)
+        chooser.lift()
+        chooser.focus_force()
+
+    def _refit_toplevel(self, top):
+        """Resize a toplevel to its content in place (keeps its position) — e.g. after an
+        expander toggle or a card re-render grows/shrinks the content."""
+        if top is None or not top.winfo_exists():
+            return
+        top.update_idletasks()
+        w, h = top.winfo_reqwidth(), top.winfo_reqheight()
+        top.tk.call("wm", "geometry", top, f"{w}x{h}+{top.winfo_x()}+{top.winfo_y()}")
+
+    def _show_check_in(self, question, after=None):
+        if self.active_popup:                 # something else is showing — skip
+            return
+        from dfyb.checkins.history import todays_check_ins
+        screen = self._capture_active_screen()   # capture before the popup steals focus
+        now = time.time()
+        entries = [r for r in todays_check_ins(self.event_log.read(), now)
+                   if r["question_id"] == question.id]
+        if question.once_per_day and entries:
+            entries = [entries[-1]]      # once-a-day: one answer for the day (latest wins)
+        state = self.check_in_state
+        state.setdefault("last_prompted", {})[question.id] = now
+        state["last_prompt_ts"] = now
+        self._save_preferences()
+        self.active_popup = CheckInPopup(
+            self.root, question, entries,
+            on_answer=lambda v, n: self._on_check_in_done(question, v, n, after),
+            on_edit=lambda tid, v, n: self._on_check_in_edited(tid, v, n, after),
+            on_remove=lambda tid: self._on_check_in_removed(tid, after),
+            on_skip=lambda: self._on_check_in_skipped(after), screen=screen)
+
+    def _on_check_in_done(self, question, value, note, after=None):
+        try:
+            self._record_event(CHECK_IN,
+                               **check_in_event_payload(question, value, note, uuid.uuid4().hex))
+        finally:
+            self.active_popup = None      # always clear, even if logging fails
+        if after is not None:
+            after()
+
+    def _on_check_in_edited(self, target_id, value, note, after=None):
+        try:
+            self._record_check_in_edit(target_id, value, note)
+        finally:
+            self.active_popup = None      # always clear, even if logging fails
+        if after is not None:
+            after()
+
+    def _on_check_in_removed(self, target_id, after=None):
+        try:
+            self._record_check_in_remove(target_id)
+        finally:
+            self.active_popup = None      # always clear, even if logging fails
+        if after is not None:
+            after()
+
+    def _record_check_in_edit(self, target_id, value, note):
+        self._record_event(CHECK_IN,
+                           **check_in_edit_payload(uuid.uuid4().hex, target_id, value, note))
+
+    def _record_check_in_remove(self, target_id):
+        self._record_event(CHECK_IN, **check_in_remove_payload(uuid.uuid4().hex, target_id))
+
+    def _on_check_in_skipped(self, after=None):
+        self.active_popup = None               # nothing logged
+        if after is not None:
+            after()
 
     def _reset_defer_grace(self):
         """Clear the fullscreen/mic/active hysteresis counters (#46/#84) — done on
@@ -2543,6 +4480,7 @@ class BreakApp:
             check_meeting=self.defer_during_meetings.get(),
             check_fullscreen=False,   # fullscreen isn't a "you're back" signal
             count_mouse_move=self.count_mouse_move.get(),
+            mic_ignores=self._ignores(app_rules.MIC),
         )
         active_idle = (ctx.idle_seconds if ctx.active_idle_seconds is None
                        else ctx.active_idle_seconds)
@@ -2638,18 +4576,22 @@ class BreakApp:
 
     def _log_break_fired(self, name, source, *, raw_idle, raw_active_idle,
                          raw_meeting, raw_fullscreen, pause, away, held_reason,
-                         scheduled_ts, deferred_seconds):
+                         scheduled_ts, deferred_seconds, held_app=None):
         """Record the fire-time context (#52/#84) so an intermittent mid-activity
         fire is diagnosable — the RAW (pre-hysteresis) sensor values plus the
         thresholds in force, tagged by which path fired it (scheduled/snooze_return).
         Also records when the break first became due (`scheduled_ts`) and how long it
-        was then held (`deferred_seconds`), so the dashboard can see push-back (#85)."""
+        was then held (`deferred_seconds`), so the dashboard can see push-back (#85).
+        `held_app` is the RESOLVED attribution (name only) that paired with
+        `held_reason` while the break was held — not the raw per-tick sensor
+        reading, which is None exactly during the hysteresis blips that matter (#40)."""
         self._record_event(
             BREAK_FIRED, name=name, source=source,
             idle_seconds=round(raw_idle, 1),
             active_idle_seconds=(None if raw_active_idle is None
                                  else round(raw_active_idle, 1)),
             is_meeting=raw_meeting, is_fullscreen=raw_fullscreen,
+            held_app=held_app,
             pause_threshold=pause, away_threshold=away, held_reason=held_reason,
             scheduled_ts=round(scheduled_ts, 1),
             deferred_seconds=round(deferred_seconds, 1))
@@ -2661,6 +4603,83 @@ class BreakApp:
                  if self.defer_while_active.get() else 0)
         return coordinate_thresholds(pause, self.away_idle_seconds.get(),
                                      self.natural_break_seconds.get())
+
+    def _ignore_lists(self, signal):
+        """(built-ins, user-added, user-removed) for one defer signal.
+
+        The single signal -> lists dispatch: `_ignores`, `_toggle_ignore` and the
+        Settings row renderer all go through it, so the three lists can never be
+        paired with the wrong signal and the two signals stay symmetric (issue
+        #28's rules table grows from here). The returned lists are the LIVE
+        objects — mutate them in place, never rebind.
+        """
+        if signal == app_rules.MIC:
+            return (app_rules.DEFAULT_MIC_IGNORED_APPS,
+                    self.mic_ignored_apps, self.mic_unignored_builtins)
+        return (app_rules.DEFAULT_FULLSCREEN_IGNORED_APPS,
+                self.fullscreen_ignored_apps, self.fullscreen_unignored_builtins)
+
+    def _ignores(self, signal):
+        """The set of app keys currently ignored for one defer signal."""
+        return app_rules.effective_ignores(*self._ignore_lists(signal))
+
+    def _toggle_ignore(self, signal, app_ref, ignore, source):
+        """Add or remove one app from a signal's ignore list, persist, and log it.
+
+        `app_ref` is {"id", "name"}; `source` is 'chip' or 'settings'. Takes effect
+        on the next tick — no restart — because the timer loop reads `_ignores()`
+        fresh each time.
+        """
+        key = app_rules.normalize_app(app_ref.get("id"), app_ref.get("name"))
+        builtins, added, removed = self._ignore_lists(signal)
+        is_builtin = app_rules.contains_key(builtins, key)
+        if ignore:
+            # A built-in is already excused (or being re-excused by dropping it
+            # from `removed` below) — only a genuine user addition belongs in the
+            # user-added list, so a built-in never grows a redundant entry.
+            if not is_builtin and not app_rules.contains_key(added, key):
+                added.append({"id": app_ref.get("id"), "name": app_ref.get("name")})
+            removed[:] = [k for k in removed if k.strip().lower() != key]
+        else:
+            added[:] = [a for a in added
+                        if app_rules.normalize_app(a.get("id"), a.get("name")) != key]
+            if is_builtin and key not in {k.strip().lower() for k in removed}:
+                removed.append(app_ref.get("id") or app_ref.get("name"))
+        self._save_preferences()
+        # `read_context` filters ignored apps BEFORE the hysteresis so an ignore
+        # takes effect at once — but the grace counters already armed by this app
+        # would still carry a tail of deferral behind it, so clear them here, on
+        # the one path every add/remove goes through (#40 final review).
+        self._reset_defer_grace()
+        self._record_event(APP_IGNORE_ADDED if ignore else APP_IGNORE_REMOVED,
+                           signal=signal, app=key, app_name=app_ref.get("name"),
+                           source=source, builtin=is_builtin)
+
+    def _handle_chip_ignore(self):
+        """Excuse the app currently holding the break, straight from the chip.
+
+        Acts on exactly what the last render's chip button promised (stashed in
+        `self._chip_action` by `_render_status`) rather than re-deriving the
+        signal here — so the button can never act on something other than what
+        its label said, even if the hold changed between render and click.
+
+        The list the user actually maintains gets built here, at the moment the
+        wrong deferral happens — Settings is for review and correction.
+        """
+        if self._chip_action is None:
+            return
+        signal, app_ref = self._chip_action
+        self._toggle_ignore(signal, app_ref, ignore=True, source="chip")
+        # Stop holding immediately, so the click has instant feedback rather than
+        # waiting up to a tick. The episode marker goes with it: leaving it at
+        # DEFERRED_EPISODE meant that if something ELSE still defers, no fresh
+        # break_deferred is emitted — which used to leave the hero stuck out of
+        # "Holding" on a frozen 0:00 (#40 final review, Finding 1). The next tick
+        # now recomputes `_held` from its own defer decision regardless, and this
+        # reset makes the continued deferral visible in the event log too.
+        self._held, self._held_app, self._held_app_carry = None, None, 0
+        self._episode = None
+        self._render_status()
 
     def _capture_active_screen(self):
         """Screen (x, y, w, h) the user is working on, captured BEFORE the popup
@@ -2751,6 +4770,8 @@ class BreakApp:
                 self._render_status()
             elif not self.running:
                 self._render_status()
+            if not break_data.get('preview'):
+                self.root.after(0, self._maybe_check_in_after_break)
             self.root.after(0, self._process_break_queue)
 
         def on_snooze(snooze_seconds):
@@ -2808,6 +4829,8 @@ class BreakApp:
             check_meeting=self.defer_during_meetings.get(),
             check_fullscreen=self.defer_during_fullscreen.get(),
             count_mouse_move=self.count_mouse_move.get(),
+            mic_ignores=self._ignores(app_rules.MIC),
+            fullscreen_ignores=self._ignores(app_rules.FULLSCREEN),
         )
         pause, away, _natural = self._scheduler_thresholds()
         context_defers = should_hold_snooze(
@@ -3221,7 +5244,9 @@ class BreakApp:
             running=self.running, paused=self.paused, held_reason=self._held,
             next_name=next_name, next_remaining=next_remaining,
             next_interval=next_interval, break_active=self.active_popup is not None,
-            just_rested=just_rested, anticipated_reason=self._anticipated)
+            just_rested=just_rested, anticipated_reason=self._anticipated,
+            held_app_name=(self._held_app or {}).get("name"),
+            anticipated_app_name=(self._anticipated_app or {}).get("name"))
         self.status_dot.configure(fg_color=STATUS_DOT_COLORS[view.dot])
         self.status.configure(text=STATUS_STATE_LABELS[view.state],
                               text_color=COLORS['text_secondary'])
@@ -3238,11 +5263,24 @@ class BreakApp:
             self.hero_progress.set(0)
         if view.chip:
             self.hero_chip.configure(text=f"⏸ {view.chip}")
-            if self.hero_chip.winfo_manager() != "pack":
-                self.hero_chip.pack(fill="x", padx=HERO_PAD, pady=(0, SPACE_SM),
-                                    after=self.hero_progress)
-        elif self.hero_chip.winfo_manager() == "pack":
-            self.hero_chip.pack_forget()
+            if view.chip_action_label and self._held_app:
+                # Stashed here, not re-derived on click: the handler acts on
+                # exactly what this render promised, even if state moves on.
+                self._chip_action = (view.chip_action_signal, dict(self._held_app))
+                self.hero_chip_action.configure(text=view.chip_action_label)
+                if self.hero_chip_action.winfo_manager() != "pack":
+                    self.hero_chip_action.pack(side="left", padx=(SPACE_XXS, 0))
+            else:
+                self._chip_action = None
+                if self.hero_chip_action.winfo_manager() == "pack":
+                    self.hero_chip_action.pack_forget()
+            if self.hero_chip_row.winfo_manager() != "pack":
+                self.hero_chip_row.pack(fill="x", padx=HERO_PAD, pady=(0, SPACE_SM),
+                                        after=self.hero_progress)
+        else:
+            self._chip_action = None
+            if self.hero_chip_row.winfo_manager() == "pack":
+                self.hero_chip_row.pack_forget()
 
     def update_ui(self):
         """Refresh the cockpit hero, per-break timers, holding cues, and snooze rows."""

@@ -124,4 +124,11 @@ Design makeover #49 · event-log audit #52 · manage breaks #53 · custom sounds
 · reactive design #56 · start hero #57 · iPhone app #58 · distraction removal #59
 · Focus/DND #60 · **Weekly Recap #61 · Adaptive rhythm #62 · Break Inbox #63 ·
 Start ritual + Fresh-Start #64 · Break ritual (arrive-at) #65 · Health & Habits #66**
-· Work-on label #88 · Break tag #89
+· Work-on label #88 · Break tag #89 · **Suggest-a-question (AI check-in suggestions) #97**
+
+## Future ideas (captured, not yet designed)
+- **AI-suggested check-in questions (#97):** the app proposes a new reflection tailored to
+  the user — informed by their questions/answers — to support growth & vitality over time.
+  Requires a dedicated design pass: **privacy first** (opt-in, off by default, transparent
+  about sending personal data to an LLM; a titles-only lighter mode), plus API/config, cost,
+  offline fallback, and gentle-tone safety.

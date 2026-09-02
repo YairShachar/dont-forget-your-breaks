@@ -3,6 +3,8 @@
 Pure (no Tk, no I/O). The timer loop calls `advance` once per tick and applies
 the returned new_remaining / fire_index / events.
 """
+from dataclasses import dataclass, field
+
 from dfyb.activity.event_log import BREAK_DEFERRED, NATURAL_BREAK
 from dfyb.scheduler.engine import (step, AWAY_IDLE_THRESHOLD_SECONDS,
                                    NATURAL_BREAK_IDLE_THRESHOLD_SECONDS)
@@ -10,6 +12,24 @@ from dfyb.scheduler.engine import (step, AWAY_IDLE_THRESHOLD_SECONDS,
 # Episode markers used to dedup sustained idle/defer logging.
 IDLE_EPISODE = "idle"
 DEFERRED_EPISODE = "deferred"
+
+
+@dataclass(frozen=True)
+class TickOutcome:
+    """Everything one tick produced, for the caller to apply.
+
+    `defer_reason`/`defer_app` are THIS tick's evaluation, surfaced even when
+    no event was logged for them: `BREAK_DEFERRED` is deduped to once per
+    sustained episode, but the UI must re-derive the reason it displays (and
+    the app it offers to excuse) every single tick, or the two drift apart
+    inside one episode.
+    """
+    new_remaining: list[int]
+    fire_index: int | None
+    events: list = field(default_factory=list)
+    episode: str | None = None
+    defer_reason: str | None = None
+    defer_app: dict | None = None
 
 
 def events_for_tick(result, ctx, episode):
@@ -24,7 +44,14 @@ def events_for_tick(result, ctx, episode):
         return [], IDLE_EPISODE
     if result.defer_reason is not None:
         if episode != DEFERRED_EPISODE:
-            return [(BREAK_DEFERRED, {"reason": result.defer_reason})], DEFERRED_EPISODE
+            data = {"reason": result.defer_reason}
+            if result.defer_app:
+                # Attribute the push-back so the dashboard can total deferred time
+                # per app ("Zoom pushed back 47 min of breaks this week").
+                data["app"] = result.defer_app.get("id")
+                data["app_name"] = result.defer_app.get("name")
+                data["holder_count"] = result.defer_app.get("count")
+            return [(BREAK_DEFERRED, data)], DEFERRED_EPISODE
         return [], DEFERRED_EPISODE
     # fire, or nothing due -> episode ends; BREAK_TAKEN is logged on popup close.
     return [], None
@@ -73,8 +100,17 @@ def apply_snooze_freeze(new_remaining, fire_index, prev_remaining,
 def advance(states, ctx, episode, pause_threshold=0,
             away_threshold=AWAY_IDLE_THRESHOLD_SECONDS,
             natural_threshold=NATURAL_BREAK_IDLE_THRESHOLD_SECONDS):
-    """Run one tick. Returns (new_remaining, fire_index, events, new_episode)."""
+    """Run one tick. Returns a TickOutcome.
+
+    The event dedup lives entirely in `events_for_tick`; the outcome always
+    carries this tick's raw `defer_reason`/`defer_app` so the caller never has to
+    infer the current hold from whether an event happened to be emitted.
+    """
     result = step(states, ctx, natural_threshold=natural_threshold,
                   away_threshold=away_threshold, pause_threshold=pause_threshold)
     events, new_episode = events_for_tick(result, ctx, episode)
-    return result.new_remaining, result.fire_index, events, new_episode
+    return TickOutcome(new_remaining=result.new_remaining,
+                       fire_index=result.fire_index,
+                       events=events, episode=new_episode,
+                       defer_reason=result.defer_reason,
+                       defer_app=result.defer_app)

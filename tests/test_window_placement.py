@@ -29,3 +29,15 @@ def test_active_without_screen_falls_back():
 
 def test_active_without_screen_but_saved_uses_saved():
     assert main_window_geometry(300, 200, "active", "+10+10", None) == "300x200+10+10"
+
+
+# --- a refit only resizes: never yank a window the user has moved -------------
+
+def test_refit_is_size_only_even_with_a_saved_position():
+    assert main_window_geometry(300, 240, "remembered", "+120+90", SCREEN,
+                                place=False) == "300x240"
+
+
+def test_refit_does_not_recenter_in_active_mode():
+    assert main_window_geometry(300, 240, "active", None, SCREEN,
+                                place=False) == "300x240"

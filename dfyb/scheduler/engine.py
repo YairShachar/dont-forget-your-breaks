@@ -5,6 +5,13 @@ from dataclasses import dataclass
 NATURAL_BREAK_IDLE_THRESHOLD_SECONDS = 300  # idle >= this => natural break (reset all timers)
 AWAY_IDLE_THRESHOLD_SECONDS = 60            # idle >= this at fire time => defer (briefly away)
 MIN_LADDER_GAP_SECONDS = 5                  # strict-ordering floor between pause < away < natural
+# How many attribution-less ticks the NAMED app may be carried across (see
+# `resolve_held_app`). Must equal `sensors.DEFER_GRACE_TICKS`, the signal
+# hysteresis it exists to bridge — carrying a name for longer than the signal
+# itself sticks would leave a stale app on screen. Defined here rather than
+# imported because sensors imports engine, not the reverse; a test asserts the
+# two stay equal.
+HELD_APP_CARRY_TICKS = 3
 
 FIRE = "fire"
 DEFER = "defer"
@@ -17,6 +24,11 @@ class Context:
     is_fullscreen: bool
     is_meeting: bool = False
     active_idle_seconds: float | None = None  # typing/clicks idle; None -> use idle_seconds
+    # Which app caused the signal, as {"id", "name", "count"} — for the UI and the
+    # event log only; `decide()` never reads them. None when not deferring or when
+    # attribution was unavailable.
+    meeting_app: dict | None = None
+    fullscreen_app: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -33,7 +45,8 @@ class StepResult:
     new_remaining: list[int]        # updated `remaining` per break (write back to configs)
     natural_break: bool = False
     fire_index: int | None = None   # which break to pop
-    defer_reason: str | None = None  # "fullscreen" | "meeting" | "away"
+    defer_reason: str | None = None  # "fullscreen" | "meeting" | "away" | "active"
+    defer_app: dict | None = None    # {"id", "name", "count"} of the app that caused it
 
 
 def is_natural_break(idle_seconds, threshold=NATURAL_BREAK_IDLE_THRESHOLD_SECONDS):
@@ -67,6 +80,68 @@ def decide(ctx, away_threshold=AWAY_IDLE_THRESHOLD_SECONDS, pause_threshold=0):
     return FIRE
 
 
+def signal_reason_and_app(is_fullscreen, is_meeting, fullscreen_app, meeting_app):
+    """(reason, app_ref) for an ACTIVE interrupt signal, in `decide()`'s priority
+    order — or (None, None) when neither signal is on.
+
+    The ONE place that order lives for the two app-bearing reasons, so the
+    deferral reason, the anticipated-chip reason and the app each names can
+    never be derived from different rules. `app_ref` is None when attribution
+    was unavailable this tick.
+    """
+    if is_fullscreen:
+        return "fullscreen", fullscreen_app
+    if is_meeting:
+        return "meeting", meeting_app
+    return None, None
+
+
+def defer_reason_and_app(ctx, away_threshold=AWAY_IDLE_THRESHOLD_SECONDS,
+                         pause_threshold=0):
+    """(reason, app_ref) for a deferral, in the SAME priority order as `decide()`.
+
+    Kept beside `decide()` so the two can never drift: if `decide()` deferred
+    because of fullscreen, this must not report 'meeting'. `app_ref` is None for
+    reasons that have no app (away / active) and when attribution was unavailable.
+    """
+    reason, app = signal_reason_and_app(ctx.is_fullscreen, ctx.is_meeting,
+                                        ctx.fullscreen_app, ctx.meeting_app)
+    if reason is not None:
+        return reason, app
+    if ctx.idle_seconds >= away_threshold:
+        return "away", None
+    return "active", None
+
+
+def resolve_held_app(reason, app, previous=None, previous_reason=None,
+                     carry_left=0, carry_ticks=HELD_APP_CARRY_TICKS):
+    """Which app to NAME for `reason`, with a BOUNDED carry across blips.
+
+    `reason` and `app` are one evaluation's output (`defer_reason_and_app` or
+    `signal_reason_and_app`), never two independent lookups — that is the whole
+    point: the sentence the user reads ("Waiting — X is using your microphone")
+    and the app the Ignore button acts on come from the same tick's view of the
+    world, so they cannot disagree.
+
+    `app` is None during exactly the blips `smooth_signal` exists to bridge, so
+    the previously-named app is carried — but only while the reason is UNCHANGED
+    (carrying a fullscreen app into a mic deferral would claim Keynote is using
+    your microphone), and only for `carry_ticks` ticks, so an attribution that
+    goes permanently unavailable mid-hold cannot pin a stale name on the hero
+    forever.
+
+    Returns (app_to_name, new_carry_left); the caller carries `new_carry_left`
+    into the next tick, exactly like `smooth_signal`'s grace. Pure; no Tk.
+    """
+    if reason is None:
+        return None, 0
+    if app is not None:
+        return app, carry_ticks
+    if previous is not None and previous_reason == reason and carry_left > 0:
+        return previous, carry_left - 1
+    return None, 0
+
+
 def step(states, ctx,
          natural_threshold=NATURAL_BREAK_IDLE_THRESHOLD_SECONDS,
          away_threshold=AWAY_IDLE_THRESHOLD_SECONDS,
@@ -91,17 +166,11 @@ def step(states, ctx,
     # 3. If any are due, decide fire vs defer.
     if due:
         if decide(ctx, away_threshold, pause_threshold) == DEFER:
-            if ctx.is_fullscreen:
-                reason = "fullscreen"
-            elif ctx.is_meeting:
-                reason = "meeting"
-            elif ctx.idle_seconds >= away_threshold:
-                reason = "away"
-            else:
-                reason = "active"             # idle < pause_threshold
+            reason, app = defer_reason_and_app(ctx, away_threshold, pause_threshold)
             for i in due:
                 new_remaining[i] = 0          # clamp — stays due, no negative drift
-            return StepResult(new_remaining=new_remaining, defer_reason=reason)
+            return StepResult(new_remaining=new_remaining,
+                              defer_reason=reason, defer_app=app)
         # FIRE: pop the longest-duration due break; reset all due breaks.
         fire_index = max(due, key=lambda i: states[i].duration_seconds)
         for i in due:

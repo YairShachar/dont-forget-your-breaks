@@ -38,8 +38,7 @@ def _smoothed(raw_ctx, grace, pause):
 def _fire(raw_ctx, grace, pause=3):
     """Run one smoothed tick against a freshly-due break; return fire_index."""
     ctx = _smoothed(raw_ctx, grace, pause)
-    _, fire_index, _, _ = advance(_due_state(), ctx, None, pause_threshold=pause)
-    return fire_index
+    return advance(_due_state(), ctx, None, pause_threshold=pause).fire_index
 
 
 # --- microphone: a per-utterance blip must NOT fire the break mid-call ---
