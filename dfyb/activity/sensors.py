@@ -123,6 +123,43 @@ def covers_any_display(windows, displays, tol=FULLSCREEN_COVER_TOLERANCE_PX):
     return any(_display_is_covered(windows, d, tol) for d in displays)
 
 
+def _covered_area(rect, display):
+    """Area of the intersection between a window rect and a display rect."""
+    wx, wy, ww, wh = rect
+    dx, dy, dw, dh = display
+    overlap_w = max(0.0, min(wx + ww, dx + dw) - max(wx, dx))
+    overlap_h = max(0.0, min(wy + wh, dy + dh) - max(wy, dy))
+    return overlap_w * overlap_h
+
+
+def covering_owners(owned_windows, displays, tol=FULLSCREEN_COVER_TOLERANCE_PX):
+    """[(pid, owner_name), …] — one entry per COVERED display, naming the app that
+    owns the largest share of that display's area.
+
+    `owned_windows` is [(rect, pid, owner_name)]. Coverage is still decided by ALL
+    windows together (so an overlay from another process in front of a fullscreen
+    window is still detected); only the naming is per-owner, and the content pane
+    always outweighs a thin strip. Pure — unit-tested off macOS.
+    """
+    rects = [rect for rect, _pid, _name in owned_windows]
+    owners = []
+    for display in displays:
+        if not _display_is_covered(rects, display, tol):
+            continue
+        area_by_owner = {}
+        for rect, pid, name in owned_windows:
+            area = _covered_area(rect, display)
+            if area <= 0:
+                continue
+            previous = area_by_owner.get(pid, (0.0, name))
+            area_by_owner[pid] = (previous[0] + area, name)
+        if not area_by_owner:
+            continue
+        pid, (_area, name) = max(area_by_owner.items(), key=lambda kv: kv[1][0])
+        owners.append((pid, name))
+    return owners
+
+
 def _active_display_rects(Quartz):
     """(x, y, w, h) in points for every active display."""
     _err, ids, count = Quartz.CGGetActiveDisplayList(MAX_DISPLAYS, None, None)
@@ -168,6 +205,52 @@ def frontmost_is_fullscreen():
         return covers_any_display(windows, displays)
     except Exception:
         return False
+
+
+def _layer0_owned_windows(Quartz):
+    """[(rect, pid, owner_name)] for each on-screen normal (layer-0) window.
+    The owner fields come free in the same CGWindowList dicts — no extra API call."""
+    windows = Quartz.CGWindowListCopyWindowInfo(
+        Quartz.kCGWindowListOptionOnScreenOnly
+        | Quartz.kCGWindowListExcludeDesktopElements,
+        Quartz.kCGNullWindowID,
+    )
+    owned = []
+    for window in windows:
+        if window.get("kCGWindowLayer", 1) != 0:
+            continue
+        bounds = window.get("kCGWindowBounds", {})
+        owned.append((
+            (bounds.get("X", 0.0), bounds.get("Y", 0.0),
+             bounds.get("Width", 0.0), bounds.get("Height", 0.0)),
+            window.get("kCGWindowOwnerPID"),
+            window.get("kCGWindowOwnerName") or "",
+        ))
+    return owned
+
+
+def fullscreen_state():
+    """(is_fullscreen, owners) in ONE pass over the window list.
+
+    `owners` is [(pid, bundle_id, name)] for the apps covering a display, or
+    **None when ownership could not be resolved** while the boolean is still
+    valid — the same None/[] contract as `mic_input_processes()`. Off macOS:
+    (False, None). Named seam: another platform would fill in its own window
+    server query here.
+    """
+    if sys.platform != "darwin":
+        return False, None
+    try:
+        import Quartz
+        displays = _active_display_rects(Quartz)
+        owned = _layer0_owned_windows(Quartz)
+        covered = covers_any_display([r for r, _p, _n in owned], displays)
+        owners = [(pid, _app_identity(pid)[0], name)
+                  for pid, name in covering_owners(owned, displays)]
+        return covered, owners
+    except Exception as e:
+        logging.debug("fullscreen_state() failed, attribution unavailable: %s", e)
+        return frontmost_is_fullscreen(), None
 
 
 def smooth_signal(raw_on, grace_left, grace_ticks=DEFER_GRACE_TICKS):

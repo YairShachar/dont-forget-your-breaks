@@ -439,3 +439,44 @@ def test_bundle_identity_missing_bundle_name_uses_dir_basename(tmp_path):
     exe = bundle / "Contents" / "MacOS" / "NoName"
     assert sensors._bundle_identity_from_path(str(exe)) == (
         "com.example.noname", "NoName.appex")
+
+
+# --- fullscreen attribution: WHO covers the display (#40/#28) ---
+# owned windows are (rect, pid, owner_name)
+
+def test_covering_owners_names_a_single_window_fullscreen():
+    owned = [((0, 0, 1920, 1080), 700, "Google Chrome")]
+    assert sensors.covering_owners(owned, [MAIN_DISPLAY]) == [(700, "Google Chrome")]
+
+
+def test_covering_owners_names_the_largest_area_for_multiwindow_fullscreen():
+    # The real #23 capture: strips + a content pane, all Chrome.
+    owned = [((0, 0, 1920, 41), 700, "Google Chrome"),
+             ((0, 41, 1920, 81), 700, "Google Chrome"),
+             ((0, 122, 1920, 958), 700, "Google Chrome")]
+    assert sensors.covering_owners(owned, [MAIN_DISPLAY]) == [(700, "Google Chrome")]
+
+
+def test_covering_owners_does_not_let_a_thin_overlay_steal_the_name():
+    # A menu-bar utility's full-width strip sits in front of the fullscreen app;
+    # the content pane owns far more area, so the app is still named.
+    owned = [((0, 0, 1920, 41), 999, "Bartender"),
+             ((0, 0, 1920, 1080), 700, "Google Chrome")]
+    assert sensors.covering_owners(owned, [MAIN_DISPLAY]) == [(700, "Google Chrome")]
+
+
+def test_covering_owners_is_empty_when_nothing_covers():
+    owned = [((0, 122, 1920, 958), 700, "Google Chrome")]
+    assert sensors.covering_owners(owned, [MAIN_DISPLAY]) == []
+
+
+def test_covering_owners_reports_one_entry_per_covered_display():
+    owned = [((0, 0, 1920, 1080), 700, "Google Chrome"),
+             ((1920, 64, 1512, 982), 800, "Keynote")]
+    assert sensors.covering_owners(owned, DISPLAYS) == [
+        (700, "Google Chrome"), (800, "Keynote")]
+
+
+def test_fullscreen_state_off_macos_is_not_fullscreen_and_unattributable(monkeypatch):
+    monkeypatch.setattr(sensors.sys, "platform", "linux")
+    assert sensors.fullscreen_state() == (False, None)
