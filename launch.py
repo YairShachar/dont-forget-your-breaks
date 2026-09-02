@@ -268,6 +268,7 @@ PROGRESS_HEIGHT = 6     # slim progress-to-next-break bar
 HERO_PAD = SPACE_LG     # inner padding of the hero card
 DOT_PULSE_MS = 3200     # full breathe cycle of the on-track status dot
 HERO_HEADLINE_HEIGHT = 38  # fixed slot so the big<->medium font swap doesn't resize the window
+CHIP_ACTION_HEIGHT = 20     # inline "Ignore <app>" button on the holding chip
 STATUS_DOT_COLORS = {
     'good': COLORS['accent_success'],
     'warning': COLORS['accent_warning'],
@@ -2266,6 +2267,7 @@ class BreakApp:
         self._resume_card_after = None  # auto-dismiss timer id for the resume card
         self._held = None      # reason the due break is currently held (transparency)
         self._held_app = None       # {"id","name","count"} of the app causing the hold
+        self._chip_action = None    # (signal, app_ref) the last render's chip button promised
         self._anticipated = None  # deferral context active but nothing due yet (#74)
         self._anticipated_app = None  # {"id","name","count"} of the app behind the anticipated chip
         self._logged_mic_fallback = False   # mic_detection_fallback is once per session
@@ -2485,10 +2487,19 @@ class BreakApp:
         self.hero_progress.set(0)
         self.hero_progress.pack(fill="x", padx=HERO_PAD)
 
-        # Holding chip \u2014 revealed by _render_status only while a break is deferred
+        # Holding chip \u2014 revealed by _render_status only while a break is deferred.
+        # A row, not a bare label, so the attributed case can offer "Ignore <app>".
+        self.hero_chip_row = ctk.CTkFrame(hero, fg_color="transparent")
         self.hero_chip = ctk.CTkLabel(
-            hero, text="", anchor="w", font=make_font('caption', weight="bold"),
+            self.hero_chip_row, text="", anchor="w",
+            font=make_font('caption', weight="bold"),
             text_color=COLORS['accent_warning'])
+        self.hero_chip.pack(side="left")
+        self.hero_chip_action = ctk.CTkButton(
+            self.hero_chip_row, text="", width=0, height=CHIP_ACTION_HEIGHT,
+            fg_color="transparent", hover_color=COLORS['surface_hover'],
+            text_color=COLORS['text_secondary'],
+            font=make_font('caption'), command=self._handle_chip_ignore)
 
         # Global controls
         controls = ctk.CTkFrame(hero, fg_color="transparent")
@@ -4453,6 +4464,24 @@ class BreakApp:
                            signal=signal, app=key, app_name=app_ref.get("name"),
                            source=source, builtin=is_builtin)
 
+    def _handle_chip_ignore(self):
+        """Excuse the app currently holding the break, straight from the chip.
+
+        Acts on exactly what the last render's chip button promised (stashed in
+        `self._chip_action` by `_render_status`) rather than re-deriving the
+        signal here — so the button can never act on something other than what
+        its label said, even if the hold changed between render and click.
+
+        The list the user actually maintains gets built here, at the moment the
+        wrong deferral happens — Settings is for review and correction.
+        """
+        if self._chip_action is None:
+            return
+        signal, app_ref = self._chip_action
+        self._toggle_ignore(signal, app_ref, ignore=True, source="chip")
+        self._held, self._held_app = None, None   # stop holding immediately
+        self._render_status()
+
     def _capture_active_screen(self):
         """Screen (x, y, w, h) the user is working on, captured BEFORE the popup
         is built (while their app is still frontmost). Falls back to dfyb's own
@@ -5035,11 +5064,24 @@ class BreakApp:
             self.hero_progress.set(0)
         if view.chip:
             self.hero_chip.configure(text=f"⏸ {view.chip}")
-            if self.hero_chip.winfo_manager() != "pack":
-                self.hero_chip.pack(fill="x", padx=HERO_PAD, pady=(0, SPACE_SM),
-                                    after=self.hero_progress)
-        elif self.hero_chip.winfo_manager() == "pack":
-            self.hero_chip.pack_forget()
+            if view.chip_action_label and self._held_app:
+                # Stashed here, not re-derived on click: the handler acts on
+                # exactly what this render promised, even if state moves on.
+                self._chip_action = (view.chip_action_signal, dict(self._held_app))
+                self.hero_chip_action.configure(text=view.chip_action_label)
+                if self.hero_chip_action.winfo_manager() != "pack":
+                    self.hero_chip_action.pack(side="left", padx=(SPACE_XXS, 0))
+            else:
+                self._chip_action = None
+                if self.hero_chip_action.winfo_manager() == "pack":
+                    self.hero_chip_action.pack_forget()
+            if self.hero_chip_row.winfo_manager() != "pack":
+                self.hero_chip_row.pack(fill="x", padx=HERO_PAD, pady=(0, SPACE_SM),
+                                        after=self.hero_progress)
+        else:
+            self._chip_action = None
+            if self.hero_chip_row.winfo_manager() == "pack":
+                self.hero_chip_row.pack_forget()
 
     def update_ui(self):
         """Refresh the cockpit hero, per-break timers, holding cues, and snooze rows."""
