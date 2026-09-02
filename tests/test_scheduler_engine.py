@@ -1,6 +1,7 @@
 from dfyb.scheduler.engine import (
     Context, BreakState, step, decide, is_natural_break, FIRE, DEFER,
     coordinate_thresholds, MIN_LADDER_GAP_SECONDS, defer_reason_and_app,
+    resolve_held_app,
 )
 
 GAP = MIN_LADDER_GAP_SECONDS
@@ -324,3 +325,42 @@ def test_step_carries_the_deferring_app_through():
                 meeting_app=ZOOM_REF)
     r = step(states, c)
     assert r.defer_reason == "meeting" and r.defer_app == ZOOM_REF
+
+
+# --- resolve_held_app: WHO to name for a deferral (#40) ---------------------
+
+KEYNOTE_REF = {"id": "com.apple.iWork.Keynote", "name": "Keynote", "count": 1}
+
+
+def test_resolve_held_app_fullscreen_wins_over_meeting_when_both_effective():
+    # Mirrors decide()'s priority (fullscreen before meeting) so the hero can
+    # never name the mic app under the "is in full screen" template.
+    resolved = resolve_held_app(True, True, KEYNOTE_REF, ZOOM_REF, previous=None)
+    assert resolved == KEYNOTE_REF
+
+
+def test_resolve_held_app_meeting_only_names_the_meeting_app():
+    resolved = resolve_held_app(False, True, None, ZOOM_REF, previous=None)
+    assert resolved == ZOOM_REF
+
+
+def test_resolve_held_app_carries_the_previous_app_across_a_blip():
+    # The effective signal is still bridged by smooth_signal, but this tick's
+    # raw ctx app is None (the blip) — the previously-known app must survive.
+    resolved = resolve_held_app(False, True, None, None, previous=ZOOM_REF)
+    assert resolved == ZOOM_REF
+
+
+def test_resolve_held_app_no_stale_carry_once_the_signal_is_off():
+    resolved = resolve_held_app(False, False, None, None, previous=ZOOM_REF)
+    assert resolved is None
+
+
+TEAMS_REF = {"id": "com.microsoft.teams2", "name": "Teams", "count": 1}
+
+
+def test_resolve_held_app_a_new_app_wins_immediately_over_the_carried_one():
+    # The signal went off and came back on with a DIFFERENT app — the new app
+    # must win immediately; a stale carry would wrongly keep naming the old one.
+    resolved = resolve_held_app(False, True, None, TEAMS_REF, previous=ZOOM_REF)
+    assert resolved == TEAMS_REF

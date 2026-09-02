@@ -90,6 +90,26 @@ def defer_reason_and_app(ctx, away_threshold=AWAY_IDLE_THRESHOLD_SECONDS,
     return "active", None
 
 
+def resolve_held_app(is_fullscreen, is_meeting, fullscreen_app, meeting_app, previous=None):
+    """Which app to NAME for a deferral, in decide()'s priority order.
+
+    Kept beside `defer_reason_and_app` for the same reason: if the priority
+    order (fullscreen before meeting) ever changes there, it must change here
+    too, or the hero could name the wrong app when both signals are true.
+
+    Takes the EFFECTIVE (post-hysteresis) `is_fullscreen`/`is_meeting`, but
+    `fullscreen_app`/`meeting_app` are this tick's RAW attribution — which is
+    None during exactly the blips `smooth_signal` exists to bridge. `previous`
+    (the caller's last resolved app) is carried across such a blip instead of
+    blanking the name the user is already reading (#40). Pure; no Tk.
+    """
+    if is_fullscreen:
+        return fullscreen_app or previous
+    if is_meeting:
+        return meeting_app or previous
+    return None
+
+
 def step(states, ctx,
          natural_threshold=NATURAL_BREAK_IDLE_THRESHOLD_SECONDS,
          away_threshold=AWAY_IDLE_THRESHOLD_SECONDS,

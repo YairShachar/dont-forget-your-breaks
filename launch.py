@@ -55,7 +55,8 @@ from dfyb.scheduler.tick import (advance, apply_snooze_freeze,
 from dfyb.scheduler.reschedule import reschedule_step, reschedule_bounds, nudged_remaining
 from dfyb.scheduler.engine import (decide, DEFER, coordinate_thresholds,
                                    AWAY_IDLE_THRESHOLD_SECONDS,
-                                   NATURAL_BREAK_IDLE_THRESHOLD_SECONDS)
+                                   NATURAL_BREAK_IDLE_THRESHOLD_SECONDS,
+                                   resolve_held_app)
 from dfyb.scheduler.dedup import break_in_play
 from dfyb.ui_controls import reset_button_style
 from dfyb.timer_lifecycle import timer_should_continue
@@ -2265,7 +2266,7 @@ class BreakApp:
         self._held = None      # reason the due break is currently held (transparency)
         self._held_app = None       # {"id","name","count"} of the app causing the hold
         self._anticipated = None  # deferral context active but nothing due yet (#74)
-        self._anticipated_app = None  # name of the app behind the anticipated chip
+        self._anticipated_app = None  # {"id","name","count"} of the app behind the anticipated chip
         self._logged_mic_fallback = False   # mic_detection_fallback is once per session
         self._rested_ack_until = None  # time.time() until which to show "welcome back"
         self._fullscreen_grace = 0  # ticks of fullscreen hysteresis left (#46)
@@ -3894,26 +3895,6 @@ class BreakApp:
         self.event_log.append(event_type, **data)
         logging.info("event: %s %s", event_type, data)
 
-    def _resolve_held_app(self, eff_fullscreen, eff_meeting, ctx, previous):
-        """Which app to name for the currently-active defer signal.
-
-        Mirrors `decide()`/`defer_reason_and_app`'s priority order (fullscreen
-        before meeting, dfyb/scheduler/engine.py) so the hero/chip can never
-        name the wrong app when both a call and an unrelated fullscreen app are
-        simultaneously true. `ctx` here is post-`dataclass_replace`, so its
-        `is_meeting`/`is_fullscreen` are the effective (hysteresis-bridged)
-        values, but `meeting_app`/`fullscreen_app` are still this tick's RAW
-        attribution — which drops to None during exactly the blips
-        `smooth_signal` exists to bridge. Falling back to `previous` (last
-        tick's resolved app) carries the name across that blip instead of the
-        hero silently reverting to generic wording mid-hold (#40).
-        """
-        if eff_fullscreen:
-            return ctx.fullscreen_app or previous
-        if eff_meeting:
-            return ctx.meeting_app or previous
-        return None
-
     def timer_loop(self, generation):
         """Single timer loop managing all breaks (context-aware via the scheduler).
 
@@ -3929,6 +3910,7 @@ class BreakApp:
                 continue
             if self.paused:
                 self._anticipated = None      # no anticipatory chip while paused (#74)
+                self._anticipated_app = None
                 self._maybe_prompt_resume()   # #77: offer to resume if you're clearly back
                 continue
 
@@ -3965,25 +3947,30 @@ class BreakApp:
                 # Remember WHO caused each signal, for the hero/chip and the event
                 # log — resolved from the EFFECTIVE signals (post-hysteresis), in
                 # decide()'s priority order, so it can never name the wrong app or
-                # go blank mid-hold (#40). See _resolve_held_app's docstring. Kept
+                # go blank mid-hold (#40). See resolve_held_app's docstring. Kept
                 # from BEFORE this tick's update, mirroring how track_held() below
                 # surfaces held_reason from the prior tick on the firing tick itself
                 # (by then this tick's signals may have already cleared).
                 prev_held_app = self._held_app
-                self._held_app = self._resolve_held_app(
-                    eff_fullscreen, eff_meeting, ctx, self._held_app)
+                self._held_app = resolve_held_app(
+                    eff_fullscreen, eff_meeting, ctx.fullscreen_app, ctx.meeting_app,
+                    previous=self._held_app)
                 # Proactively note a sustained deferral context (call / fullscreen) so
                 # the hero can say "your break will wait" before anything is due (#74).
                 # Active-typing is excluded — it's transient and would flicker.
                 # Same fullscreen-before-meeting priority as decide(), so the reason
-                # and the resolved app can never disagree.
+                # and the resolved app can never disagree. Capture the previous value
+                # BEFORE resetting, same as _held_app above — resetting first would
+                # make the carry-across-a-blip a no-op (#40 review round 2).
+                prev_anticipated_app = self._anticipated_app
                 self._anticipated = None
                 self._anticipated_app = None
                 if self.show_anticipated_defer.get():
                     self._anticipated = ("fullscreen" if eff_fullscreen else
                                          "meeting" if eff_meeting else None)
-                    self._anticipated_app = self._resolve_held_app(
-                        eff_fullscreen, eff_meeting, ctx, self._anticipated_app)
+                    self._anticipated_app = resolve_held_app(
+                        eff_fullscreen, eff_meeting, ctx.fullscreen_app, ctx.meeting_app,
+                        previous=prev_anticipated_app)
                 states = states_from_configs(self.breaks)
                 names = [c.name.get() for c in self.breaks]
                 prev_remaining = [c.remaining for c in self.breaks]
