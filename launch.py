@@ -269,6 +269,7 @@ HERO_PAD = SPACE_LG     # inner padding of the hero card
 DOT_PULSE_MS = 3200     # full breathe cycle of the on-track status dot
 HERO_HEADLINE_HEIGHT = 38  # fixed slot so the big<->medium font swap doesn't resize the window
 CHIP_ACTION_HEIGHT = 20     # inline "Ignore <app>" button on the holding chip
+IGNORE_ROW_REMOVE_W = 24    # ✕ button on an ignored-app row
 STATUS_DOT_COLORS = {
     'good': COLORS['accent_success'],
     'warning': COLORS['accent_warning'],
@@ -3282,8 +3283,10 @@ class BreakApp:
         smart = _add_section("smart_pausing", "Smart pausing")
         _checkbox(smart.body, "Pause breaks while microphone is in use",
                   self.defer_during_meetings)
+        self._build_ignore_list(smart.body, app_rules.MIC)
         _checkbox(smart.body, "Pause breaks during fullscreen",
                   self.defer_during_fullscreen)
+        self._build_ignore_list(smart.body, app_rules.FULLSCREEN)
         _checkbox(smart.body, "Wait until you pause (typing or clicking)",
                   self.defer_while_active)
 
@@ -3449,6 +3452,82 @@ class BreakApp:
             if panel.config is config:
                 panel.focus_config()
                 break
+
+    def _build_ignore_list(self, parent, signal):
+        """The 'Ignore these apps' sub-block under a defer toggle.
+
+        Rows are built from the built-ins the user has not removed, plus the
+        user's own additions, so what the list shows is exactly what `_ignores()`
+        applies. Rebuilt in place after every change.
+        """
+        subwrap = ctk.CTkFrame(parent, fg_color="transparent")
+        subwrap.pack(fill="x", anchor="w",
+                     padx=(PADDING_PANEL_X + SETTINGS_SUBOPTION_INDENT, PADDING_PANEL_X),
+                     pady=(0, PADDING_PANEL_Y))
+        ctk.CTkFrame(subwrap, width=SETTINGS_SUBOPTION_RULE_W, height=1,
+                     fg_color=COLORS['border']).pack(side="left", fill="y")
+        block = ctk.CTkFrame(subwrap, fg_color="transparent")
+        block.pack(side="left", fill="x", expand=True, padx=(SPACE_SM, 0))
+
+        def render():
+            for child in block.winfo_children():
+                child.destroy()
+            ctk.CTkLabel(block, text="Ignore these apps", font=make_font('caption'),
+                         text_color=COLORS['text_tertiary']).pack(
+                anchor="w", pady=(0, SPACE_XXS))
+            ignored = self._ignores(signal)
+            builtins = (app_rules.DEFAULT_MIC_IGNORED_APPS if signal == app_rules.MIC
+                        else app_rules.DEFAULT_FULLSCREEN_IGNORED_APPS)
+            added = (self.mic_ignored_apps if signal == app_rules.MIC
+                     else self.fullscreen_ignored_apps)
+            rows = [(a, True) for a in builtins
+                    if app_rules.normalize_app(a.get("id"), a.get("name")) in ignored]
+            rows += [(a, False) for a in added]
+            if not rows:
+                ctk.CTkLabel(block, text="None — every app defers your breaks",
+                             font=make_font('caption'),
+                             text_color=COLORS['text_tertiary']).pack(anchor="w")
+            for app_ref, is_builtin in rows:
+                row = ctk.CTkFrame(block, fg_color="transparent")
+                row.pack(fill="x", anchor="w", pady=(0, SPACE_XXS))
+                label = app_ref.get("name") + (" (built-in)" if is_builtin else "")
+                ctk.CTkLabel(row, text=label, font=make_font('label')).pack(side="left")
+                ctk.CTkButton(
+                    row, text="✕", width=IGNORE_ROW_REMOVE_W, height=CHIP_ACTION_HEIGHT,
+                    fg_color="transparent", hover_color=COLORS['surface_hover'],
+                    text_color=COLORS['text_secondary'], font=make_font('caption'),
+                    command=lambda a=app_ref: self._remove_ignore_row(
+                        signal, a, render)).pack(side="right")
+            ctk.CTkButton(
+                block, text="+ Add app", width=0, height=CHIP_ACTION_HEIGHT,
+                fg_color="transparent", hover_color=COLORS['surface_hover'],
+                text_color=COLORS['accent_primary'], font=make_font('caption'),
+                command=lambda: self._open_app_picker(signal, render)).pack(anchor="w")
+
+        render()
+        return render
+
+    def _remove_ignore_row(self, signal, app_ref, render):
+        """Un-ignore one app, then rebuild the list and refit the settings
+        window to the new content height, on the next event-loop turn.
+
+        The rebuild destroys the very button whose command is running, so it
+        must NOT happen inline — `after(0, …)` lets the click finish first.
+        Adding/removing a row changes the section's height, so the refit rides
+        the same deferred turn as the rebuild (see `_refresh_check_in_section`
+        for the same pattern on the check-in cards).
+        """
+        self._toggle_ignore(signal, app_ref, ignore=False, source="settings")
+
+        def _rebuild():
+            render()
+            self._resize_settings_to_content()
+
+        self.root.after(0, _rebuild)
+
+    def _open_app_picker(self, signal, on_done):
+        """Chooser of running apps — implemented in Task 10."""
+        return None
 
     # ------------------ CHECK-INS SETTINGS ------------------
 
