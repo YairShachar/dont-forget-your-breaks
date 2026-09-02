@@ -1,3 +1,4 @@
+import plistlib
 import struct
 import sys
 import types
@@ -382,3 +383,59 @@ def test_mic_input_processes_none_on_exception(monkeypatch):
 def test_mic_input_processes_none_off_macos(monkeypatch):
     monkeypatch.setattr(sensors.sys, "platform", "linux")
     assert sensors.mic_input_processes() is None
+
+
+# --- _bundle_identity_from_path: the bundle walk that turns a bare pid into a
+# name (#40) — this is the novel, risky part of mic attribution: it is what
+# turned "pid 12345" into "Sound" during the 2026-09-01 incident. ---
+
+def _write_plist(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "wb") as f:
+        plistlib.dump(data, f)
+
+
+def test_bundle_identity_from_appex_info_plist(tmp_path):
+    # Real values captured from this machine's actual Sound.appex — pins the
+    # exact case that caused the 18-hour false-positive incident (#40).
+    bundle = tmp_path / "Sound.appex"
+    _write_plist(bundle / "Contents" / "Info.plist", {
+        "CFBundleIdentifier": "com.apple.Sound-Settings.extension",
+        "CFBundleName": "Sound",
+    })
+    exe = bundle / "Contents" / "MacOS" / "Sound"
+    assert sensors._bundle_identity_from_path(str(exe)) == (
+        "com.apple.Sound-Settings.extension", "Sound")
+
+
+def test_bundle_identity_from_app_info_plist(tmp_path):
+    # The .app suffix branch, not just .appex.
+    bundle = tmp_path / "Zoom.app"
+    _write_plist(bundle / "Contents" / "Info.plist", {
+        "CFBundleIdentifier": "us.zoom.xos", "CFBundleName": "zoom.us"})
+    exe = bundle / "Contents" / "MacOS" / "zoom.us"
+    assert sensors._bundle_identity_from_path(str(exe)) == ("us.zoom.xos", "zoom.us")
+
+
+def test_bundle_identity_no_enclosing_bundle_is_bare_daemon():
+    # A path with no .app/.appex ancestor at all — a bare daemon.
+    assert sensors._bundle_identity_from_path("/usr/sbin/corespeechd") == (
+        None, "corespeechd")
+
+
+def test_bundle_identity_missing_info_plist_falls_back(tmp_path):
+    # Bundle directory exists but Info.plist does not -> the except branch,
+    # not a raise. Falls back to the basename of the ORIGINAL exe path.
+    bundle = tmp_path / "Broken.app"
+    (bundle / "Contents").mkdir(parents=True)
+    exe = bundle / "Contents" / "MacOS" / "Broken"
+    assert sensors._bundle_identity_from_path(str(exe)) == (None, "Broken")
+
+
+def test_bundle_identity_missing_bundle_name_uses_dir_basename(tmp_path):
+    bundle = tmp_path / "NoName.appex"
+    _write_plist(bundle / "Contents" / "Info.plist", {
+        "CFBundleIdentifier": "com.example.noname"})  # no CFBundleName
+    exe = bundle / "Contents" / "MacOS" / "NoName"
+    assert sensors._bundle_identity_from_path(str(exe)) == (
+        "com.example.noname", "NoName.appex")
