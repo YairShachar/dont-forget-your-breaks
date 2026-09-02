@@ -94,3 +94,9 @@ def test_resume_prompt_constants_exist():
 def test_mic_detection_fallback_constant_exists():
     from dfyb.activity import event_log
     assert event_log.MIC_DETECTION_FALLBACK == "mic_detection_fallback"
+
+
+def test_app_ignore_event_constants_exist():
+    from dfyb.activity import event_log
+    assert event_log.APP_IGNORE_ADDED == "app_ignore_added"
+    assert event_log.APP_IGNORE_REMOVED == "app_ignore_removed"

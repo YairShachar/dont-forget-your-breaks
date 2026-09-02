@@ -77,3 +77,26 @@ def test_dfyb_ignores_itself_so_it_never_defers_on_its_own_audio():
 
 def test_fullscreen_ships_with_no_ignores():
     assert rules.DEFAULT_FULLSCREEN_IGNORED_APPS == []
+
+
+def test_ignores_from_prefs_round_trip():
+    # The exact shape BreakApp stores: user additions + un-ignored built-ins.
+    prefs = {"mic_ignored_apps": [{"id": "us.zoom.xos", "name": "Zoom"}],
+             "mic_unignored_builtins": ["com.apple.controlcenter"]}
+    keys = rules.effective_ignores(
+        rules.DEFAULT_MIC_IGNORED_APPS,
+        prefs.get("mic_ignored_apps", []),
+        prefs.get("mic_unignored_builtins", []))
+    assert "us.zoom.xos" in keys
+    assert "com.apple.controlcenter" not in keys
+    assert "com.apple.sound-settings.extension" in keys
+
+
+def test_missing_pref_keys_fall_back_to_builtins_only():
+    prefs = {}
+    keys = rules.effective_ignores(
+        rules.DEFAULT_MIC_IGNORED_APPS,
+        prefs.get("mic_ignored_apps", []),
+        prefs.get("mic_unignored_builtins", []))
+    assert keys == {rules.normalize_app(a.get("id"), a.get("name"))
+                    for a in rules.DEFAULT_MIC_IGNORED_APPS}

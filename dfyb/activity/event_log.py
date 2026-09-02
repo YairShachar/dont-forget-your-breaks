@@ -31,6 +31,9 @@ MIC_DETECTION_FALLBACK = "mic_detection_fallback"  # per-process mic attribution
                                                    # (macOS < 14 or a CoreAudio failure) — the
                                                    # deferral fell back to the device-level
                                                    # signal, so it has no app name. Once per session.
+APP_IGNORE_ADDED = "app_ignore_added"      # user excused an app from a defer signal
+                                           # {signal, app, app_name, source, builtin}
+APP_IGNORE_REMOVED = "app_ignore_removed"  # user un-excused an app (incl. a built-in)
 
 # Event record schema version. Bump when the event shape changes; readers may
 # branch on it. Old records lacking "v" are treated as unversioned.

@@ -45,8 +45,9 @@ from dfyb.activity.event_log import (
     BREAK_SNOOZE_CANCELLED, BREAK_SNOOZE_RETURNED, SESSION_STARTED,
     BREAK_RESCHEDULED, SESSION_RESUMED, APP_UPDATED,
     RESUME_PROMPTED, RESUME_ACCEPTED, RESUME_DISMISSED, CHECK_IN,
-    MIC_DETECTION_FALLBACK)
+    MIC_DETECTION_FALLBACK, APP_IGNORE_ADDED, APP_IGNORE_REMOVED)
 from dfyb.activity.sensors import read_context, frontmost_window_rect, smooth_signal
+from dfyb.activity import app_rules
 from dfyb.popup_placement import (screen_for_point, center_on_screen, clamp_onscreen,
                                   main_window_geometry, clamp_saved_position)
 from dfyb.scheduler.adapter import states_from_configs
@@ -2321,6 +2322,12 @@ class BreakApp:
         )
         self.defer_during_fullscreen.trace_add('write', self._save_preferences)
 
+        # Per-app exceptions to the defer signals (#40/#28). Read with .get so
+        # older config files keep loading; built-ins live in app_rules, not prefs.
+        self.mic_ignored_apps = self.saved_prefs.get("mic_ignored_apps", [])
+        self.mic_unignored_builtins = self.saved_prefs.get("mic_unignored_builtins", [])
+        self.fullscreen_ignored_apps = self.saved_prefs.get("fullscreen_ignored_apps", [])
+
         self.defer_while_active = ctk.BooleanVar(
             value=self.saved_prefs.get("defer_while_active", False)
         )
@@ -2739,6 +2746,9 @@ class BreakApp:
             "check_for_updates": self.check_for_updates.get(),
             "defer_during_meetings": self.defer_during_meetings.get(),
             "defer_during_fullscreen": self.defer_during_fullscreen.get(),
+            "mic_ignored_apps": self.mic_ignored_apps,
+            "mic_unignored_builtins": self.mic_unignored_builtins,
+            "fullscreen_ignored_apps": self.fullscreen_ignored_apps,
             "popup_placement": self.popup_placement.get(),
             "main_window_placement": self.main_window_placement.get(),
             "defer_while_active": self.defer_while_active.get(),
@@ -3919,6 +3929,8 @@ class BreakApp:
                     check_meeting=self.defer_during_meetings.get(),
                     check_fullscreen=self.defer_during_fullscreen.get(),
                     count_mouse_move=self.count_mouse_move.get(),
+                    mic_ignores=self._ignores(app_rules.MIC),
+                    fullscreen_ignores=self._ignores(app_rules.FULLSCREEN),
                 )
                 if (ctx.is_meeting and ctx.meeting_app is None
                         and not self._logged_mic_fallback):
@@ -4392,6 +4404,48 @@ class BreakApp:
                  if self.defer_while_active.get() else 0)
         return coordinate_thresholds(pause, self.away_idle_seconds.get(),
                                      self.natural_break_seconds.get())
+
+    def _ignores(self, signal):
+        """The set of app keys currently ignored for one defer signal."""
+        if signal == app_rules.MIC:
+            return app_rules.effective_ignores(
+                app_rules.DEFAULT_MIC_IGNORED_APPS,
+                self.mic_ignored_apps, self.mic_unignored_builtins)
+        return app_rules.effective_ignores(
+            app_rules.DEFAULT_FULLSCREEN_IGNORED_APPS,
+            self.fullscreen_ignored_apps, [])
+
+    def _toggle_ignore(self, signal, app_ref, ignore, source):
+        """Add or remove one app from a signal's ignore list, persist, and log it.
+
+        `app_ref` is {"id", "name"}; `source` is 'chip' or 'settings'. Takes effect
+        on the next tick — no restart — because the timer loop reads `_ignores()`
+        fresh each time.
+        """
+        key = app_rules.normalize_app(app_ref.get("id"), app_ref.get("name"))
+        builtins = (app_rules.DEFAULT_MIC_IGNORED_APPS if signal == app_rules.MIC
+                    else app_rules.DEFAULT_FULLSCREEN_IGNORED_APPS)
+        is_builtin = any(app_rules.normalize_app(a.get("id"), a.get("name")) == key
+                         for a in builtins)
+        added = (self.mic_ignored_apps if signal == app_rules.MIC
+                 else self.fullscreen_ignored_apps)
+        if ignore:
+            if not any(app_rules.normalize_app(a.get("id"), a.get("name")) == key
+                       for a in added):
+                added.append({"id": app_ref.get("id"), "name": app_ref.get("name")})
+            if signal == app_rules.MIC and key in {
+                    k.strip().lower() for k in self.mic_unignored_builtins}:
+                self.mic_unignored_builtins = [
+                    k for k in self.mic_unignored_builtins if k.strip().lower() != key]
+        else:
+            added[:] = [a for a in added
+                        if app_rules.normalize_app(a.get("id"), a.get("name")) != key]
+            if is_builtin and signal == app_rules.MIC:
+                self.mic_unignored_builtins.append(app_ref.get("id") or app_ref.get("name"))
+        self._save_preferences()
+        self._record_event(APP_IGNORE_ADDED if ignore else APP_IGNORE_REMOVED,
+                           signal=signal, app=key, app_name=app_ref.get("name"),
+                           source=source, builtin=is_builtin)
 
     def _capture_active_screen(self):
         """Screen (x, y, w, h) the user is working on, captured BEFORE the popup
