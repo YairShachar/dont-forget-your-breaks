@@ -24,7 +24,14 @@ def events_for_tick(result, ctx, episode):
         return [], IDLE_EPISODE
     if result.defer_reason is not None:
         if episode != DEFERRED_EPISODE:
-            return [(BREAK_DEFERRED, {"reason": result.defer_reason})], DEFERRED_EPISODE
+            data = {"reason": result.defer_reason}
+            if result.defer_app:
+                # Attribute the push-back so the dashboard can total deferred time
+                # per app ("Zoom pushed back 47 min of breaks this week").
+                data["app"] = result.defer_app.get("id")
+                data["app_name"] = result.defer_app.get("name")
+                data["holder_count"] = result.defer_app.get("count")
+            return [(BREAK_DEFERRED, data)], DEFERRED_EPISODE
         return [], DEFERRED_EPISODE
     # fire, or nothing due -> episode ends; BREAK_TAKEN is logged on popup close.
     return [], None

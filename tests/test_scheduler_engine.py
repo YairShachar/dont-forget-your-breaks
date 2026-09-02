@@ -1,6 +1,6 @@
 from dfyb.scheduler.engine import (
     Context, BreakState, step, decide, is_natural_break, FIRE, DEFER,
-    coordinate_thresholds, MIN_LADDER_GAP_SECONDS,
+    coordinate_thresholds, MIN_LADDER_GAP_SECONDS, defer_reason_and_app,
 )
 
 GAP = MIN_LADDER_GAP_SECONDS
@@ -294,3 +294,33 @@ def test_configured_natural_threshold_resets_timers():
 def test_context_app_fields_default_to_none():
     c = Context(idle_seconds=0.0, is_fullscreen=False)
     assert c.meeting_app is None and c.fullscreen_app is None
+
+
+ZOOM_REF = {"id": "us.zoom.xos", "name": "Zoom", "count": 1}
+
+
+def test_defer_reason_and_app_names_the_mic_holder():
+    c = Context(idle_seconds=0.0, is_fullscreen=False, is_meeting=True,
+                meeting_app=ZOOM_REF)
+    assert defer_reason_and_app(c, 60, 0) == ("meeting", ZOOM_REF)
+
+
+def test_defer_reason_and_app_prefers_fullscreen_like_decide_does():
+    # decide() checks fullscreen first; the reason must agree with it.
+    keynote = {"id": "com.apple.iWork.Keynote", "name": "Keynote", "count": 1}
+    c = Context(idle_seconds=0.0, is_fullscreen=True, is_meeting=True,
+                fullscreen_app=keynote, meeting_app=ZOOM_REF)
+    assert defer_reason_and_app(c, 60, 0) == ("fullscreen", keynote)
+
+
+def test_defer_reason_and_app_has_no_app_for_away():
+    c = Context(idle_seconds=120.0, is_fullscreen=False)
+    assert defer_reason_and_app(c, 60, 0) == ("away", None)
+
+
+def test_step_carries_the_deferring_app_through():
+    states = [BreakState(remaining=1, interval_seconds=600, duration_seconds=15)]
+    c = Context(idle_seconds=0.0, is_fullscreen=False, is_meeting=True,
+                meeting_app=ZOOM_REF)
+    r = step(states, c)
+    assert r.defer_reason == "meeting" and r.defer_app == ZOOM_REF

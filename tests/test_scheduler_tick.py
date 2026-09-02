@@ -13,10 +13,12 @@ def ctx(idle=0.0, fullscreen=False):
 
 class R:
     """Minimal StepResult stand-in for events_for_tick tests."""
-    def __init__(self, natural_break=False, fire_index=None, defer_reason=None):
+    def __init__(self, natural_break=False, fire_index=None, defer_reason=None,
+                 defer_app=None):
         self.natural_break = natural_break
         self.fire_index = fire_index
         self.defer_reason = defer_reason
+        self.defer_app = defer_app
 
 
 def test_natural_break_logs_once_then_dedups():
@@ -250,3 +252,22 @@ def test_deferred_duration_zero_when_fires_immediately():
     due = track_due_since({}, ["Normal"], [1], now=500.0)
     assert fire_index == 0
     assert deferral_at_fire(due, "Normal", 500.0) == (500.0, 0.0)
+
+
+def test_deferred_event_records_which_app_caused_it():
+    from dfyb.scheduler.engine import StepResult
+    result = StepResult(new_remaining=[0], defer_reason="meeting",
+                        defer_app={"id": "us.zoom.xos", "name": "Zoom", "count": 2})
+    ctx = Context(idle_seconds=0.0, is_fullscreen=False, is_meeting=True)
+    events, episode = events_for_tick(result, ctx, None)
+    assert events == [("break_deferred", {"reason": "meeting", "app": "us.zoom.xos",
+                                          "app_name": "Zoom", "holder_count": 2})]
+    assert episode == "deferred"
+
+
+def test_deferred_event_without_attribution_keeps_todays_payload():
+    from dfyb.scheduler.engine import StepResult
+    result = StepResult(new_remaining=[0], defer_reason="away")
+    ctx = Context(idle_seconds=120.0, is_fullscreen=False)
+    events, _episode = events_for_tick(result, ctx, None)
+    assert events == [("break_deferred", {"reason": "away"})]

@@ -38,7 +38,8 @@ class StepResult:
     new_remaining: list[int]        # updated `remaining` per break (write back to configs)
     natural_break: bool = False
     fire_index: int | None = None   # which break to pop
-    defer_reason: str | None = None  # "fullscreen" | "meeting" | "away"
+    defer_reason: str | None = None  # "fullscreen" | "meeting" | "away" | "active"
+    defer_app: dict | None = None    # {"id", "name", "count"} of the app that caused it
 
 
 def is_natural_break(idle_seconds, threshold=NATURAL_BREAK_IDLE_THRESHOLD_SECONDS):
@@ -72,6 +73,23 @@ def decide(ctx, away_threshold=AWAY_IDLE_THRESHOLD_SECONDS, pause_threshold=0):
     return FIRE
 
 
+def defer_reason_and_app(ctx, away_threshold=AWAY_IDLE_THRESHOLD_SECONDS,
+                         pause_threshold=0):
+    """(reason, app_ref) for a deferral, in the SAME priority order as `decide()`.
+
+    Kept beside `decide()` so the two can never drift: if `decide()` deferred
+    because of fullscreen, this must not report 'meeting'. `app_ref` is None for
+    reasons that have no app (away / active) and when attribution was unavailable.
+    """
+    if ctx.is_fullscreen:
+        return "fullscreen", ctx.fullscreen_app
+    if ctx.is_meeting:
+        return "meeting", ctx.meeting_app
+    if ctx.idle_seconds >= away_threshold:
+        return "away", None
+    return "active", None
+
+
 def step(states, ctx,
          natural_threshold=NATURAL_BREAK_IDLE_THRESHOLD_SECONDS,
          away_threshold=AWAY_IDLE_THRESHOLD_SECONDS,
@@ -96,17 +114,11 @@ def step(states, ctx,
     # 3. If any are due, decide fire vs defer.
     if due:
         if decide(ctx, away_threshold, pause_threshold) == DEFER:
-            if ctx.is_fullscreen:
-                reason = "fullscreen"
-            elif ctx.is_meeting:
-                reason = "meeting"
-            elif ctx.idle_seconds >= away_threshold:
-                reason = "away"
-            else:
-                reason = "active"             # idle < pause_threshold
+            reason, app = defer_reason_and_app(ctx, away_threshold, pause_threshold)
             for i in due:
                 new_remaining[i] = 0          # clamp — stays due, no negative drift
-            return StepResult(new_remaining=new_remaining, defer_reason=reason)
+            return StepResult(new_remaining=new_remaining,
+                              defer_reason=reason, defer_app=app)
         # FIRE: pop the longest-duration due break; reset all due breaks.
         fire_index = max(due, key=lambda i: states[i].duration_seconds)
         for i in due:
