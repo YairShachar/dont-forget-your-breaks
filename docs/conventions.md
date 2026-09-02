@@ -23,13 +23,27 @@ prefer a preference (read with a `.get(key, default)` fallback for backward
 compatibility) over a fixed behavior. Zero-config defaults are the goal, but the
 user should be able to turn a behavior off.
 
-## Every feature is loggable and self-documenting
+## Every feature is instrumented and self-documenting
 
 A feature that leaves no trace can never be analyzed. Every user-visible
 behavior — and every automatic decision the app makes on the user's behalf —
-must emit an event to the event log (`dfyb/activity/event_log.py`), because the
-dashboard/recap surfaces (#52, #61, #9) can only ever show what we recorded, and
-history cannot be backfilled.
+must **emit an event** to the event stream (`dfyb/activity/event_log.py`),
+because the dashboard/recap surfaces (#52, #61, #9) can only ever show what was
+captured, and history cannot be backfilled.
+
+Note the vocabulary, because the codebase does both and they are not the same
+thing. `_record_event` calls `event_log.append` **and** `logging.info`:
+
+- **Logging** (`logging.info`) is prose for a human watching a terminal right
+  now. Ephemeral, unstructured, discarded freely.
+- **Instrumentation** (`event_log.append`) is structured, durable,
+  schema-versioned data that nobody reads today and that must still answer a
+  question you have not thought of yet in six months.
+
+`_record_event` is the **emitter** — the single choke point. The calls to it are
+the **instrumentation**. What lands in `events.jsonl` is **telemetry**. The
+requirements below are instrumentation requirements; none of them would be
+reasonable to demand of a debug log line.
 
 When you add a feature:
 
@@ -37,15 +51,15 @@ When you add a feature:
    what the event means and when it fires. The constant list *is* the schema
    documentation — a reader must understand the event without reading the
    emitter.
-2. **Log the decision, not just the outcome.** If the app deferred, suppressed,
-   auto-selected or skipped something, record *why* (`{"reason": ...}`) and the
-   inputs that drove it, so a future dashboard can explain the behavior back to
-   the user rather than just count it.
+2. **Capture the decision, not just the outcome.** If the app deferred,
+   suppressed, auto-selected or skipped something, record *why*
+   (`{"reason": ...}`) and the inputs that drove it, so a future dashboard can
+   explain the behavior back to the user rather than just count it.
 3. **Include enough dimensions to slice by later** — the break name, the source
    (scheduled / manual), the app involved, durations. Adding a field later
    cannot recover the events already written without it.
 4. **Bump `SCHEMA_VERSION`** if you change the meaning or shape of an existing
    event rather than adding a new one.
 5. **Pair it with a preference** — see "Make behaviors configurable" above. A
-   feature that is logged but not configurable is only half done; the two rules
-   apply together to every feature.
+   feature that is instrumented but not configurable is only half done; the two
+   rules apply together to every feature.
