@@ -3569,12 +3569,27 @@ class BreakApp:
 
         Deliberately lists only running apps: an app you can see is one you can
         recognize, and the chip covers the "it just happened" case anyway.
+
+        Window setup mirrors `_edit_check_in_question` exactly, and for the same
+        reasons: it belongs to the SETTINGS window it was opened from (not the
+        main window), and it must sit in front of it — Settings is `-topmost`
+        whenever always-on-top is set, so a picker without that would open behind
+        it. There is deliberately NO grab_set: an app-modal grab orphans on macOS
+        after the window closes and leaves Settings unclickable ("appears, then
+        can't reopen") — see the same fix on the check-in modal and chooser.
         """
+        owner = getattr(self, '_settings_window', None) or self.root
         picker = ctk.CTkToplevel(self.root)
-        picker.title("Choose an app")
+        picker.title(APP_PICKER_TITLE)
         picker.geometry(f"{APP_PICKER_W}x{APP_PICKER_H}")
-        picker.transient(self.root)
-        picker.grab_set()
+        picker.resizable(False, False)
+        picker.configure(fg_color=COLORS['surface_card'])
+        # Topmost BEFORE the first map: pin_to_active_space raises the window to
+        # NSStatusWindowLevel from its <Map> handler, and Tk's '-topmost' applied
+        # afterwards would drop it back below the window that opened it.
+        picker.attributes('-topmost', True)
+        pin_to_active_space(picker)
+        picker.transient(owner)
         picker.protocol("WM_DELETE_WINDOW", picker.destroy)
         scroll = ctk.CTkScrollableFrame(picker, fg_color="transparent")
         scroll.pack(fill="both", expand=True, padx=SPACE_SM, pady=SPACE_SM)
@@ -3601,6 +3616,11 @@ class BreakApp:
                 fg_color="transparent", hover_color=COLORS['surface_hover'],
                 text_color=COLORS['text_primary'], font=make_font('label'),
                 command=lambda b=bundle_id, n=name: choose(b, n)).pack(fill="x")
+
+        self._center_toplevel(picker, owner, size=(APP_PICKER_W, APP_PICKER_H))
+        picker.lift()
+        picker.focus_force()
+        return picker
 
     # ------------------ CHECK-INS SETTINGS ------------------
 
@@ -3928,10 +3948,14 @@ class BreakApp:
                             anchor="w", pady=(SPACE_SM, 0))
         widgets['allow_note'] = allow_note
 
-    def _center_toplevel(self, top, over):
-        """Center a toplevel over the `over` window — or the screen when it's gone."""
+    def _center_toplevel(self, top, over, size=None):
+        """Center a toplevel over the `over` window — or the screen when it's gone.
+
+        `size` overrides the requested size for a window with a fixed geometry
+        (the app picker), whose scrollable content does not define its extent.
+        """
         top.update_idletasks()
-        w, h = top.winfo_reqwidth(), top.winfo_reqheight()
+        w, h = size if size is not None else (top.winfo_reqwidth(), top.winfo_reqheight())
         if over is not None and over.winfo_exists():
             x = over.winfo_x() + (over.winfo_width() - w) // 2
             y = over.winfo_y() + (over.winfo_height() - h) // 2

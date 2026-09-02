@@ -188,3 +188,146 @@ def test_closing_without_choosing_does_not_toggle_or_rebuild(tmp_path, monkeypat
         assert app._ignores(app_rules.MIC) == before
     finally:
         root.destroy()
+
+
+# --- window setup: no orphaned grab, and in FRONT of the settings window ------
+#
+# Finding 4: the picker called grab_set(), which two nearby comments forbid — an
+# app-modal grab orphans on macOS after close and leaves the settings window
+# unclickable ("appears then can't reopen"). It also transient'd on the MAIN
+# window and skipped the topmost/pin/centre setup its sibling modals do, so with
+# always-on-top set it could open BEHIND the settings window while holding that
+# grab — the bug commit 03872e3 fixed for the check-in modal.
+
+def _fake_settings_window(root):
+    """A stand-in for the real settings toplevel, marked -topmost like the real
+    one is whenever always_on_top is set."""
+    ctk = pytest.importorskip("customtkinter")
+    window = ctk.CTkToplevel(root)
+    window.geometry("400x500+120+140")
+    window.attributes('-topmost', True)
+    window.update_idletasks()
+    return window
+
+
+def test_picker_holds_no_grab(tmp_path, monkeypatch):
+    app_rules, app, root = _app(tmp_path)
+    try:
+        _stub_running_apps(monkeypatch, [(SAFARI["id"], SAFARI["name"])])
+        app._open_app_picker(app_rules.MIC, lambda: None)
+        picker = root.winfo_children()[-1]   # found without the return value, so
+        try:                                 # this asserts the grab either way
+            assert picker.grab_status() is None      # not local, not global
+            assert root.grab_current() is None
+        finally:
+            picker.destroy()
+        root.update()
+        assert root.grab_current() is None           # nothing orphaned on close
+    finally:
+        root.destroy()
+
+
+def test_picker_is_transient_on_the_settings_window_not_the_main_one(tmp_path,
+                                                                     monkeypatch):
+    app_rules, app, root = _app(tmp_path)
+    try:
+        _stub_running_apps(monkeypatch, [(SAFARI["id"], SAFARI["name"])])
+        app._settings_window = _fake_settings_window(root)
+        picker = app._open_app_picker(app_rules.MIC, lambda: None)
+        try:
+            picker.update_idletasks()
+            assert str(picker.wm_transient()) == str(app._settings_window)
+            assert str(picker.wm_transient()) != str(root)
+        finally:
+            picker.destroy()
+            app._settings_window.destroy()
+    finally:
+        root.destroy()
+
+
+def test_picker_is_topmost_before_it_is_pinned_to_the_active_space(tmp_path,
+                                                                  monkeypatch):
+    """The raise itself comes from pin_to_active_space's NSStatusWindowLevel (set
+    from <Map>); `-topmost` must already be on when that runs, or Tk drops the
+    window back below the -topmost settings window. Exactly the ordering
+    `_edit_check_in_question` documents, so assert the ordering, not the
+    attribute afterwards — macOS Tk clears `-topmost` on a transient window when
+    it is realized."""
+    import launch
+    app_rules, app, root = _app(tmp_path)
+    try:
+        _stub_running_apps(monkeypatch, [(SAFARI["id"], SAFARI["name"])])
+        seen = {}
+        real_pin = launch.pin_to_active_space
+
+        def _record(window):
+            seen['topmost'] = window.attributes('-topmost')
+            seen['transient'] = str(window.wm_transient())
+            return real_pin(window)
+        monkeypatch.setattr(launch, "pin_to_active_space", _record)
+
+        picker = app._open_app_picker(app_rules.MIC, lambda: None)
+        try:
+            assert seen['topmost'] in (1, True)
+            assert seen['transient'] == ""      # pinned before transient, as sibling
+            assert picker.bind("<Map>")          # the pin binding is installed
+        finally:
+            picker.destroy()
+    finally:
+        root.destroy()
+
+
+def test_picker_is_centred_over_the_settings_window(tmp_path, monkeypatch):
+    import launch
+    app_rules, app, root = _app(tmp_path)
+    try:
+        _stub_running_apps(monkeypatch, [(SAFARI["id"], SAFARI["name"])])
+        owner = _fake_settings_window(root)
+        app._settings_window = owner
+        picker = app._open_app_picker(app_rules.MIC, lambda: None)
+        try:
+            picker.update_idletasks()
+            expected_x = owner.winfo_x() + (owner.winfo_width() - launch.APP_PICKER_W) // 2
+            expected_y = owner.winfo_y() + (owner.winfo_height() - launch.APP_PICKER_H) // 2
+            assert (picker.winfo_x(), picker.winfo_y()) == (expected_x, expected_y)
+        finally:
+            picker.destroy()
+            owner.destroy()
+    finally:
+        root.destroy()
+
+
+def test_picker_uses_the_card_background_token(tmp_path, monkeypatch):
+    import launch
+    app_rules, app, root = _app(tmp_path)
+    try:
+        _stub_running_apps(monkeypatch, [(SAFARI["id"], SAFARI["name"])])
+        picker = app._open_app_picker(app_rules.MIC, lambda: None)
+        try:
+            assert picker.cget("fg_color") == launch.COLORS['surface_card']
+        finally:
+            picker.destroy()
+    finally:
+        root.destroy()
+
+
+def test_picker_can_be_opened_closed_and_reopened_repeatedly(tmp_path, monkeypatch):
+    """The whole point of dropping grab_set: an orphaned grab wedged the UI so
+    the picker 'appears then can't reopen'. Three full cycles, closing the way
+    the window manager's close box does."""
+    app_rules, app, root = _app(tmp_path)
+    try:
+        _stub_running_apps(monkeypatch, [(SAFARI["id"], SAFARI["name"])])
+        app._settings_window = _fake_settings_window(root)
+        for _ in range(3):
+            picker = app._open_app_picker(app_rules.MIC, lambda: None)
+            root.update()
+            assert picker.winfo_exists()
+            assert _picker_buttons(picker)          # the list actually rendered
+            root.tk.call(picker.protocol("WM_DELETE_WINDOW"))
+            root.update()
+            assert not picker.winfo_exists()
+            assert root.grab_current() is None      # never wedged
+        app._settings_window.destroy()
+    finally:
+        root.destroy()
