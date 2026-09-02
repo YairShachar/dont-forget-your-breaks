@@ -17,7 +17,11 @@ BREAK_SNOOZED = "break_snoozed"
 BREAK_SNOOZE_CANCELLED = "break_snooze_cancelled"
 BREAK_SNOOZE_RETURNED = "break_snooze_returned"
 IDLE_DETECTED = "idle_detected"
-BREAK_DEFERRED = "break_deferred"
+BREAK_DEFERRED = "break_deferred"  # a due break was held back by the context, once per
+                                   # sustained episode: {reason} plus, when the causing
+                                   # app could be named, {app, app_name, holder_count}.
+                                   # reason is fullscreen|meeting|away|active; only the
+                                   # first two ever carry an app (#40).
 NATURAL_BREAK = "natural_break"
 SESSION_STARTED = "session_started"   # user pressed Start — begins a fresh break cycle
 BREAK_RESCHEDULED = "break_rescheduled"   # one-time nudge of the next break sooner/later

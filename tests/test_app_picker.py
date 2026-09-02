@@ -4,7 +4,7 @@ Covers the picker's candidate list — running apps minus whatever `_ignores()`
 already covers (built-ins AND user additions) — and that choosing one persists
 through `_toggle_ignore(..., source="settings")`, rebuilds the ignore-list rows
 via the `render` callback from `_build_ignore_list`, and refits the settings
-window, matching `_remove_ignore_row`'s rebuild-after-destroy pattern.
+window, matching `_set_ignore_row`'s rebuild-after-destroy pattern.
 
 Tk-gated (self-skips headless); prefs/events isolated to tmp_path — same
 pattern as tests/test_settings_ignore_list.py and tests/test_app_ignore_toggle.py.

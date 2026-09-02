@@ -41,6 +41,14 @@ def normalize_app(bundle_id, name):
     return (bundle_id or name or "").strip().lower()
 
 
+def contains_key(apps, key):
+    """Is `key` (as produced by `normalize_app`) present in a list of
+    `{"id", "name"}` refs? The one membership test every caller shares, so
+    "is this a built-in?" and "is this already added?" can never be spelled
+    two different ways."""
+    return any(normalize_app(app.get("id"), app.get("name")) == key for app in apps)
+
+
 def effective_ignores(builtins, user_added, user_removed):
     """The set of keys actually ignored for one signal.
 

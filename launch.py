@@ -271,6 +271,17 @@ DOT_PULSE_MS = 3200     # full breathe cycle of the on-track status dot
 HERO_HEADLINE_HEIGHT = 38  # fixed slot so the big<->medium font swap doesn't resize the window
 CHIP_ACTION_HEIGHT = 20     # inline "Ignore <app>" button on the holding chip
 IGNORE_ROW_REMOVE_W = 24    # ✕ button on an ignored-app row
+IGNORE_ROW_RESTORE_W = 64   # "Restore" button on a built-in the user turned off
+IGNORE_ROW_REMOVE_LABEL = "✕"
+IGNORE_ROW_RESTORE_LABEL = "Restore"
+IGNORE_ROW_BUILTIN_SUFFIX = " (built-in)"
+# A built-in the user removed stays listed, greyed, with a Restore button — the
+# picker only offers regular Dock apps, so most built-ins (an .appex, an agent, a
+# daemon) could never be found again once the row vanished (#40 final review).
+IGNORE_ROW_OFF_SUFFIX = " (built-in, off)"
+IGNORE_LIST_HEADING = "Ignore these apps"
+IGNORE_LIST_EMPTY_TEXT = "None — every app defers your breaks"
+APP_PICKER_TITLE = "Choose an app"
 STATUS_DOT_COLORS = {
     'good': COLORS['accent_success'],
     'warning': COLORS['accent_warning'],
@@ -2336,6 +2347,8 @@ class BreakApp:
         self.mic_ignored_apps = self.saved_prefs.get("mic_ignored_apps", [])
         self.mic_unignored_builtins = self.saved_prefs.get("mic_unignored_builtins", [])
         self.fullscreen_ignored_apps = self.saved_prefs.get("fullscreen_ignored_apps", [])
+        self.fullscreen_unignored_builtins = self.saved_prefs.get(
+            "fullscreen_unignored_builtins", [])
 
         self.defer_while_active = ctk.BooleanVar(
             value=self.saved_prefs.get("defer_while_active", False)
@@ -2767,6 +2780,7 @@ class BreakApp:
             "mic_ignored_apps": self.mic_ignored_apps,
             "mic_unignored_builtins": self.mic_unignored_builtins,
             "fullscreen_ignored_apps": self.fullscreen_ignored_apps,
+            "fullscreen_unignored_builtins": self.fullscreen_unignored_builtins,
             "popup_placement": self.popup_placement.get(),
             "main_window_placement": self.main_window_placement.get(),
             "defer_while_active": self.defer_while_active.get(),
@@ -3468,9 +3482,12 @@ class BreakApp:
     def _build_ignore_list(self, parent, signal):
         """The 'Ignore these apps' sub-block under a defer toggle.
 
-        Rows are built from the built-ins the user has not removed, plus the
-        user's own additions, so what the list shows is exactly what `_ignores()`
-        applies. Rebuilt in place after every change.
+        EVERY built-in is listed, whether or not it is currently ignored, plus the
+        user's own additions. An ignored row carries ✕ (stop ignoring); a built-in
+        the user turned off stays as a greyed row with Restore, because removing
+        it used to be a one-way door: "+ Add app" only offers regular Dock apps,
+        and three of the four mic built-ins (an .appex, a menu-bar agent and a
+        daemon) can never appear there. Rebuilt in place after every change.
         """
         subwrap = ctk.CTkFrame(parent, fg_color="transparent")
         subwrap.pack(fill="x", anchor="w",
@@ -3484,32 +3501,42 @@ class BreakApp:
         def render():
             for child in block.winfo_children():
                 child.destroy()
-            ctk.CTkLabel(block, text="Ignore these apps", font=make_font('caption'),
+            ctk.CTkLabel(block, text=IGNORE_LIST_HEADING, font=make_font('caption'),
                          text_color=COLORS['text_tertiary']).pack(
                 anchor="w", pady=(0, SPACE_XXS))
             ignored = self._ignores(signal)
-            builtins = (app_rules.DEFAULT_MIC_IGNORED_APPS if signal == app_rules.MIC
-                        else app_rules.DEFAULT_FULLSCREEN_IGNORED_APPS)
-            added = (self.mic_ignored_apps if signal == app_rules.MIC
-                     else self.fullscreen_ignored_apps)
-            rows = [(a, True) for a in builtins
-                    if app_rules.normalize_app(a.get("id"), a.get("name")) in ignored]
-            rows += [(a, False) for a in added]
+            builtins, added, _removed = self._ignore_lists(signal)
+            # (app_ref, is_builtin, is_ignored) — built-ins always listed, so a
+            # removed one is restorable instead of gone.
+            rows = [(a, True,
+                     app_rules.normalize_app(a.get("id"), a.get("name")) in ignored)
+                    for a in builtins]
+            rows += [(a, False, True) for a in added]
             if not rows:
-                ctk.CTkLabel(block, text="None — every app defers your breaks",
+                ctk.CTkLabel(block, text=IGNORE_LIST_EMPTY_TEXT,
                              font=make_font('caption'),
                              text_color=COLORS['text_tertiary']).pack(anchor="w")
-            for app_ref, is_builtin in rows:
+            for app_ref, is_builtin, is_ignored in rows:
                 row = ctk.CTkFrame(block, fg_color="transparent")
                 row.pack(fill="x", anchor="w", pady=(0, SPACE_XXS))
-                label = app_ref.get("name") + (" (built-in)" if is_builtin else "")
-                ctk.CTkLabel(row, text=label, font=make_font('label')).pack(side="left")
+                suffix = (IGNORE_ROW_BUILTIN_SUFFIX if is_ignored
+                          else IGNORE_ROW_OFF_SUFFIX) if is_builtin else ""
+                ctk.CTkLabel(
+                    row, text=app_ref.get("name") + suffix, font=make_font('label'),
+                    text_color=(COLORS['text_primary'] if is_ignored
+                                else COLORS['text_tertiary'])).pack(side="left")
                 ctk.CTkButton(
-                    row, text="✕", width=IGNORE_ROW_REMOVE_W, height=CHIP_ACTION_HEIGHT,
+                    row,
+                    text=(IGNORE_ROW_REMOVE_LABEL if is_ignored
+                          else IGNORE_ROW_RESTORE_LABEL),
+                    width=(IGNORE_ROW_REMOVE_W if is_ignored else IGNORE_ROW_RESTORE_W),
+                    height=CHIP_ACTION_HEIGHT,
                     fg_color="transparent", hover_color=COLORS['surface_hover'],
-                    text_color=COLORS['text_secondary'], font=make_font('caption'),
-                    command=lambda a=app_ref: self._remove_ignore_row(
-                        signal, a, render)).pack(side="right")
+                    text_color=(COLORS['text_secondary'] if is_ignored
+                                else COLORS['accent_primary']),
+                    font=make_font('caption'),
+                    command=lambda a=app_ref, on=is_ignored: self._set_ignore_row(
+                        signal, a, ignore=not on, render=render)).pack(side="right")
             ctk.CTkButton(
                 block, text="+ Add app", width=0, height=CHIP_ACTION_HEIGHT,
                 fg_color="transparent", hover_color=COLORS['surface_hover'],
@@ -3519,9 +3546,9 @@ class BreakApp:
         render()
         return render
 
-    def _remove_ignore_row(self, signal, app_ref, render):
-        """Un-ignore one app, then rebuild the list and refit the settings
-        window to the new content height, on the next event-loop turn.
+    def _set_ignore_row(self, signal, app_ref, ignore, render):
+        """Flip one row (✕ un-ignores, Restore re-ignores a built-in), then
+        rebuild the list and refit the settings window, on the next event-loop turn.
 
         The rebuild destroys the very button whose command is running, so it
         must NOT happen inline — `after(0, …)` lets the click finish first.
@@ -3529,7 +3556,7 @@ class BreakApp:
         the same deferred turn as the rebuild (see `_refresh_check_in_section`
         for the same pattern on the check-in cards).
         """
-        self._toggle_ignore(signal, app_ref, ignore=False, source="settings")
+        self._toggle_ignore(signal, app_ref, ignore=ignore, source="settings")
 
         def _rebuild():
             render()
@@ -3561,7 +3588,7 @@ class BreakApp:
                                 ignore=True, source="settings")
             picker.destroy()
             # Rebuild the row list off the click, not inline — it destroys the
-            # very button whose command is running (same rule as _remove_ignore_row),
+            # very button whose command is running (same rule as _set_ignore_row),
             # and refit the settings window to the new height on the same turn.
             self.root.after(0, _rebuild)
 
@@ -4553,15 +4580,24 @@ class BreakApp:
         return coordinate_thresholds(pause, self.away_idle_seconds.get(),
                                      self.natural_break_seconds.get())
 
+    def _ignore_lists(self, signal):
+        """(built-ins, user-added, user-removed) for one defer signal.
+
+        The single signal -> lists dispatch: `_ignores`, `_toggle_ignore` and the
+        Settings row renderer all go through it, so the three lists can never be
+        paired with the wrong signal and the two signals stay symmetric (issue
+        #28's rules table grows from here). The returned lists are the LIVE
+        objects — mutate them in place, never rebind.
+        """
+        if signal == app_rules.MIC:
+            return (app_rules.DEFAULT_MIC_IGNORED_APPS,
+                    self.mic_ignored_apps, self.mic_unignored_builtins)
+        return (app_rules.DEFAULT_FULLSCREEN_IGNORED_APPS,
+                self.fullscreen_ignored_apps, self.fullscreen_unignored_builtins)
+
     def _ignores(self, signal):
         """The set of app keys currently ignored for one defer signal."""
-        if signal == app_rules.MIC:
-            return app_rules.effective_ignores(
-                app_rules.DEFAULT_MIC_IGNORED_APPS,
-                self.mic_ignored_apps, self.mic_unignored_builtins)
-        return app_rules.effective_ignores(
-            app_rules.DEFAULT_FULLSCREEN_IGNORED_APPS,
-            self.fullscreen_ignored_apps, [])
+        return app_rules.effective_ignores(*self._ignore_lists(signal))
 
     def _toggle_ignore(self, signal, app_ref, ignore, source):
         """Add or remove one app from a signal's ignore list, persist, and log it.
@@ -4571,31 +4607,26 @@ class BreakApp:
         fresh each time.
         """
         key = app_rules.normalize_app(app_ref.get("id"), app_ref.get("name"))
-        builtins = (app_rules.DEFAULT_MIC_IGNORED_APPS if signal == app_rules.MIC
-                    else app_rules.DEFAULT_FULLSCREEN_IGNORED_APPS)
-        is_builtin = any(app_rules.normalize_app(a.get("id"), a.get("name")) == key
-                         for a in builtins)
-        added = (self.mic_ignored_apps if signal == app_rules.MIC
-                 else self.fullscreen_ignored_apps)
+        builtins, added, removed = self._ignore_lists(signal)
+        is_builtin = app_rules.contains_key(builtins, key)
         if ignore:
-            # A built-in is already excused (or being re-excused via the
-            # un-ignore clear below) — only a genuine user addition belongs in
-            # the user-added list, so a built-in never grows a redundant entry.
-            if not is_builtin and not any(
-                    app_rules.normalize_app(a.get("id"), a.get("name")) == key
-                    for a in added):
+            # A built-in is already excused (or being re-excused by dropping it
+            # from `removed` below) — only a genuine user addition belongs in the
+            # user-added list, so a built-in never grows a redundant entry.
+            if not is_builtin and not app_rules.contains_key(added, key):
                 added.append({"id": app_ref.get("id"), "name": app_ref.get("name")})
-            if signal == app_rules.MIC and key in {
-                    k.strip().lower() for k in self.mic_unignored_builtins}:
-                self.mic_unignored_builtins = [
-                    k for k in self.mic_unignored_builtins if k.strip().lower() != key]
+            removed[:] = [k for k in removed if k.strip().lower() != key]
         else:
             added[:] = [a for a in added
                         if app_rules.normalize_app(a.get("id"), a.get("name")) != key]
-            if is_builtin and signal == app_rules.MIC and key not in {
-                    k.strip().lower() for k in self.mic_unignored_builtins}:
-                self.mic_unignored_builtins.append(app_ref.get("id") or app_ref.get("name"))
+            if is_builtin and key not in {k.strip().lower() for k in removed}:
+                removed.append(app_ref.get("id") or app_ref.get("name"))
         self._save_preferences()
+        # `read_context` filters ignored apps BEFORE the hysteresis so an ignore
+        # takes effect at once — but the grace counters already armed by this app
+        # would still carry a tail of deferral behind it, so clear them here, on
+        # the one path every add/remove goes through (#40 final review).
+        self._reset_defer_grace()
         self._record_event(APP_IGNORE_ADDED if ignore else APP_IGNORE_REMOVED,
                            signal=signal, app=key, app_name=app_ref.get("name"),
                            source=source, builtin=is_builtin)
