@@ -470,6 +470,25 @@ def frontmost_window_rect():
         return None
 
 
+def running_gui_apps():
+    """[(bundle_id, name)] for the regular (Dock-visible) apps running now, sorted
+    by name — the candidate list for the 'Ignore these apps' picker. Agents and
+    daemons are excluded: they are not what a user recognizes or wants to pick.
+    Empty on non-macOS or any failure."""
+    if sys.platform != "darwin":
+        return []
+    try:
+        from AppKit import NSWorkspace, NSApplicationActivationPolicyRegular
+        apps = []
+        for app in NSWorkspace.sharedWorkspace().runningApplications():
+            if app.activationPolicy() != NSApplicationActivationPolicyRegular:
+                continue
+            apps.append((app.bundleIdentifier(), app.localizedName() or ""))
+        return sorted(apps, key=lambda a: (a[1] or "").lower())
+    except Exception:
+        return []
+
+
 def _attributed(holders, ignores):
     """(busy, app_ref) from a holder list and its ignore set.
 

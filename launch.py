@@ -46,7 +46,8 @@ from dfyb.activity.event_log import (
     BREAK_RESCHEDULED, SESSION_RESUMED, APP_UPDATED,
     RESUME_PROMPTED, RESUME_ACCEPTED, RESUME_DISMISSED, CHECK_IN,
     MIC_DETECTION_FALLBACK, APP_IGNORE_ADDED, APP_IGNORE_REMOVED)
-from dfyb.activity.sensors import read_context, frontmost_window_rect, smooth_signal
+from dfyb.activity.sensors import (read_context, frontmost_window_rect, smooth_signal,
+                                   running_gui_apps as sensors_running_gui_apps)
 from dfyb.activity import app_rules
 from dfyb.popup_placement import (screen_for_point, center_on_screen, clamp_onscreen,
                                   main_window_geometry, clamp_saved_position)
@@ -300,6 +301,8 @@ SETTINGS_WINDOW_MIN_HEIGHT_RATIO = 0.15  # floor as a fraction of screen height
 SETTINGS_WINDOW_OPACITY = 0.95          # slight translucency (0..1)
 SETTINGS_WINDOW_HEIGHT_SLACK = SPACE_LG  # margin below the last card so it never sits flush/cut
 SETTINGS_WINDOW_Y_OFFSET = 80           # px the window sits above the main window
+APP_PICKER_W = 320          # "Choose an app" modal width
+APP_PICKER_H = 420          # "Choose an app" modal height
 
 # Break popup
 POPUP_WIDTH = 380  # height fits content (see CountdownPopup._position_popup)
@@ -3526,8 +3529,42 @@ class BreakApp:
         self.root.after(0, _rebuild)
 
     def _open_app_picker(self, signal, on_done):
-        """Chooser of running apps — implemented in Task 10."""
-        return None
+        """Modal chooser of the running apps, for adding one to an ignore list.
+
+        Deliberately lists only running apps: an app you can see is one you can
+        recognize, and the chip covers the "it just happened" case anyway.
+        """
+        picker = ctk.CTkToplevel(self.root)
+        picker.title("Choose an app")
+        picker.geometry(f"{APP_PICKER_W}x{APP_PICKER_H}")
+        picker.transient(self.root)
+        picker.grab_set()
+        picker.protocol("WM_DELETE_WINDOW", picker.destroy)
+        scroll = ctk.CTkScrollableFrame(picker, fg_color="transparent")
+        scroll.pack(fill="both", expand=True, padx=SPACE_SM, pady=SPACE_SM)
+
+        def _rebuild():
+            on_done()
+            self._resize_settings_to_content()
+
+        def choose(bundle_id, name):
+            self._toggle_ignore(signal, {"id": bundle_id, "name": name},
+                                ignore=True, source="settings")
+            picker.destroy()
+            # Rebuild the row list off the click, not inline — it destroys the
+            # very button whose command is running (same rule as _remove_ignore_row),
+            # and refit the settings window to the new height on the same turn.
+            self.root.after(0, _rebuild)
+
+        ignored = self._ignores(signal)
+        for bundle_id, name in sensors_running_gui_apps():
+            if app_rules.normalize_app(bundle_id, name) in ignored:
+                continue
+            ctk.CTkButton(
+                scroll, text=name, anchor="w", height=BUTTON_HEIGHT_SMALL,
+                fg_color="transparent", hover_color=COLORS['surface_hover'],
+                text_color=COLORS['text_primary'], font=make_font('label'),
+                command=lambda b=bundle_id, n=name: choose(b, n)).pack(fill="x")
 
     # ------------------ CHECK-INS SETTINGS ------------------
 

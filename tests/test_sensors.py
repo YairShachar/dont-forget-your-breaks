@@ -565,3 +565,34 @@ def test_gates_still_win_over_attribution(monkeypatch):
     ctx = sensors.read_context(check_meeting=False, check_fullscreen=False)
     assert (ctx.is_meeting, ctx.meeting_app) == (False, None)
     assert (ctx.is_fullscreen, ctx.fullscreen_app) == (False, None)
+
+
+def test_running_gui_apps_off_macos_is_empty(monkeypatch):
+    monkeypatch.setattr(sensors.sys, "platform", "linux")
+    assert sensors.running_gui_apps() == []
+
+
+def test_running_gui_apps_sorted_and_regular_only(monkeypatch):
+    class _App:
+        def __init__(self, policy, bundle, name):
+            self._p, self._b, self._n = policy, bundle, name
+        def activationPolicy(self):
+            return self._p
+        def bundleIdentifier(self):
+            return self._b
+        def localizedName(self):
+            return self._n
+
+    fake_workspace = types.SimpleNamespace(
+        sharedWorkspace=lambda: types.SimpleNamespace(
+            runningApplications=lambda: [
+                _App(0, "us.zoom.xos", "Zoom"),
+                _App(1, "com.apple.dock", "Dock"),        # accessory -> filtered out
+                _App(0, "com.apple.Safari", "Safari"),
+            ]))
+    monkeypatch.setattr(sensors.sys, "platform", "darwin")
+    monkeypatch.setitem(sys.modules, "AppKit",
+                        types.SimpleNamespace(NSWorkspace=fake_workspace,
+                                              NSApplicationActivationPolicyRegular=0))
+    assert sensors.running_gui_apps() == [("com.apple.Safari", "Safari"),
+                                          ("us.zoom.xos", "Zoom")]
