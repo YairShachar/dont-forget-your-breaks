@@ -139,3 +139,55 @@ def test_held_wins_over_anticipated():
 def test_paused_ignores_anticipated():
     v = _ontrack(paused=True, anticipated_reason="meeting")
     assert v.state == "paused"
+
+
+# --- #40: name the app holding the mic / covering the screen -------------
+from dfyb.insights.status import held_label, anticipated_chip
+
+
+def test_held_label_names_the_mic_holder():
+    assert held_label("meeting", "Zoom")[0] == "Zoom is using your microphone"
+
+
+def test_held_label_names_the_fullscreen_app():
+    assert held_label("fullscreen", "Keynote")[0] == "Keynote is in full screen"
+
+
+def test_held_label_without_an_app_keeps_todays_wording():
+    assert held_label("meeting")[0] == "you're in a call"
+    assert held_label("fullscreen")[0] == "you're in full screen"
+
+
+def test_held_label_unknown_reason_falls_back():
+    assert held_label("wat") == ("wat", "during wat")
+
+
+def test_status_headline_uses_the_app_name():
+    view = compute_status(running=True, paused=False, held_reason="meeting",
+                          next_name="Micro Break", next_remaining=0,
+                          next_interval=600, break_active=False,
+                          held_app_name="Zoom")
+    assert view.headline == "Waiting — Zoom is using your microphone"
+
+
+def test_status_exposes_the_ignore_action_when_attributed():
+    view = compute_status(running=True, paused=False, held_reason="meeting",
+                          next_name="Micro Break", next_remaining=0,
+                          next_interval=600, break_active=False,
+                          held_app_name="Zoom")
+    assert view.chip_action_label == "Ignore Zoom"
+
+
+def test_status_has_no_ignore_action_without_attribution():
+    view = compute_status(running=True, paused=False, held_reason="meeting",
+                          next_name="Micro Break", next_remaining=0,
+                          next_interval=600, break_active=False)
+    assert view.chip_action_label is None
+
+
+def test_anticipated_chip_names_the_app():
+    assert anticipated_chip("meeting", "Zoom") == "Zoom is using your microphone — your break will wait"
+
+
+def test_anticipated_chip_without_an_app_keeps_todays_wording():
+    assert anticipated_chip("meeting") == "In a call — your break will wait"

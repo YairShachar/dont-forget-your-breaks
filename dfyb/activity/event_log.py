@@ -17,7 +17,11 @@ BREAK_SNOOZED = "break_snoozed"
 BREAK_SNOOZE_CANCELLED = "break_snooze_cancelled"
 BREAK_SNOOZE_RETURNED = "break_snooze_returned"
 IDLE_DETECTED = "idle_detected"
-BREAK_DEFERRED = "break_deferred"
+BREAK_DEFERRED = "break_deferred"  # a due break was held back by the context, once per
+                                   # sustained episode: {reason} plus, when the causing
+                                   # app could be named, {app, app_name, holder_count}.
+                                   # reason is fullscreen|meeting|away|active; only the
+                                   # first two ever carry an app (#40).
 NATURAL_BREAK = "natural_break"
 SESSION_STARTED = "session_started"   # user pressed Start — begins a fresh break cycle
 BREAK_RESCHEDULED = "break_rescheduled"   # one-time nudge of the next break sooner/later
@@ -27,6 +31,13 @@ RESUME_PROMPTED = "resume_prompted"       # while paused, user seemed back -> of
 RESUME_ACCEPTED = "resume_accepted"       # user accepted the resume prompt
 RESUME_DISMISSED = "resume_dismissed"     # user chose "stay paused" (or the prompt auto-dismissed)
 CHECK_IN = "check_in"                      # a user-configurable check-in was answered (#9 habits)
+MIC_DETECTION_FALLBACK = "mic_detection_fallback"  # per-process mic attribution unavailable
+                                                   # (macOS < 14 or a CoreAudio failure) — the
+                                                   # deferral fell back to the device-level
+                                                   # signal, so it has no app name. Once per session.
+APP_IGNORE_ADDED = "app_ignore_added"      # user excused an app from a defer signal
+                                           # {signal, app, app_name, source, builtin}
+APP_IGNORE_REMOVED = "app_ignore_removed"  # user un-excused an app (incl. a built-in)
 
 # Event record schema version. Bump when the event shape changes; readers may
 # branch on it. Old records lacking "v" are treated as unversioned.

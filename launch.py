@@ -44,8 +44,11 @@ from dfyb.activity.event_log import (
     EventLog, BREAK_TAKEN, BREAK_FIRED, BREAK_SNOOZED, BREAK_SKIPPED,
     BREAK_SNOOZE_CANCELLED, BREAK_SNOOZE_RETURNED, SESSION_STARTED,
     BREAK_RESCHEDULED, SESSION_RESUMED, APP_UPDATED,
-    RESUME_PROMPTED, RESUME_ACCEPTED, RESUME_DISMISSED, CHECK_IN)
-from dfyb.activity.sensors import read_context, frontmost_window_rect, smooth_signal
+    RESUME_PROMPTED, RESUME_ACCEPTED, RESUME_DISMISSED, CHECK_IN,
+    MIC_DETECTION_FALLBACK, APP_IGNORE_ADDED, APP_IGNORE_REMOVED)
+from dfyb.activity.sensors import (read_context, frontmost_window_rect, smooth_signal,
+                                   running_gui_apps as sensors_running_gui_apps)
+from dfyb.activity import app_rules
 from dfyb.popup_placement import (screen_for_point, center_on_screen, clamp_onscreen,
                                   main_window_geometry, clamp_saved_position)
 from dfyb.scheduler.adapter import states_from_configs
@@ -54,7 +57,8 @@ from dfyb.scheduler.tick import (advance, apply_snooze_freeze,
 from dfyb.scheduler.reschedule import reschedule_step, reschedule_bounds, nudged_remaining
 from dfyb.scheduler.engine import (decide, DEFER, coordinate_thresholds,
                                    AWAY_IDLE_THRESHOLD_SECONDS,
-                                   NATURAL_BREAK_IDLE_THRESHOLD_SECONDS)
+                                   NATURAL_BREAK_IDLE_THRESHOLD_SECONDS,
+                                   resolve_held_app, signal_reason_and_app)
 from dfyb.scheduler.dedup import break_in_play
 from dfyb.ui_controls import reset_button_style
 from dfyb.timer_lifecycle import timer_should_continue
@@ -265,6 +269,19 @@ PROGRESS_HEIGHT = 6     # slim progress-to-next-break bar
 HERO_PAD = SPACE_LG     # inner padding of the hero card
 DOT_PULSE_MS = 3200     # full breathe cycle of the on-track status dot
 HERO_HEADLINE_HEIGHT = 38  # fixed slot so the big<->medium font swap doesn't resize the window
+CHIP_ACTION_HEIGHT = 20     # inline "Ignore <app>" button on the holding chip
+IGNORE_ROW_REMOVE_W = 24    # ✕ button on an ignored-app row
+IGNORE_ROW_RESTORE_W = 64   # "Restore" button on a built-in the user turned off
+IGNORE_ROW_REMOVE_LABEL = "✕"
+IGNORE_ROW_RESTORE_LABEL = "Restore"
+IGNORE_ROW_BUILTIN_SUFFIX = " (built-in)"
+# A built-in the user removed stays listed, greyed, with a Restore button — the
+# picker only offers regular Dock apps, so most built-ins (an .appex, an agent, a
+# daemon) could never be found again once the row vanished (#40 final review).
+IGNORE_ROW_OFF_SUFFIX = " (built-in, off)"
+IGNORE_LIST_HEADING = "Ignore these apps"
+IGNORE_LIST_EMPTY_TEXT = "None — every app defers your breaks"
+APP_PICKER_TITLE = "Choose an app"
 STATUS_DOT_COLORS = {
     'good': COLORS['accent_success'],
     'warning': COLORS['accent_warning'],
@@ -295,6 +312,8 @@ SETTINGS_WINDOW_MIN_HEIGHT_RATIO = 0.15  # floor as a fraction of screen height
 SETTINGS_WINDOW_OPACITY = 0.95          # slight translucency (0..1)
 SETTINGS_WINDOW_HEIGHT_SLACK = SPACE_LG  # margin below the last card so it never sits flush/cut
 SETTINGS_WINDOW_Y_OFFSET = 80           # px the window sits above the main window
+APP_PICKER_W = 320          # "Choose an app" modal width
+APP_PICKER_H = 420          # "Choose an app" modal height
 
 # Break popup
 POPUP_WIDTH = 380  # height fits content (see CountdownPopup._position_popup)
@@ -2261,8 +2280,15 @@ class BreakApp:
         self._resume_prompted = False # already offered to resume this pause episode (#77)
         self._resume_card = None      # the floating "resume?" card, or None
         self._resume_card_after = None  # auto-dismiss timer id for the resume card
-        self._held = None      # reason the due break is currently held (transparency)
+        self._held = None      # reason the due break is held THIS tick (recomputed every tick)
+        self._held_app = None       # {"id","name","count"} of the app causing the hold
+        self._held_app_carry = 0    # ticks the named app may still be carried (#40)
+        self._held_carry = None     # reason carried for the FIRE-time popup line (#44/#85)
+        self._chip_action = None    # (signal, app_ref) the last render's chip button promised
         self._anticipated = None  # deferral context active but nothing due yet (#74)
+        self._anticipated_app = None  # {"id","name","count"} of the app behind the anticipated chip
+        self._anticipated_app_carry = 0  # ticks that app may still be carried (#40)
+        self._logged_mic_fallback = False   # mic_detection_fallback is once per session
         self._rested_ack_until = None  # time.time() until which to show "welcome back"
         self._fullscreen_grace = 0  # ticks of fullscreen hysteresis left (#46)
         self._meeting_grace = 0     # ticks of mic-in-use hysteresis left (#84)
@@ -2315,6 +2341,14 @@ class BreakApp:
             value=self.saved_prefs.get("defer_during_fullscreen", True)
         )
         self.defer_during_fullscreen.trace_add('write', self._save_preferences)
+
+        # Per-app exceptions to the defer signals (#40/#28). Read with .get so
+        # older config files keep loading; built-ins live in app_rules, not prefs.
+        self.mic_ignored_apps = self.saved_prefs.get("mic_ignored_apps", [])
+        self.mic_unignored_builtins = self.saved_prefs.get("mic_unignored_builtins", [])
+        self.fullscreen_ignored_apps = self.saved_prefs.get("fullscreen_ignored_apps", [])
+        self.fullscreen_unignored_builtins = self.saved_prefs.get(
+            "fullscreen_unignored_builtins", [])
 
         self.defer_while_active = ctk.BooleanVar(
             value=self.saved_prefs.get("defer_while_active", False)
@@ -2473,10 +2507,19 @@ class BreakApp:
         self.hero_progress.set(0)
         self.hero_progress.pack(fill="x", padx=HERO_PAD)
 
-        # Holding chip \u2014 revealed by _render_status only while a break is deferred
+        # Holding chip \u2014 revealed by _render_status only while a break is deferred.
+        # A row, not a bare label, so the attributed case can offer "Ignore <app>".
+        self.hero_chip_row = ctk.CTkFrame(hero, fg_color="transparent")
         self.hero_chip = ctk.CTkLabel(
-            hero, text="", anchor="w", font=make_font('caption', weight="bold"),
+            self.hero_chip_row, text="", anchor="w",
+            font=make_font('caption', weight="bold"),
             text_color=COLORS['accent_warning'])
+        self.hero_chip.pack(side="left")
+        self.hero_chip_action = ctk.CTkButton(
+            self.hero_chip_row, text="", width=0, height=CHIP_ACTION_HEIGHT,
+            fg_color="transparent", hover_color=COLORS['surface_hover'],
+            text_color=COLORS['text_secondary'],
+            font=make_font('caption'), command=self._handle_chip_ignore)
 
         # Global controls
         controls = ctk.CTkFrame(hero, fg_color="transparent")
@@ -2734,6 +2777,10 @@ class BreakApp:
             "check_for_updates": self.check_for_updates.get(),
             "defer_during_meetings": self.defer_during_meetings.get(),
             "defer_during_fullscreen": self.defer_during_fullscreen.get(),
+            "mic_ignored_apps": self.mic_ignored_apps,
+            "mic_unignored_builtins": self.mic_unignored_builtins,
+            "fullscreen_ignored_apps": self.fullscreen_ignored_apps,
+            "fullscreen_unignored_builtins": self.fullscreen_unignored_builtins,
             "popup_placement": self.popup_placement.get(),
             "main_window_placement": self.main_window_placement.get(),
             "defer_while_active": self.defer_while_active.get(),
@@ -2834,6 +2881,11 @@ class BreakApp:
             self._episode = None
             self._due_since = {}
             self._held = None
+            self._held_app = None
+            self._held_app_carry = 0
+            self._held_carry = None
+            self._anticipated_app_carry = 0
+            self._logged_mic_fallback = False
             self._reset_defer_grace()
             self._render_status()
             self.toggle_btn.configure(text="Pause", fg_color=COLORS['accent_warning'],
@@ -3088,6 +3140,11 @@ class BreakApp:
         self._episode = None  # fresh idle/deferred dedup marker each session
         self._due_since = {}   # fresh deferred-duration tracking each session (#85)
         self._held = None      # reset the held-reason each session
+        self._held_app = None  # reset the held-app attribution each session
+        self._held_app_carry = 0   # reset the named-app carry budget each session (#40)
+        self._held_carry = None    # reset the fire-time held-reason carry each session
+        self._anticipated_app_carry = 0   # reset the anticipated-app carry each session
+        self._logged_mic_fallback = False  # mic_detection_fallback is once per session (#40)
         self._reset_defer_grace()  # reset fullscreen/mic/active hysteresis each session (#46/#84)
 
         # A fresh Start wipes stale pending state (#69): cancel any snoozes left
@@ -3252,8 +3309,10 @@ class BreakApp:
         smart = _add_section("smart_pausing", "Smart pausing")
         _checkbox(smart.body, "Pause breaks while microphone is in use",
                   self.defer_during_meetings)
+        self._build_ignore_list(smart.body, app_rules.MIC)
         _checkbox(smart.body, "Pause breaks during fullscreen",
                   self.defer_during_fullscreen)
+        self._build_ignore_list(smart.body, app_rules.FULLSCREEN)
         _checkbox(smart.body, "Wait until you pause (typing or clicking)",
                   self.defer_while_active)
 
@@ -3419,6 +3478,149 @@ class BreakApp:
             if panel.config is config:
                 panel.focus_config()
                 break
+
+    def _build_ignore_list(self, parent, signal):
+        """The 'Ignore these apps' sub-block under a defer toggle.
+
+        EVERY built-in is listed, whether or not it is currently ignored, plus the
+        user's own additions. An ignored row carries ✕ (stop ignoring); a built-in
+        the user turned off stays as a greyed row with Restore, because removing
+        it used to be a one-way door: "+ Add app" only offers regular Dock apps,
+        and three of the four mic built-ins (an .appex, a menu-bar agent and a
+        daemon) can never appear there. Rebuilt in place after every change.
+        """
+        subwrap = ctk.CTkFrame(parent, fg_color="transparent")
+        subwrap.pack(fill="x", anchor="w",
+                     padx=(PADDING_PANEL_X + SETTINGS_SUBOPTION_INDENT, PADDING_PANEL_X),
+                     pady=(0, PADDING_PANEL_Y))
+        ctk.CTkFrame(subwrap, width=SETTINGS_SUBOPTION_RULE_W, height=1,
+                     fg_color=COLORS['border']).pack(side="left", fill="y")
+        block = ctk.CTkFrame(subwrap, fg_color="transparent")
+        block.pack(side="left", fill="x", expand=True, padx=(SPACE_SM, 0))
+
+        def render():
+            for child in block.winfo_children():
+                child.destroy()
+            ctk.CTkLabel(block, text=IGNORE_LIST_HEADING, font=make_font('caption'),
+                         text_color=COLORS['text_tertiary']).pack(
+                anchor="w", pady=(0, SPACE_XXS))
+            ignored = self._ignores(signal)
+            builtins, added, _removed = self._ignore_lists(signal)
+            # (app_ref, is_builtin, is_ignored) — built-ins always listed, so a
+            # removed one is restorable instead of gone.
+            rows = [(a, True,
+                     app_rules.normalize_app(a.get("id"), a.get("name")) in ignored)
+                    for a in builtins]
+            rows += [(a, False, True) for a in added]
+            if not rows:
+                ctk.CTkLabel(block, text=IGNORE_LIST_EMPTY_TEXT,
+                             font=make_font('caption'),
+                             text_color=COLORS['text_tertiary']).pack(anchor="w")
+            for app_ref, is_builtin, is_ignored in rows:
+                row = ctk.CTkFrame(block, fg_color="transparent")
+                row.pack(fill="x", anchor="w", pady=(0, SPACE_XXS))
+                suffix = (IGNORE_ROW_BUILTIN_SUFFIX if is_ignored
+                          else IGNORE_ROW_OFF_SUFFIX) if is_builtin else ""
+                ctk.CTkLabel(
+                    row, text=app_ref.get("name") + suffix, font=make_font('label'),
+                    text_color=(COLORS['text_primary'] if is_ignored
+                                else COLORS['text_tertiary'])).pack(side="left")
+                ctk.CTkButton(
+                    row,
+                    text=(IGNORE_ROW_REMOVE_LABEL if is_ignored
+                          else IGNORE_ROW_RESTORE_LABEL),
+                    width=(IGNORE_ROW_REMOVE_W if is_ignored else IGNORE_ROW_RESTORE_W),
+                    height=CHIP_ACTION_HEIGHT,
+                    fg_color="transparent", hover_color=COLORS['surface_hover'],
+                    text_color=(COLORS['text_secondary'] if is_ignored
+                                else COLORS['accent_primary']),
+                    font=make_font('caption'),
+                    command=lambda a=app_ref, on=is_ignored: self._set_ignore_row(
+                        signal, a, ignore=not on, render=render)).pack(side="right")
+            ctk.CTkButton(
+                block, text="+ Add app", width=0, height=CHIP_ACTION_HEIGHT,
+                fg_color="transparent", hover_color=COLORS['surface_hover'],
+                text_color=COLORS['accent_primary'], font=make_font('caption'),
+                command=lambda: self._open_app_picker(signal, render)).pack(anchor="w")
+
+        render()
+        return render
+
+    def _set_ignore_row(self, signal, app_ref, ignore, render):
+        """Flip one row (✕ un-ignores, Restore re-ignores a built-in), then
+        rebuild the list and refit the settings window, on the next event-loop turn.
+
+        The rebuild destroys the very button whose command is running, so it
+        must NOT happen inline — `after(0, …)` lets the click finish first.
+        Adding/removing a row changes the section's height, so the refit rides
+        the same deferred turn as the rebuild (see `_refresh_check_in_section`
+        for the same pattern on the check-in cards).
+        """
+        self._toggle_ignore(signal, app_ref, ignore=ignore, source="settings")
+
+        def _rebuild():
+            render()
+            self._resize_settings_to_content()
+
+        self.root.after(0, _rebuild)
+
+    def _open_app_picker(self, signal, on_done):
+        """Modal chooser of the running apps, for adding one to an ignore list.
+
+        Deliberately lists only running apps: an app you can see is one you can
+        recognize, and the chip covers the "it just happened" case anyway.
+
+        Window setup mirrors `_edit_check_in_question` exactly, and for the same
+        reasons: it belongs to the SETTINGS window it was opened from (not the
+        main window), and it must sit in front of it — Settings is `-topmost`
+        whenever always-on-top is set, so a picker without that would open behind
+        it. There is deliberately NO grab_set: an app-modal grab orphans on macOS
+        after the window closes and leaves Settings unclickable ("appears, then
+        can't reopen") — see the same fix on the check-in modal and chooser.
+        """
+        owner = getattr(self, '_settings_window', None) or self.root
+        picker = ctk.CTkToplevel(self.root)
+        picker.title(APP_PICKER_TITLE)
+        picker.geometry(f"{APP_PICKER_W}x{APP_PICKER_H}")
+        picker.resizable(False, False)
+        picker.configure(fg_color=COLORS['surface_card'])
+        # Topmost BEFORE the first map: pin_to_active_space raises the window to
+        # NSStatusWindowLevel from its <Map> handler, and Tk's '-topmost' applied
+        # afterwards would drop it back below the window that opened it.
+        picker.attributes('-topmost', True)
+        pin_to_active_space(picker)
+        picker.transient(owner)
+        picker.protocol("WM_DELETE_WINDOW", picker.destroy)
+        scroll = ctk.CTkScrollableFrame(picker, fg_color="transparent")
+        scroll.pack(fill="both", expand=True, padx=SPACE_SM, pady=SPACE_SM)
+
+        def _rebuild():
+            on_done()
+            self._resize_settings_to_content()
+
+        def choose(bundle_id, name):
+            self._toggle_ignore(signal, {"id": bundle_id, "name": name},
+                                ignore=True, source="settings")
+            picker.destroy()
+            # Rebuild the row list off the click, not inline — it destroys the
+            # very button whose command is running (same rule as _set_ignore_row),
+            # and refit the settings window to the new height on the same turn.
+            self.root.after(0, _rebuild)
+
+        ignored = self._ignores(signal)
+        for bundle_id, name in sensors_running_gui_apps():
+            if app_rules.normalize_app(bundle_id, name) in ignored:
+                continue
+            ctk.CTkButton(
+                scroll, text=name, anchor="w", height=BUTTON_HEIGHT_SMALL,
+                fg_color="transparent", hover_color=COLORS['surface_hover'],
+                text_color=COLORS['text_primary'], font=make_font('label'),
+                command=lambda b=bundle_id, n=name: choose(b, n)).pack(fill="x")
+
+        self._center_toplevel(picker, owner, size=(APP_PICKER_W, APP_PICKER_H))
+        picker.lift()
+        picker.focus_force()
+        return picker
 
     # ------------------ CHECK-INS SETTINGS ------------------
 
@@ -3746,10 +3948,14 @@ class BreakApp:
                             anchor="w", pady=(SPACE_SM, 0))
         widgets['allow_note'] = allow_note
 
-    def _center_toplevel(self, top, over):
-        """Center a toplevel over the `over` window — or the screen when it's gone."""
+    def _center_toplevel(self, top, over, size=None):
+        """Center a toplevel over the `over` window — or the screen when it's gone.
+
+        `size` overrides the requested size for a window with a fixed geometry
+        (the app picker), whose scrollable content does not define its extent.
+        """
         top.update_idletasks()
-        w, h = top.winfo_reqwidth(), top.winfo_reqheight()
+        w, h = size if size is not None else (top.winfo_reqwidth(), top.winfo_reqheight())
         if over is not None and over.winfo_exists():
             x = over.winfo_x() + (over.winfo_width() - w) // 2
             y = over.winfo_y() + (over.winfo_height() - h) // 2
@@ -3901,6 +4107,7 @@ class BreakApp:
                 continue
             if self.paused:
                 self._anticipated = None      # no anticipatory chip while paused (#74)
+                self._anticipated_app = None
                 self._maybe_prompt_resume()   # #77: offer to resume if you're clearly back
                 continue
 
@@ -3909,7 +4116,14 @@ class BreakApp:
                     check_meeting=self.defer_during_meetings.get(),
                     check_fullscreen=self.defer_during_fullscreen.get(),
                     count_mouse_move=self.count_mouse_move.get(),
+                    mic_ignores=self._ignores(app_rules.MIC),
+                    fullscreen_ignores=self._ignores(app_rules.FULLSCREEN),
                 )
+                if (ctx.is_meeting and ctx.meeting_app is None
+                        and not self._logged_mic_fallback):
+                    self._logged_mic_fallback = True
+                    self._record_event(MIC_DETECTION_FALLBACK,
+                                       reason="process attribution unavailable")
                 pause, away, natural = self._scheduler_thresholds()
                 # Raw sensor readings (pre-hysteresis), kept verbatim to log at fire
                 # time so an intermittent mid-activity fire is diagnosable (#84).
@@ -3931,19 +4145,46 @@ class BreakApp:
                     active_idle_seconds=(0.0 if eff_active else ctx.active_idle_seconds))
                 # Proactively note a sustained deferral context (call / fullscreen) so
                 # the hero can say "your break will wait" before anything is due (#74).
-                # Active-typing is excluded — it's transient and would flicker.
+                # Active-typing is excluded — it's transient and would flicker. The
+                # reason and the app it names come from ONE evaluation
+                # (`signal_reason_and_app`), so they can never disagree. Capture the
+                # previous value BEFORE resetting — resetting first would make the
+                # carry-across-a-blip a no-op (#40 review round 2).
+                prev_anticipated = self._anticipated
+                prev_anticipated_app = self._anticipated_app
                 self._anticipated = None
+                self._anticipated_app = None
                 if self.show_anticipated_defer.get():
-                    self._anticipated = ("meeting" if eff_meeting else
-                                         "fullscreen" if eff_fullscreen else None)
+                    self._anticipated, anticipated_app = signal_reason_and_app(
+                        eff_fullscreen, eff_meeting, ctx.fullscreen_app, ctx.meeting_app)
+                    self._anticipated_app, self._anticipated_app_carry = resolve_held_app(
+                        self._anticipated, anticipated_app,
+                        previous=prev_anticipated_app, previous_reason=prev_anticipated,
+                        carry_left=self._anticipated_app_carry)
                 states = states_from_configs(self.breaks)
                 names = [c.name.get() for c in self.breaks]
                 prev_remaining = [c.remaining for c in self.breaks]
                 now = time.time()
                 prev_episode = self._episode
-                new_remaining, fire_index, events, self._episode = advance(
+                outcome = advance(
                     states, ctx, self._episode, pause_threshold=pause,
                     away_threshold=away, natural_threshold=natural)
+                new_remaining, fire_index = outcome.new_remaining, outcome.fire_index
+                events, self._episode = outcome.events, outcome.episode
+                # The ONE evaluation the whole hold-UI hangs off: the reason shown,
+                # the app named and the signal the chip's Ignore button acts on all
+                # come from THIS tick's defer decision. `BREAK_DEFERRED` stays
+                # deduped to once per episode (inside events_for_tick), but the
+                # displayed reason must not be — that dedup is exactly what let the
+                # reason go stale while the app stayed fresh, so the hero could say
+                # "Keynote is using your microphone" and excuse the wrong app for
+                # the wrong signal (#40 final review, Finding 1).
+                prev_held, prev_held_app = self._held, self._held_app
+                self._held = outcome.defer_reason
+                self._held_app, self._held_app_carry = resolve_held_app(
+                    outcome.defer_reason, outcome.defer_app,
+                    previous=prev_held_app, previous_reason=prev_held,
+                    carry_left=self._held_app_carry)
                 # A break with a pending snooze is frozen — the snooze IS its next
                 # occurrence, so it neither counts down nor fires from the loop (#84).
                 pending_names = {e['name'] for e in self._pending_snoozes}
@@ -3962,8 +4203,12 @@ class BreakApp:
                     config.remaining = remaining
                 for event_type, data in events:
                     self._record_event(event_type, **data)
-                held_reason, self._held = track_held(
-                    events, fire_index is not None, self._held)
+                # The fire-time line (#44/#85) keeps its own carry: on the firing
+                # tick the hold has just ended, so `self._held` is already None and
+                # the reason to SHOW must come from the events fold, not the live
+                # hold. Separate attribute, same behavior as before.
+                held_reason, self._held_carry = track_held(
+                    events, fire_index is not None, self._held_carry)
                 if fire_index is not None:
                     name = self.breaks[fire_index].name.get()
                     scheduled_ts, deferred_seconds = deferral_at_fire(
@@ -3974,7 +4219,8 @@ class BreakApp:
                         raw_active_idle=raw_active_idle, raw_meeting=raw_meeting,
                         raw_fullscreen=raw_fullscreen, pause=pause, away=away,
                         held_reason=held_reason, scheduled_ts=scheduled_ts,
-                        deferred_seconds=deferred_seconds)
+                        deferred_seconds=deferred_seconds,
+                        held_app=(prev_held_app or {}).get("name"))
                     logging.info(
                         "break due, firing: %s (idle=%.0fs raw_meeting=%s raw_fs=%s held=%s)",
                         name, ctx.idle_seconds, raw_meeting, raw_fullscreen, held_reason)
@@ -4234,6 +4480,7 @@ class BreakApp:
             check_meeting=self.defer_during_meetings.get(),
             check_fullscreen=False,   # fullscreen isn't a "you're back" signal
             count_mouse_move=self.count_mouse_move.get(),
+            mic_ignores=self._ignores(app_rules.MIC),
         )
         active_idle = (ctx.idle_seconds if ctx.active_idle_seconds is None
                        else ctx.active_idle_seconds)
@@ -4329,18 +4576,22 @@ class BreakApp:
 
     def _log_break_fired(self, name, source, *, raw_idle, raw_active_idle,
                          raw_meeting, raw_fullscreen, pause, away, held_reason,
-                         scheduled_ts, deferred_seconds):
+                         scheduled_ts, deferred_seconds, held_app=None):
         """Record the fire-time context (#52/#84) so an intermittent mid-activity
         fire is diagnosable — the RAW (pre-hysteresis) sensor values plus the
         thresholds in force, tagged by which path fired it (scheduled/snooze_return).
         Also records when the break first became due (`scheduled_ts`) and how long it
-        was then held (`deferred_seconds`), so the dashboard can see push-back (#85)."""
+        was then held (`deferred_seconds`), so the dashboard can see push-back (#85).
+        `held_app` is the RESOLVED attribution (name only) that paired with
+        `held_reason` while the break was held — not the raw per-tick sensor
+        reading, which is None exactly during the hysteresis blips that matter (#40)."""
         self._record_event(
             BREAK_FIRED, name=name, source=source,
             idle_seconds=round(raw_idle, 1),
             active_idle_seconds=(None if raw_active_idle is None
                                  else round(raw_active_idle, 1)),
             is_meeting=raw_meeting, is_fullscreen=raw_fullscreen,
+            held_app=held_app,
             pause_threshold=pause, away_threshold=away, held_reason=held_reason,
             scheduled_ts=round(scheduled_ts, 1),
             deferred_seconds=round(deferred_seconds, 1))
@@ -4352,6 +4603,83 @@ class BreakApp:
                  if self.defer_while_active.get() else 0)
         return coordinate_thresholds(pause, self.away_idle_seconds.get(),
                                      self.natural_break_seconds.get())
+
+    def _ignore_lists(self, signal):
+        """(built-ins, user-added, user-removed) for one defer signal.
+
+        The single signal -> lists dispatch: `_ignores`, `_toggle_ignore` and the
+        Settings row renderer all go through it, so the three lists can never be
+        paired with the wrong signal and the two signals stay symmetric (issue
+        #28's rules table grows from here). The returned lists are the LIVE
+        objects — mutate them in place, never rebind.
+        """
+        if signal == app_rules.MIC:
+            return (app_rules.DEFAULT_MIC_IGNORED_APPS,
+                    self.mic_ignored_apps, self.mic_unignored_builtins)
+        return (app_rules.DEFAULT_FULLSCREEN_IGNORED_APPS,
+                self.fullscreen_ignored_apps, self.fullscreen_unignored_builtins)
+
+    def _ignores(self, signal):
+        """The set of app keys currently ignored for one defer signal."""
+        return app_rules.effective_ignores(*self._ignore_lists(signal))
+
+    def _toggle_ignore(self, signal, app_ref, ignore, source):
+        """Add or remove one app from a signal's ignore list, persist, and log it.
+
+        `app_ref` is {"id", "name"}; `source` is 'chip' or 'settings'. Takes effect
+        on the next tick — no restart — because the timer loop reads `_ignores()`
+        fresh each time.
+        """
+        key = app_rules.normalize_app(app_ref.get("id"), app_ref.get("name"))
+        builtins, added, removed = self._ignore_lists(signal)
+        is_builtin = app_rules.contains_key(builtins, key)
+        if ignore:
+            # A built-in is already excused (or being re-excused by dropping it
+            # from `removed` below) — only a genuine user addition belongs in the
+            # user-added list, so a built-in never grows a redundant entry.
+            if not is_builtin and not app_rules.contains_key(added, key):
+                added.append({"id": app_ref.get("id"), "name": app_ref.get("name")})
+            removed[:] = [k for k in removed if k.strip().lower() != key]
+        else:
+            added[:] = [a for a in added
+                        if app_rules.normalize_app(a.get("id"), a.get("name")) != key]
+            if is_builtin and key not in {k.strip().lower() for k in removed}:
+                removed.append(app_ref.get("id") or app_ref.get("name"))
+        self._save_preferences()
+        # `read_context` filters ignored apps BEFORE the hysteresis so an ignore
+        # takes effect at once — but the grace counters already armed by this app
+        # would still carry a tail of deferral behind it, so clear them here, on
+        # the one path every add/remove goes through (#40 final review).
+        self._reset_defer_grace()
+        self._record_event(APP_IGNORE_ADDED if ignore else APP_IGNORE_REMOVED,
+                           signal=signal, app=key, app_name=app_ref.get("name"),
+                           source=source, builtin=is_builtin)
+
+    def _handle_chip_ignore(self):
+        """Excuse the app currently holding the break, straight from the chip.
+
+        Acts on exactly what the last render's chip button promised (stashed in
+        `self._chip_action` by `_render_status`) rather than re-deriving the
+        signal here — so the button can never act on something other than what
+        its label said, even if the hold changed between render and click.
+
+        The list the user actually maintains gets built here, at the moment the
+        wrong deferral happens — Settings is for review and correction.
+        """
+        if self._chip_action is None:
+            return
+        signal, app_ref = self._chip_action
+        self._toggle_ignore(signal, app_ref, ignore=True, source="chip")
+        # Stop holding immediately, so the click has instant feedback rather than
+        # waiting up to a tick. The episode marker goes with it: leaving it at
+        # DEFERRED_EPISODE meant that if something ELSE still defers, no fresh
+        # break_deferred is emitted — which used to leave the hero stuck out of
+        # "Holding" on a frozen 0:00 (#40 final review, Finding 1). The next tick
+        # now recomputes `_held` from its own defer decision regardless, and this
+        # reset makes the continued deferral visible in the event log too.
+        self._held, self._held_app, self._held_app_carry = None, None, 0
+        self._episode = None
+        self._render_status()
 
     def _capture_active_screen(self):
         """Screen (x, y, w, h) the user is working on, captured BEFORE the popup
@@ -4501,6 +4829,8 @@ class BreakApp:
             check_meeting=self.defer_during_meetings.get(),
             check_fullscreen=self.defer_during_fullscreen.get(),
             count_mouse_move=self.count_mouse_move.get(),
+            mic_ignores=self._ignores(app_rules.MIC),
+            fullscreen_ignores=self._ignores(app_rules.FULLSCREEN),
         )
         pause, away, _natural = self._scheduler_thresholds()
         context_defers = should_hold_snooze(
@@ -4914,7 +5244,9 @@ class BreakApp:
             running=self.running, paused=self.paused, held_reason=self._held,
             next_name=next_name, next_remaining=next_remaining,
             next_interval=next_interval, break_active=self.active_popup is not None,
-            just_rested=just_rested, anticipated_reason=self._anticipated)
+            just_rested=just_rested, anticipated_reason=self._anticipated,
+            held_app_name=(self._held_app or {}).get("name"),
+            anticipated_app_name=(self._anticipated_app or {}).get("name"))
         self.status_dot.configure(fg_color=STATUS_DOT_COLORS[view.dot])
         self.status.configure(text=STATUS_STATE_LABELS[view.state],
                               text_color=COLORS['text_secondary'])
@@ -4931,11 +5263,24 @@ class BreakApp:
             self.hero_progress.set(0)
         if view.chip:
             self.hero_chip.configure(text=f"⏸ {view.chip}")
-            if self.hero_chip.winfo_manager() != "pack":
-                self.hero_chip.pack(fill="x", padx=HERO_PAD, pady=(0, SPACE_SM),
-                                    after=self.hero_progress)
-        elif self.hero_chip.winfo_manager() == "pack":
-            self.hero_chip.pack_forget()
+            if view.chip_action_label and self._held_app:
+                # Stashed here, not re-derived on click: the handler acts on
+                # exactly what this render promised, even if state moves on.
+                self._chip_action = (view.chip_action_signal, dict(self._held_app))
+                self.hero_chip_action.configure(text=view.chip_action_label)
+                if self.hero_chip_action.winfo_manager() != "pack":
+                    self.hero_chip_action.pack(side="left", padx=(SPACE_XXS, 0))
+            else:
+                self._chip_action = None
+                if self.hero_chip_action.winfo_manager() == "pack":
+                    self.hero_chip_action.pack_forget()
+            if self.hero_chip_row.winfo_manager() != "pack":
+                self.hero_chip_row.pack(fill="x", padx=HERO_PAD, pady=(0, SPACE_SM),
+                                        after=self.hero_progress)
+        else:
+            self._chip_action = None
+            if self.hero_chip_row.winfo_manager() == "pack":
+                self.hero_chip_row.pack_forget()
 
     def update_ui(self):
         """Refresh the cockpit hero, per-break timers, holding cues, and snooze rows."""
