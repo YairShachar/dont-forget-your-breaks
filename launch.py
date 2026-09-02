@@ -2839,6 +2839,7 @@ class BreakApp:
             self._due_since = {}
             self._held = None
             self._held_app = None
+            self._logged_mic_fallback = False
             self._reset_defer_grace()
             self._render_status()
             self.toggle_btn.configure(text="Pause", fg_color=COLORS['accent_warning'],
@@ -3094,6 +3095,7 @@ class BreakApp:
         self._due_since = {}   # fresh deferred-duration tracking each session (#85)
         self._held = None      # reset the held-reason each session
         self._held_app = None  # reset the held-app attribution each session
+        self._logged_mic_fallback = False  # mic_detection_fallback is once per session (#40)
         self._reset_defer_grace()  # reset fullscreen/mic/active hysteresis each session (#46/#84)
 
         # A fresh Start wipes stale pending state (#69): cancel any snoozes left
@@ -3892,6 +3894,26 @@ class BreakApp:
         self.event_log.append(event_type, **data)
         logging.info("event: %s %s", event_type, data)
 
+    def _resolve_held_app(self, eff_fullscreen, eff_meeting, ctx, previous):
+        """Which app to name for the currently-active defer signal.
+
+        Mirrors `decide()`/`defer_reason_and_app`'s priority order (fullscreen
+        before meeting, dfyb/scheduler/engine.py) so the hero/chip can never
+        name the wrong app when both a call and an unrelated fullscreen app are
+        simultaneously true. `ctx` here is post-`dataclass_replace`, so its
+        `is_meeting`/`is_fullscreen` are the effective (hysteresis-bridged)
+        values, but `meeting_app`/`fullscreen_app` are still this tick's RAW
+        attribution — which drops to None during exactly the blips
+        `smooth_signal` exists to bridge. Falling back to `previous` (last
+        tick's resolved app) carries the name across that blip instead of the
+        hero silently reverting to generic wording mid-hold (#40).
+        """
+        if eff_fullscreen:
+            return ctx.fullscreen_app or previous
+        if eff_meeting:
+            return ctx.meeting_app or previous
+        return None
+
     def timer_loop(self, generation):
         """Single timer loop managing all breaks (context-aware via the scheduler).
 
@@ -3916,8 +3938,6 @@ class BreakApp:
                     check_fullscreen=self.defer_during_fullscreen.get(),
                     count_mouse_move=self.count_mouse_move.get(),
                 )
-                # Remember WHO caused each signal, for the chip and the event log.
-                self._held_app = ctx.meeting_app or ctx.fullscreen_app
                 if (ctx.is_meeting and ctx.meeting_app is None
                         and not self._logged_mic_fallback):
                     self._logged_mic_fallback = True
@@ -3942,17 +3962,28 @@ class BreakApp:
                 ctx = dataclass_replace(
                     ctx, is_fullscreen=eff_fullscreen, is_meeting=eff_meeting,
                     active_idle_seconds=(0.0 if eff_active else ctx.active_idle_seconds))
+                # Remember WHO caused each signal, for the hero/chip and the event
+                # log — resolved from the EFFECTIVE signals (post-hysteresis), in
+                # decide()'s priority order, so it can never name the wrong app or
+                # go blank mid-hold (#40). See _resolve_held_app's docstring. Kept
+                # from BEFORE this tick's update, mirroring how track_held() below
+                # surfaces held_reason from the prior tick on the firing tick itself
+                # (by then this tick's signals may have already cleared).
+                prev_held_app = self._held_app
+                self._held_app = self._resolve_held_app(
+                    eff_fullscreen, eff_meeting, ctx, self._held_app)
                 # Proactively note a sustained deferral context (call / fullscreen) so
                 # the hero can say "your break will wait" before anything is due (#74).
                 # Active-typing is excluded — it's transient and would flicker.
+                # Same fullscreen-before-meeting priority as decide(), so the reason
+                # and the resolved app can never disagree.
                 self._anticipated = None
                 self._anticipated_app = None
                 if self.show_anticipated_defer.get():
-                    self._anticipated = ("meeting" if eff_meeting else
-                                         "fullscreen" if eff_fullscreen else None)
-                    self._anticipated_app = (
-                        (ctx.meeting_app or {}).get("name") if eff_meeting else
-                        (ctx.fullscreen_app or {}).get("name") if eff_fullscreen else None)
+                    self._anticipated = ("fullscreen" if eff_fullscreen else
+                                         "meeting" if eff_meeting else None)
+                    self._anticipated_app = self._resolve_held_app(
+                        eff_fullscreen, eff_meeting, ctx, self._anticipated_app)
                 states = states_from_configs(self.breaks)
                 names = [c.name.get() for c in self.breaks]
                 prev_remaining = [c.remaining for c in self.breaks]
@@ -3992,7 +4023,7 @@ class BreakApp:
                         raw_fullscreen=raw_fullscreen, pause=pause, away=away,
                         held_reason=held_reason, scheduled_ts=scheduled_ts,
                         deferred_seconds=deferred_seconds,
-                        meeting_app=(ctx.meeting_app or {}).get("name"))
+                        held_app=(prev_held_app or {}).get("name"))
                     logging.info(
                         "break due, firing: %s (idle=%.0fs raw_meeting=%s raw_fs=%s held=%s)",
                         name, ctx.idle_seconds, raw_meeting, raw_fullscreen, held_reason)
@@ -4347,19 +4378,22 @@ class BreakApp:
 
     def _log_break_fired(self, name, source, *, raw_idle, raw_active_idle,
                          raw_meeting, raw_fullscreen, pause, away, held_reason,
-                         scheduled_ts, deferred_seconds, meeting_app=None):
+                         scheduled_ts, deferred_seconds, held_app=None):
         """Record the fire-time context (#52/#84) so an intermittent mid-activity
         fire is diagnosable — the RAW (pre-hysteresis) sensor values plus the
         thresholds in force, tagged by which path fired it (scheduled/snooze_return).
         Also records when the break first became due (`scheduled_ts`) and how long it
-        was then held (`deferred_seconds`), so the dashboard can see push-back (#85)."""
+        was then held (`deferred_seconds`), so the dashboard can see push-back (#85).
+        `held_app` is the RESOLVED attribution (name only) that paired with
+        `held_reason` while the break was held — not the raw per-tick sensor
+        reading, which is None exactly during the hysteresis blips that matter (#40)."""
         self._record_event(
             BREAK_FIRED, name=name, source=source,
             idle_seconds=round(raw_idle, 1),
             active_idle_seconds=(None if raw_active_idle is None
                                  else round(raw_active_idle, 1)),
             is_meeting=raw_meeting, is_fullscreen=raw_fullscreen,
-            meeting_app=meeting_app,
+            held_app=held_app,
             pause_threshold=pause, away_threshold=away, held_reason=held_reason,
             scheduled_ts=round(scheduled_ts, 1),
             deferred_seconds=round(deferred_seconds, 1))
@@ -4935,7 +4969,7 @@ class BreakApp:
             next_interval=next_interval, break_active=self.active_popup is not None,
             just_rested=just_rested, anticipated_reason=self._anticipated,
             held_app_name=(self._held_app or {}).get("name"),
-            anticipated_app_name=self._anticipated_app)
+            anticipated_app_name=(self._anticipated_app or {}).get("name"))
         self.status_dot.configure(fg_color=STATUS_DOT_COLORS[view.dot])
         self.status.configure(text=STATUS_STATE_LABELS[view.state],
                               text_color=COLORS['text_secondary'])
