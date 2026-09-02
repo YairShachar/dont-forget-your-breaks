@@ -40,6 +40,9 @@ PROCESS_PID = _fourcc("ppid")                # kAudioProcessPropertyPID
 PROCESS_IS_RUNNING_INPUT = _fourcc("piri")   # kAudioProcessPropertyIsRunningInput
 # Max bytes for libproc's executable-path buffer (PROC_PIDPATHINFO_MAXSIZE).
 PROC_PATH_MAX = 4096
+# How many pid -> identity results `_app_identity` keeps. Small on purpose: the
+# sensors ask about a handful of pids, over and over, once a second.
+APP_IDENTITY_CACHE_MAX = 64
 
 
 def idle_seconds():
@@ -329,6 +332,55 @@ def microphone_in_use():
         return False
 
 
+_LIBSYSTEM = None
+# pid -> (bundle_id, name). A LIVE pid's identity cannot change, and the sensors
+# re-ask about the same pids every tick, so this is a pure win. See
+# `_cache_identity` for why the (rare) pid-reuse window is safe.
+_IDENTITY_CACHE = {}
+
+
+def _libsystem():
+    """The process-wide libSystem handle, opened once.
+
+    ctypes never dlcloses a CDLL and each instance grows its own function-pointer
+    cache, so building one per call leaked on the once-a-second sensor path —
+    exactly the path an .appex or daemon mic holder takes (#40 final review).
+    `argtypes`/`restype` are declared here, once, instead of per call.
+    """
+    global _LIBSYSTEM
+    if _LIBSYSTEM is None:
+        import ctypes
+        lib = ctypes.CDLL("/usr/lib/libSystem.dylib")
+        lib.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+        lib.proc_pidpath.restype = ctypes.c_int
+        _LIBSYSTEM = lib
+    return _LIBSYSTEM
+
+
+def _cache_identity(pid, identity):
+    """Memoize one pid's identity, keeping the cache bounded.
+
+    A cache entry can only go stale if the pid exits AND the OS reuses that
+    number AND the new process starts holding the mic / covering a display —
+    and even then the worst case is one mis-named app for one deferral episode.
+    The window is kept small without an eviction policy: the whole cache is
+    dropped when it reaches `APP_IDENTITY_CACHE_MAX`, and `forget_app_identities`
+    clears it whenever nothing holds the mic at all (the ordinary gap between
+    calls). Rebuilding costs one lookup per live pid.
+    """
+    if len(_IDENTITY_CACHE) >= APP_IDENTITY_CACHE_MAX:
+        _IDENTITY_CACHE.clear()
+    _IDENTITY_CACHE[pid] = identity
+    return identity
+
+
+def forget_app_identities():
+    """Drop every memoized pid identity. Called when no process holds the audio
+    input, which is both the natural cache boundary and the moment pid reuse
+    stops mattering."""
+    _IDENTITY_CACHE.clear()
+
+
 def _bundle_identity_from_path(exe_path):
     """(bundle_id, name) for the .app/.appex enclosing `exe_path`, else (None, basename).
 
@@ -359,23 +411,28 @@ def _app_identity(pid):
     libproc's executable path and the enclosing bundle, so an .appex still gets a
     real name ('Sound') instead of a bare pid.
     """
-    import os
+    import ctypes
+    if pid in _IDENTITY_CACHE:
+        return _IDENTITY_CACHE[pid]
     try:
         from AppKit import NSRunningApplication
         app = NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
         if app is not None:
-            return app.bundleIdentifier(), (app.localizedName() or str(pid))
-    except Exception:
-        pass
+            return _cache_identity(
+                pid, (app.bundleIdentifier(), app.localizedName() or str(pid)))
+    except Exception as e:
+        # Was failing SILENTLY to the libproc fallback — log so this class of
+        # miss is visible (same reasoning as microphone_in_use()).
+        logging.debug("NSRunningApplication lookup failed for pid %s: %s", pid, e)
     try:
-        import ctypes
-        libc = ctypes.CDLL("/usr/lib/libSystem.dylib")
         buf = ctypes.create_string_buffer(PROC_PATH_MAX)
-        if libc.proc_pidpath(pid, buf, PROC_PATH_MAX) > 0:
-            return _bundle_identity_from_path(buf.value.decode("utf-8", "replace"))
-    except Exception:
-        pass
-    return None, "pid %d" % pid
+        if _libsystem().proc_pidpath(pid, buf, PROC_PATH_MAX) > 0:
+            return _cache_identity(pid, _bundle_identity_from_path(
+                buf.value.decode("utf-8", "replace")))
+    except Exception as e:
+        # Was failing SILENTLY to a bare "pid N" label — log it.
+        logging.debug("proc_pidpath lookup failed for pid %s: %s", pid, e)
+    return _cache_identity(pid, (None, "pid %d" % pid))
 
 
 def mic_input_processes():
@@ -413,6 +470,7 @@ def mic_input_processes():
             return None            # macOS < 14 — the property does not exist
         count = size // UINT32_SIZE
         if count <= 0:
+            forget_app_identities()
             return []
         status, _size, raw = CA.AudioObjectGetPropertyData(
             CA.kAudioObjectSystemObject, addr(PROCESS_OBJECT_LIST),
@@ -428,6 +486,10 @@ def mic_input_processes():
                 continue
             bundle_id, name = _app_identity(pid)
             holders.append((pid, bundle_id, name))
+        if not holders:
+            # Nothing holds the input: the ordinary gap between calls, and the
+            # cheapest moment to drop every memoized pid (see `_cache_identity`).
+            forget_app_identities()
         return holders
     except Exception as e:
         logging.debug("mic_input_processes() failed, attribution unavailable: %s", e)
@@ -485,7 +547,10 @@ def running_gui_apps():
                 continue
             apps.append((app.bundleIdentifier(), app.localizedName() or ""))
         return sorted(apps, key=lambda a: (a[1] or "").lower())
-    except Exception:
+    except Exception as e:
+        # Was failing SILENTLY to an empty picker, indistinguishable from "no apps
+        # are running" — log so this class of miss is visible.
+        logging.debug("running_gui_apps() failed, offering no candidates: %s", e)
         return []
 
 
