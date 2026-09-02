@@ -4282,6 +4282,7 @@ class BreakApp:
             check_meeting=self.defer_during_meetings.get(),
             check_fullscreen=False,   # fullscreen isn't a "you're back" signal
             count_mouse_move=self.count_mouse_move.get(),
+            mic_ignores=self._ignores(app_rules.MIC),
         )
         active_idle = (ctx.idle_seconds if ctx.active_idle_seconds is None
                        else ctx.active_idle_seconds)
@@ -4430,8 +4431,12 @@ class BreakApp:
         added = (self.mic_ignored_apps if signal == app_rules.MIC
                  else self.fullscreen_ignored_apps)
         if ignore:
-            if not any(app_rules.normalize_app(a.get("id"), a.get("name")) == key
-                       for a in added):
+            # A built-in is already excused (or being re-excused via the
+            # un-ignore clear below) — only a genuine user addition belongs in
+            # the user-added list, so a built-in never grows a redundant entry.
+            if not is_builtin and not any(
+                    app_rules.normalize_app(a.get("id"), a.get("name")) == key
+                    for a in added):
                 added.append({"id": app_ref.get("id"), "name": app_ref.get("name")})
             if signal == app_rules.MIC and key in {
                     k.strip().lower() for k in self.mic_unignored_builtins}:
@@ -4440,7 +4445,8 @@ class BreakApp:
         else:
             added[:] = [a for a in added
                         if app_rules.normalize_app(a.get("id"), a.get("name")) != key]
-            if is_builtin and signal == app_rules.MIC:
+            if is_builtin and signal == app_rules.MIC and key not in {
+                    k.strip().lower() for k in self.mic_unignored_builtins}:
                 self.mic_unignored_builtins.append(app_ref.get("id") or app_ref.get("name"))
         self._save_preferences()
         self._record_event(APP_IGNORE_ADDED if ignore else APP_IGNORE_REMOVED,
@@ -4595,6 +4601,8 @@ class BreakApp:
             check_meeting=self.defer_during_meetings.get(),
             check_fullscreen=self.defer_during_fullscreen.get(),
             count_mouse_move=self.count_mouse_move.get(),
+            mic_ignores=self._ignores(app_rules.MIC),
+            fullscreen_ignores=self._ignores(app_rules.FULLSCREEN),
         )
         pause, away, _natural = self._scheduler_thresholds()
         context_defers = should_hold_snooze(
