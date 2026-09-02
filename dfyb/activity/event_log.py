@@ -27,6 +27,10 @@ RESUME_PROMPTED = "resume_prompted"       # while paused, user seemed back -> of
 RESUME_ACCEPTED = "resume_accepted"       # user accepted the resume prompt
 RESUME_DISMISSED = "resume_dismissed"     # user chose "stay paused" (or the prompt auto-dismissed)
 CHECK_IN = "check_in"                      # a user-configurable check-in was answered (#9 habits)
+MIC_DETECTION_FALLBACK = "mic_detection_fallback"  # per-process mic attribution unavailable
+                                                   # (macOS < 14 or a CoreAudio failure) — the
+                                                   # deferral fell back to the device-level
+                                                   # signal, so it has no app name. Once per session.
 
 # Event record schema version. Bump when the event shape changes; readers may
 # branch on it. Old records lacking "v" are treated as unversioned.

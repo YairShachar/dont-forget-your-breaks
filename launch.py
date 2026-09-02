@@ -44,7 +44,8 @@ from dfyb.activity.event_log import (
     EventLog, BREAK_TAKEN, BREAK_FIRED, BREAK_SNOOZED, BREAK_SKIPPED,
     BREAK_SNOOZE_CANCELLED, BREAK_SNOOZE_RETURNED, SESSION_STARTED,
     BREAK_RESCHEDULED, SESSION_RESUMED, APP_UPDATED,
-    RESUME_PROMPTED, RESUME_ACCEPTED, RESUME_DISMISSED, CHECK_IN)
+    RESUME_PROMPTED, RESUME_ACCEPTED, RESUME_DISMISSED, CHECK_IN,
+    MIC_DETECTION_FALLBACK)
 from dfyb.activity.sensors import read_context, frontmost_window_rect, smooth_signal
 from dfyb.popup_placement import (screen_for_point, center_on_screen, clamp_onscreen,
                                   main_window_geometry, clamp_saved_position)
@@ -2262,7 +2263,10 @@ class BreakApp:
         self._resume_card = None      # the floating "resume?" card, or None
         self._resume_card_after = None  # auto-dismiss timer id for the resume card
         self._held = None      # reason the due break is currently held (transparency)
+        self._held_app = None       # {"id","name","count"} of the app causing the hold
         self._anticipated = None  # deferral context active but nothing due yet (#74)
+        self._anticipated_app = None  # name of the app behind the anticipated chip
+        self._logged_mic_fallback = False   # mic_detection_fallback is once per session
         self._rested_ack_until = None  # time.time() until which to show "welcome back"
         self._fullscreen_grace = 0  # ticks of fullscreen hysteresis left (#46)
         self._meeting_grace = 0     # ticks of mic-in-use hysteresis left (#84)
@@ -2834,6 +2838,7 @@ class BreakApp:
             self._episode = None
             self._due_since = {}
             self._held = None
+            self._held_app = None
             self._reset_defer_grace()
             self._render_status()
             self.toggle_btn.configure(text="Pause", fg_color=COLORS['accent_warning'],
@@ -3088,6 +3093,7 @@ class BreakApp:
         self._episode = None  # fresh idle/deferred dedup marker each session
         self._due_since = {}   # fresh deferred-duration tracking each session (#85)
         self._held = None      # reset the held-reason each session
+        self._held_app = None  # reset the held-app attribution each session
         self._reset_defer_grace()  # reset fullscreen/mic/active hysteresis each session (#46/#84)
 
         # A fresh Start wipes stale pending state (#69): cancel any snoozes left
@@ -3910,6 +3916,13 @@ class BreakApp:
                     check_fullscreen=self.defer_during_fullscreen.get(),
                     count_mouse_move=self.count_mouse_move.get(),
                 )
+                # Remember WHO caused each signal, for the chip and the event log.
+                self._held_app = ctx.meeting_app or ctx.fullscreen_app
+                if (ctx.is_meeting and ctx.meeting_app is None
+                        and not self._logged_mic_fallback):
+                    self._logged_mic_fallback = True
+                    self._record_event(MIC_DETECTION_FALLBACK,
+                                       reason="process attribution unavailable")
                 pause, away, natural = self._scheduler_thresholds()
                 # Raw sensor readings (pre-hysteresis), kept verbatim to log at fire
                 # time so an intermittent mid-activity fire is diagnosable (#84).
@@ -3933,9 +3946,13 @@ class BreakApp:
                 # the hero can say "your break will wait" before anything is due (#74).
                 # Active-typing is excluded — it's transient and would flicker.
                 self._anticipated = None
+                self._anticipated_app = None
                 if self.show_anticipated_defer.get():
                     self._anticipated = ("meeting" if eff_meeting else
                                          "fullscreen" if eff_fullscreen else None)
+                    self._anticipated_app = (
+                        (ctx.meeting_app or {}).get("name") if eff_meeting else
+                        (ctx.fullscreen_app or {}).get("name") if eff_fullscreen else None)
                 states = states_from_configs(self.breaks)
                 names = [c.name.get() for c in self.breaks]
                 prev_remaining = [c.remaining for c in self.breaks]
@@ -3974,7 +3991,8 @@ class BreakApp:
                         raw_active_idle=raw_active_idle, raw_meeting=raw_meeting,
                         raw_fullscreen=raw_fullscreen, pause=pause, away=away,
                         held_reason=held_reason, scheduled_ts=scheduled_ts,
-                        deferred_seconds=deferred_seconds)
+                        deferred_seconds=deferred_seconds,
+                        meeting_app=(ctx.meeting_app or {}).get("name"))
                     logging.info(
                         "break due, firing: %s (idle=%.0fs raw_meeting=%s raw_fs=%s held=%s)",
                         name, ctx.idle_seconds, raw_meeting, raw_fullscreen, held_reason)
@@ -4329,7 +4347,7 @@ class BreakApp:
 
     def _log_break_fired(self, name, source, *, raw_idle, raw_active_idle,
                          raw_meeting, raw_fullscreen, pause, away, held_reason,
-                         scheduled_ts, deferred_seconds):
+                         scheduled_ts, deferred_seconds, meeting_app=None):
         """Record the fire-time context (#52/#84) so an intermittent mid-activity
         fire is diagnosable — the RAW (pre-hysteresis) sensor values plus the
         thresholds in force, tagged by which path fired it (scheduled/snooze_return).
@@ -4341,6 +4359,7 @@ class BreakApp:
             active_idle_seconds=(None if raw_active_idle is None
                                  else round(raw_active_idle, 1)),
             is_meeting=raw_meeting, is_fullscreen=raw_fullscreen,
+            meeting_app=meeting_app,
             pause_threshold=pause, away_threshold=away, held_reason=held_reason,
             scheduled_ts=round(scheduled_ts, 1),
             deferred_seconds=round(deferred_seconds, 1))
@@ -4914,7 +4933,9 @@ class BreakApp:
             running=self.running, paused=self.paused, held_reason=self._held,
             next_name=next_name, next_remaining=next_remaining,
             next_interval=next_interval, break_active=self.active_popup is not None,
-            just_rested=just_rested, anticipated_reason=self._anticipated)
+            just_rested=just_rested, anticipated_reason=self._anticipated,
+            held_app_name=(self._held_app or {}).get("name"),
+            anticipated_app_name=self._anticipated_app)
         self.status_dot.configure(fg_color=STATUS_DOT_COLORS[view.dot])
         self.status.configure(text=STATUS_STATE_LABELS[view.state],
                               text_color=COLORS['text_secondary'])

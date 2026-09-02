@@ -89,3 +89,8 @@ def test_resume_prompt_constants_exist():
     assert RESUME_PROMPTED == "resume_prompted"
     assert RESUME_ACCEPTED == "resume_accepted"
     assert RESUME_DISMISSED == "resume_dismissed"
+
+
+def test_mic_detection_fallback_constant_exists():
+    from dfyb.activity import event_log
+    assert event_log.MIC_DETECTION_FALLBACK == "mic_detection_fallback"
